@@ -7,19 +7,24 @@ no ports are opened on the Windows side.
 
 Full design and roadmap: [`PLAN.md`](./PLAN.md).
 
-## Status — F1 (exec)
+## Status — F2 (files)
 
 - [x] Shared wire protocol (`shared/protocol.ts`, zod-validated)
 - [x] WebSocket hub: `hello`/`welcome`, heartbeats, `presence`, jobs with
       timeout + cancel, liveness sweeper
-- [x] MCP tools: `agents_list`, `agent_exec`
+- [x] MCP tools: `agents_list`, `agent_exec`, `agent_fs_list`, `agent_fs_read`,
+      `agent_fs_write`, `agent_fs_upload`, `agent_fs_download`
 - [x] Real agent (`agent/src`) with reconnect/backoff: executes commands,
-      streams stdout/stderr, kills the process tree on timeout/cancel
+      streams stdout/stderr, kills the process tree on timeout/cancel; serves
+      `fs.list/fs.read/fs.write/fs.hash` jobs
+- [x] Chunked file transfers (256 KiB chunks, 512 KiB max per chunk, 1 GiB cap)
+      with end-to-end SHA-256 + size verification in both directions
 - [x] Fake agent for development/CI on Linux
-- [x] Unit tests (`bun test`) + black-box e2e (`bun run e2e`)
+- [x] Unit tests (`bun test`) + black-box e2e (`bun run e2e`), including a
+      50 MB binary upload/download round trip with matching hash
 - [x] Tray spike scripts for Windows (`agent/tray/`, to validate on a VM)
-- [ ] Windows validation of the agent: `cmd.exe`/`powershell.exe` shells and
-      `taskkill /T /F` kill path (VM) — F1 close-out
+- [ ] Windows validation of the agent: `cmd.exe`/`powershell.exe` shells,
+      `taskkill /T /F` kill path and `C:\` file paths (VM) — F1/F2 close-out
 - [ ] `rc-agent.exe` packaging (tray + file config + DPAPI token) — F3
 
 ## Quickstart (dev)

@@ -67,6 +67,7 @@ export interface JobOutcome {
   stderr: string;
   truncated: boolean;
   error?: string;
+  meta?: Record<string, unknown>;
 }
 
 /** JobOutcome before the hub stamps it with the jobId. */
@@ -395,6 +396,7 @@ export class Hub {
       exitCode: msg.exitCode,
       durationMs: msg.durationMs,
       error: msg.error,
+      meta: msg.meta,
     });
   }
 

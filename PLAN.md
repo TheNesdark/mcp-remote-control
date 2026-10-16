@@ -147,8 +147,8 @@ Tipos TypeScript importados por ambos lados; un mensaje = un frame JSON.
 | `hello` | `proto`, `token`, `agentId?`, `name`, `host`, `os`, `version`, `tags`, `caps` |
 | `heartbeat` | `ts`, `metrics?` |
 | `presence` | `paused` (el usuario local activó/desactivó el agente desde la bandeja) |
-| `job.output` | `jobId`, `stream`, `seq`, `data` (base64 si binario) |
-| `job.result` | `jobId`, `ok`, `exitCode?`, `durationMs`, `error?` |
+| `job.output` | `jobId`, `stream`, `seq`, `data`, `encoding` (`utf8` por defecto, `base64` para binario) |
+| `job.result` | `jobId`, `ok`, `exitCode?`, `durationMs`, `error?`, `meta?` (bytes, eof, sha256, tamaño…) |
 | `event` | `type`, `payload` |
 
 **Servidor → Agente**
@@ -249,9 +249,11 @@ mcp-remote-control/
 **Estado (2026-10-16):**
 - ✅ **F0 completado en su parte Linux**: protocolo compartido, hub WS (hello/heartbeat/presence/jobs con timeout+cancel), tool `agents_list`, agente falso, 11 tests unitarios y e2e de caja negra en verde.
 - ⏳ **F0 pendiente de VM**: validar `agent/tray/first-run.ps1` y `agent/tray/tray.ps1` en Windows real (ver `agent/tray/README.md`) — es el spike de la pieza más arriesgada del diseño.
-- ✅ **F1 completado en su parte Linux**: agente real (`agent/src`) con reconexión/backoff, `agent_exec` con streaming de stdout/stderr, exit codes, stdin/env/cwd, timeout y cancel que matan el árbol de procesos (grupo POSIX / `taskkill /T /F` en Windows), 27 tests + e2e con agente real en verde.
+- ✅ **F1 completado en su parte Linux**: agente real (`agent/src`) con reconexión/backoff, `agent_exec` con streaming de stdout/stderr, exit codes, stdin/env/cwd, timeout y cancel que matan el árbol de procesos (grupo POSIX / `taskkill /T /F` en Windows).
 - ⏳ **F1 pendiente de VM**: validar en Windows los shells (`cmd.exe`, `powershell.exe`) y la ruta de kill con `taskkill /T /F`.
-- Siguiente: **F2** (archivos: list/read/write + upload/download chunked con SHA-256).
+- ✅ **F2 completado en su parte Linux** (criterio de aceptación verificado): jobs `fs.list/fs.read/fs.write/fs.hash` en el agente; tools `agent_fs_list/read/write/upload/download`; transferencias chunked (256 KiB, tope de chunk 512 KiB) con verificación SHA-256 y tamaño en ambos sentidos; **transferencia de 50 MB ida y vuelta con hash idéntico en el test de integración**; 36 tests + e2e (19 checks) en verde.
+- ⏳ **F2 pendiente de VM**: probar rutas Windows (`C:\...`), archivos con tamaño de chunk límite y nombres con acentos.
+- Siguiente: **F3** (inventario, procesos, screenshot del monitor primario, bandeja completa).
 
 ---
 

@@ -22,8 +22,7 @@ export const JOB_TYPES = [
   "fs.list",
   "fs.read",
   "fs.write",
-  "fs.upload",
-  "fs.download",
+  "fs.hash",
   "info",
   "ps.list",
   "ps.kill",
@@ -31,6 +30,15 @@ export const JOB_TYPES = [
 ] as const;
 export const JobType = z.enum(JOB_TYPES);
 export type JobType = z.infer<typeof JobType>;
+
+// ---------------------------------------------------------------------------
+// File transfer limits
+// ---------------------------------------------------------------------------
+
+/** Hard cap for a single fs.read/fs.write chunk (base64 stays under the frame limit). */
+export const FS_MAX_CHUNK_BYTES = 512 * 1024;
+/** Default chunk used by the upload/download loops. */
+export const FS_DEFAULT_CHUNK_BYTES = 256 * 1024;
 
 // ---------------------------------------------------------------------------
 // Job parameters
@@ -48,6 +56,34 @@ export const ExecParams = z.object({
   stdin: z.string().optional(),
 });
 export type ExecParams = z.infer<typeof ExecParams>;
+
+export const FsListParams = z.object({
+  path: z.string().min(1),
+  limit: z.number().int().positive().max(5_000).default(1_000),
+});
+export type FsListParams = z.infer<typeof FsListParams>;
+
+export const FsReadParams = z.object({
+  path: z.string().min(1),
+  offset: z.number().int().nonnegative().default(0),
+  length: z.number().int().positive().max(FS_MAX_CHUNK_BYTES).default(FS_DEFAULT_CHUNK_BYTES),
+});
+export type FsReadParams = z.infer<typeof FsReadParams>;
+
+export const FsWriteParams = z.object({
+  path: z.string().min(1),
+  /** Payload chunk, always base64. */
+  data: z.string(),
+  mode: z.enum(["overwrite", "append"]).default("overwrite"),
+  /** Create parent directories if missing. */
+  mkdirs: z.boolean().default(false),
+});
+export type FsWriteParams = z.infer<typeof FsWriteParams>;
+
+export const FsHashParams = z.object({
+  path: z.string().min(1),
+});
+export type FsHashParams = z.infer<typeof FsHashParams>;
 
 // ---------------------------------------------------------------------------
 // Agent -> Server
@@ -90,6 +126,8 @@ export const JobOutputMsg = z.object({
   stream: z.enum(["stdout", "stderr"]),
   seq: z.number().int().nonnegative(),
   data: z.string(),
+  /** How to interpret `data` (default utf8). */
+  encoding: z.enum(["utf8", "base64"]).default("utf8"),
 });
 
 export const JobResultMsg = z.object({
@@ -99,6 +137,8 @@ export const JobResultMsg = z.object({
   exitCode: z.number().int().optional(),
   durationMs: z.number().nonnegative(),
   error: z.string().optional(),
+  /** Structured per-job-type metadata (sizes, hashes, entries...). */
+  meta: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const AgentMsg = z.discriminatedUnion("type", [

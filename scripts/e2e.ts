@@ -7,6 +7,8 @@
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeAgent } from "./fake-agent.ts";
 
@@ -222,6 +224,76 @@ try {
       String(timed.data.error ?? "").match(/timed out|cancelled/) !== null &&
       Number(timed.data.durationMs) < 3_000,
     timed.data,
+  );
+
+  // -------------------------------------------------------------------------
+  // Real agent: files (list/read/write + upload/download with sha256)
+  // -------------------------------------------------------------------------
+  console.log("e2e: exercising file tools against the real agent");
+  const fsDir = mkdtempSync(join(tmpdir(), "mrc-e2e-fs-"));
+  const helloPath = join(fsDir, "notes", "hello.txt");
+
+  const writeRes = await callAgentTool("agent_fs_write", {
+    agent: "E2E-01",
+    path: helloPath,
+    content: "hello file",
+    mkdirs: true,
+  });
+  check(
+    "agent_fs_write creates dirs and returns bytes + sha256",
+    writeRes.data.ok === true && writeRes.data.bytes === 10 && typeof writeRes.data.sha256 === "string",
+    writeRes.data,
+  );
+
+  const readRes = await callAgentTool("agent_fs_read", { agent: "E2E-01", path: helloPath });
+  check(
+    "agent_fs_read returns content, eof and sha256",
+    readRes.data.content === "hello file" && readRes.data.eof === true && typeof readRes.data.sha256 === "string",
+    readRes.data,
+  );
+
+  const listRes = await callAgentTool("agent_fs_list", { agent: "E2E-01", path: join(fsDir, "notes") });
+  check(
+    "agent_fs_list shows the file",
+    Array.isArray(listRes.data.entries) &&
+      (listRes.data.entries as Array<{ name: string }>).some((entry) => entry.name === "hello.txt"),
+    listRes.data,
+  );
+
+  const sourceBin = join(fsDir, "up.bin");
+  const payload = Buffer.alloc(1024 * 1024);
+  for (let i = 0; i < payload.length; i++) payload[i] = i % 251;
+  writeFileSync(sourceBin, payload);
+
+  const uploadRes = await callAgentTool("agent_fs_upload", {
+    agent: "E2E-01",
+    localPath: sourceBin,
+    remotePath: join(fsDir, "remote.bin"),
+  });
+  check(
+    "agent_fs_upload reports ok, size and sha256",
+    uploadRes.data.ok === true && uploadRes.data.bytes === payload.length && typeof uploadRes.data.sha256 === "string",
+    uploadRes.data,
+  );
+
+  const downloadRes = await callAgentTool("agent_fs_download", {
+    agent: "E2E-01",
+    remotePath: join(fsDir, "remote.bin"),
+    localPath: join(fsDir, "down.bin"),
+  });
+  check(
+    "agent_fs_download round trips the same sha256",
+    downloadRes.data.ok === true &&
+      downloadRes.data.bytes === payload.length &&
+      downloadRes.data.sha256 === uploadRes.data.sha256,
+    { up: uploadRes.data, down: downloadRes.data },
+  );
+
+  const missingRes = await callAgentTool("agent_fs_read", { agent: "E2E-01", path: join(fsDir, "nope.txt") });
+  check(
+    "agent_fs_read reports missing files as an error",
+    missingRes.isError === true && String(missingRes.data.error ?? "").includes("ENOENT"),
+    missingRes.data,
   );
 } catch (err) {
   failures++;

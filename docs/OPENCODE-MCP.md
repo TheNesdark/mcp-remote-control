@@ -91,6 +91,20 @@ To keep the agent from using the tools without asking, restrict them by name:
    agent_exec(agent="PC-01", command="echo hello")
    ```
 
-   Result JSON includes `stdout`, `stderr`, `exitCode`, `durationMs` y
+   Result JSON includes `stdout`, `stderr`, `exitCode`, `durationMs` and
    `truncated`. On timeout the remote process tree is killed and `error`
    explains it.
+6. File tools:
+
+   ```
+   agent_fs_list(agent="PC-01", path="C:\\Users\\User\\Documents")
+   agent_fs_read(agent="PC-01", path="C:\\temp\\log.txt")
+   agent_fs_write(agent="PC-01", path="C:\\temp\\hello.txt", content="hi")
+   agent_fs_upload(agent="PC-01", localPath="/root/installer.msi", remotePath="C:\\temp\\installer.msi")
+   agent_fs_download(agent="PC-01", remotePath="C:\\temp\\report.pdf", localPath="/root/report.pdf")
+   ```
+
+   `upload`/`download` copy between **this server's machine** and the remote
+   machine in chunks, and verify SHA-256 (and size) in both directions. Writes
+   are limited to 512 KiB per call; use upload for bigger files
+   (`agent_fs_write` supports `mkdirs=true`).
