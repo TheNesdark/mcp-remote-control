@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { isAutostartEnabled, setAutostartEnabled } from "./autostart.ts";
+import { isAutostartEnabled, setAutostartEnabled } from "../../agent/src/autostart.ts";
 
 test("autostart is disabled off-Windows and refuses changes", async () => {
   if (process.platform === "win32") return; // covered on the Windows VM

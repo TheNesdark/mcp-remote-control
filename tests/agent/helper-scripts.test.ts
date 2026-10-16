@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { resolveHelperScript } from "./helper-scripts.ts";
+import { resolveHelperScript } from "../../agent/src/helper-scripts.ts";
 
 test("resolveHelperScript finds the checkout helpers", () => {
   // In the repo the dev copies exist, so resolution succeeds on any platform.

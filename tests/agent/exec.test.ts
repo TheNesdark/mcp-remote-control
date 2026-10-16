@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runExec, type ExecRequest, type ExecResult, type RunningExec } from "./exec.ts";
+import { runExec, type ExecRequest, type ExecResult, type RunningExec } from "../../agent/src/exec.ts";
 
 interface Collected {
   stdout: string;

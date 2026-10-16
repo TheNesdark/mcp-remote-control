@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { HubError } from "./hub-error.ts";
-import { JobLimiter } from "./job-limits.ts";
+import { HubError } from "../../server/src/hub-error.ts";
+import { JobLimiter } from "../../server/src/job-limits.ts";
 
 function makeLimiter(overrides: { maxJobsPerAgent?: number; maxJobsPerMinute?: number } = {}): JobLimiter {
   return new JobLimiter({ maxJobsPerAgent: 8, maxJobsPerMinute: 120, ...overrides });

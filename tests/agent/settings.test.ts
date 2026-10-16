@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadSettings, parseTags } from "./settings.ts";
+import { loadSettings, parseTags } from "../../agent/src/settings.ts";
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), "mrc-settings-"));

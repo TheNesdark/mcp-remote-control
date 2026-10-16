@@ -3,9 +3,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { FakeAgent } from "../../scripts/fake-agent.ts";
 import { testServerConfig } from "../../scripts/test-utils.ts";
-import type { ServerConfig } from "./config.ts";
-import { createMcpHttpHandler } from "./mcp-http.ts";
-import { createService, type Service } from "./service.ts";
+import type { ServerConfig } from "../../server/src/config.ts";
+import { createMcpHttpHandler } from "../../server/src/mcp-http.ts";
+import { createService, type Service } from "../../server/src/service.ts";
 
 const TOKEN = "test-token";
 

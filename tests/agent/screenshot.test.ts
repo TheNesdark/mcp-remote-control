@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { parseImageSize, takeScreenshot } from "./screenshot.ts";
+import { parseImageSize, takeScreenshot } from "../../agent/src/screenshot.ts";
 
 function pngHeader(width: number, height: number): Uint8Array {
   const buffer = new Uint8Array(33);

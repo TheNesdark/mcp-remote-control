@@ -10,7 +10,7 @@ test(
     const dir = mkdtempSync(join(tmpdir(), "mrc-build-"));
     const out = join(dir, "rc-agent.exe");
     const proc = Bun.spawn({
-      cmd: ["bun", "run", join(import.meta.dir, "build.ts"), "--out", out],
+      cmd: ["bun", "run", join(import.meta.dir, "../../agent/build.ts"), "--out", out],
       stdout: "pipe",
       stderr: "pipe",
     });

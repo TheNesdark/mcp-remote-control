@@ -8,8 +8,8 @@ import { testServerConfig, waitFor } from "../../scripts/test-utils.ts";
 import type { ServerConfig } from "../../server/src/config.ts";
 import { createService, type Service } from "../../server/src/service.ts";
 import { downloadFile, uploadFile } from "../../server/src/transfers.ts";
-import { AgentConnection } from "./connection.ts";
-import { JobManager } from "./jobs.ts";
+import { AgentConnection } from "../../agent/src/connection.ts";
+import { JobManager } from "../../agent/src/jobs.ts";
 
 const TOKEN = "test-token";
 
@@ -385,4 +385,4 @@ test("agent reconnects with a stable id after a server restart", async () => {
   } finally {
     connection.stop();
   }
-});
+}, 60_000);

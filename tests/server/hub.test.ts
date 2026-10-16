@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { FakeAgent } from "../../scripts/fake-agent.ts";
 import { readJsonLines, testServerConfig, waitFor } from "../../scripts/test-utils.ts";
-import type { ServerConfig } from "./config.ts";
-import { createService, type Service } from "./service.ts";
+import type { ServerConfig } from "../../server/src/config.ts";
+import { createService, type Service } from "../../server/src/service.ts";
 
 const TOKEN = "test-token";
 

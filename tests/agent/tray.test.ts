@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { waitFor } from "../../scripts/test-utils.ts";
-import { TrayIntegration } from "./tray.ts";
+import { TrayIntegration } from "../../agent/src/tray.ts";
 
 /**
  * Fake tray helper: speaks the same JSON-lines protocol as tray.ps1, records

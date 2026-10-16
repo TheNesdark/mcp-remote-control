@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { createRegistry } from "./registry.ts";
-import { AgentStore, generateToken, hashToken, StoreError } from "./store.ts";
+import { createRegistry } from "../../server/src/registry.ts";
+import { AgentStore, generateToken, hashToken, StoreError } from "../../server/src/store.ts";
 
 const HELLO = { name: "PC-01", host: "h", os: "Windows", version: "0.4.0", tags: ["oficina"] };
 

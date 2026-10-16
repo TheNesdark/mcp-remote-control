@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanEnv, readJsonLines } from "../../scripts/test-utils.ts";
 
-const CLI = join(import.meta.dir, "cli.ts");
+const CLI = join(import.meta.dir, "../../server/src/cli.ts");
 
 interface CliResult {
   code: number;

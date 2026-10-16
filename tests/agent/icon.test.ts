@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { buildIco } from "./make-icon.ts";
+import { buildIco } from "../../agent/assets/make-icon.ts";
 
 function parseEntries(ico: Uint8Array): Array<{ width: number; height: number; bpp: number; bytes: number; offset: number }> {
   const view = new DataView(ico.buffer, ico.byteOffset, ico.byteLength);
@@ -32,7 +32,7 @@ test("generated icon has 16/32/48/256 32bpp entries covering the file", () => {
 });
 
 test("committed icon.ico matches the generator output", async () => {
-  const path = join(import.meta.dir, "icon.ico");
+  const path = join(import.meta.dir, "../../agent/assets/icon.ico");
   const committed = new Uint8Array(await Bun.file(path).arrayBuffer());
   expect(committed.length).toBeGreaterThan(0);
   expect(Buffer.from(committed).equals(Buffer.from(buildIco()))).toBe(true);

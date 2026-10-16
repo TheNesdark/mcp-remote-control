@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AuditLog, sanitizeParams } from "./audit.ts";
+import { AuditLog, sanitizeParams } from "../../server/src/audit.ts";
 
 test("sanitizeParams redacts secrets and truncates big blobs", () => {
   const redacted = sanitizeParams({ command: "echo hi", token: "mrc_secret", nested: { password: "x" } }) as Record<

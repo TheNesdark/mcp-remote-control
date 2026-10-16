@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FS_MAX_CHUNK_BYTES } from "@mrc/shared";
-import { fsHash, fsList, fsRead, fsWrite } from "./fs.ts";
+import { fsHash, fsList, fsRead, fsWrite } from "../../agent/src/fs.ts";
 
 function tmpDir(): string {
   return mkdtempSync(join(tmpdir(), "mrc-fs-"));

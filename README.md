@@ -110,5 +110,6 @@ agent/      agent sources: connection, jobs dispatch, exec/fs/ps (procfs
             readers)/sysinfo/screenshot handlers, settings + autostart +
             first-run, tray integration + tray/*.ps1 helpers (Windows)
 scripts/    fake agent + e2e harness + test-utils (Linux, no Windows needed)
+tests/      unit + integration tests mirroring the tree (agent/server/shared)
 docs/       opencode integration, install + operations notes
 ```
