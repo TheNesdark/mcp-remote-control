@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdirSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { descendantsOf, executableName, killProcesses, listProcesses, parsePsOutput, sortProcesses, type ProcessInfo } from "./ps.ts";
+import { descendantsOf, killProcesses, listProcesses, sortProcesses } from "./ps.ts";
+import { executableName, parsePsOutput, type ProcessInfo } from "./procfs.ts";
 
 const PS_SAMPLE = `   1     0 root     0.0  0.1  168192 /sbin/init
  412     1 msg+     0.3  0.9  301056 /usr/bin/dbus-daemon --system --address=systemd: --nofork

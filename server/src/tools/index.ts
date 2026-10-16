@@ -24,14 +24,14 @@ export interface ToolsOptions {
 export function registerTools(server: McpServer, hub: Hub, options: ToolsOptions): void {
   const { audit, screenshotDir } = options;
   registerAgentsList(server, hub, audit);
-  registerAgentExec(server, hub);
-  registerAgentFsList(server, hub);
-  registerAgentFsRead(server, hub);
+  registerAgentExec(server, hub, audit);
+  registerAgentFsList(server, hub, audit);
+  registerAgentFsRead(server, hub, audit);
   registerAgentFsWrite(server, hub, audit);
   registerAgentFsUpload(server, hub, audit);
   registerAgentFsDownload(server, hub, audit);
-  registerAgentInfo(server, hub);
-  registerAgentPsList(server, hub);
+  registerAgentInfo(server, hub, audit);
+  registerAgentPsList(server, hub, audit);
   registerAgentPsKill(server, hub, audit);
   registerAgentScreenshot(server, hub, screenshotDir, audit);
 }

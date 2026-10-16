@@ -1,32 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { FakeAgent } from "../../scripts/fake-agent.ts";
+import { readJsonLines, testServerConfig, waitFor } from "../../scripts/test-utils.ts";
 import type { ServerConfig } from "./config.ts";
 import { createService, type Service } from "./service.ts";
 
 const TOKEN = "test-token";
 
 function testConfig(overrides: Partial<ServerConfig> = {}): ServerConfig {
-  return {
-    host: "127.0.0.1",
-    port: 0,
-    token: TOKEN,
-    usingDefaultToken: false,
-    heartbeatIntervalMs: 300,
-    heartbeatTimeoutMs: 1_500,
-    defaultJobTimeoutMs: 2_000,
-    maxJobOutputBytes: 1_000_000,
-    screenshotDir: "/tmp/mrc-test-screenshots",
-    dataDir: "/tmp/mrc-test-data",
-    dbPath: ":memory:",
-    auditPath: "/tmp/mrc-test-audit.jsonl",
-    requireDbTokens: false,
-    maxJobsPerAgent: 8,
-    maxJobsPerMinute: 120,
-    mcpHttpPort: 0,
-    logLevel: "error",
-    ...overrides,
-  };
+  return testServerConfig(TOKEN, overrides);
 }
 
 let service: Service | null = null;
@@ -48,20 +29,6 @@ function makeAgent(overrides: Partial<ConstructorParameters<typeof FakeAgent>[0]
   });
   agents.push(agent);
   return agent;
-}
-
-async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitFor<T>(fn: () => T | undefined, timeoutMs = 5_000): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const value = fn();
-    if (value !== undefined) return value;
-    await sleep(50);
-  }
-  throw new Error("waitFor timed out");
 }
 
 afterEach(() => {
@@ -175,7 +142,7 @@ test("heartbeat sweeper drops silent agents", async () => {
   const agent = makeAgent({ name: "T-08", silent: true });
   await agent.start();
 
-  await waitFor(() => (svc.hub.list()[0]?.online === false ? true : undefined), 4_000);
+  await waitFor(() => (svc.hub.list()[0]?.online === false ? true : undefined), { timeoutMs: 4_000 });
   expect(svc.hub.list()[0]!.online).toBe(false);
 });
 
@@ -238,7 +205,7 @@ test("live sessions are dropped at the next heartbeat after revoke", async () =>
   expect(agent.connected).toBe(true);
 
   svc.store.revoke("T-12");
-  await waitFor(() => (!agent.connected ? true : undefined), 4_000);
+  await waitFor(() => (!agent.connected ? true : undefined), { timeoutMs: 4_000 });
   expect(agent.connected).toBe(false);
   expect(svc.hub.list()[0]?.online).toBe(false);
 });
@@ -286,11 +253,9 @@ test("tool calls and auth events land in the audit trail", async () => {
     svc.hub.request("ghost", "exec", {}, undefined, { op: "agent_exec", params: { agent: "ghost" } }),
   ).rejects.toThrow(/Unknown agent/);
 
-  const entries = readFileSync("/tmp/mrc-test-audit.jsonl", "utf8")
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as Record<string, unknown>)
-    .filter((entry) => entry.agent === "T-15" || entry.agent === "ghost");
+  const entries = (
+    (await readJsonLines("/tmp/mrc-test-audit.jsonl")) as Array<Record<string, unknown>>
+  ).filter((entry) => entry.agent === "T-15" || entry.agent === "ghost");
 
   const connect = entries.find((entry) => entry.op === "agent:connect");
   expect(connect).toMatchObject({ actor: "hub", ok: true });

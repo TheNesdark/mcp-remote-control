@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { cleanEnv, readJsonLines } from "../../scripts/test-utils.ts";
 
 const CLI = join(import.meta.dir, "cli.ts");
 
@@ -12,12 +13,7 @@ interface CliResult {
 }
 
 async function runCli(args: string[], env: Record<string, string>): Promise<CliResult> {
-  const fullEnv: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (typeof value === "string") fullEnv[key] = value;
-  }
-  Object.assign(fullEnv, env);
-  const proc = Bun.spawn({ cmd: ["bun", CLI, ...args], stdout: "pipe", stderr: "pipe", env: fullEnv });
+  const proc = Bun.spawn({ cmd: ["bun", CLI, ...args], stdout: "pipe", stderr: "pipe", env: cleanEnv(env) });
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
@@ -65,8 +61,8 @@ test("admin enrolls, lists, revokes and rotates agents", async () => {
   expect(status.stdout).toMatch(/agents:/);
   expect(status.stdout).toMatch(/auth:/);
 
-  const audit = readFileSync(join(dir, "audit.jsonl"), "utf8").split("\n").filter(Boolean);
-  const ops = audit.map((line) => (JSON.parse(line) as { op: string }).op);
+  const audit = await readJsonLines(join(dir, "audit.jsonl"));
+  const ops = audit.map((line) => (line as { op: string }).op);
   expect(ops).toContain("agent:add");
   expect(ops).toContain("agent:revoke");
   expect(ops).toContain("agent:rotate");

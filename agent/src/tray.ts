@@ -11,6 +11,7 @@
  */
 import type { ConnectionState } from "./connection.ts";
 import { resolveHelperScript } from "./helper-scripts.ts";
+import { snapshotEnv } from "@mrc/shared/env";
 
 export interface TrayActionMessage {
   type: "action";
@@ -59,16 +60,12 @@ export class TrayIntegration {
       return;
     }
     try {
-      const env: Record<string, string> = {};
-      for (const [key, value] of Object.entries(process.env)) {
-        if (typeof value === "string") env[key] = value;
-      }
       const proc = Bun.spawn({
         cmd: command,
         stdin: "pipe",
         stdout: "pipe",
         stderr: "pipe",
-        env,
+        env: snapshotEnv(),
       });
       this.proc = proc;
       this.log("info", "tray helper started", { command: command[0] });

@@ -6,6 +6,8 @@
   "exports": {
     ".": "./protocol.ts",
     "./args": "./args.ts",
-    "./log": "./log.ts"
+    "./env": "./env.ts",
+    "./log": "./log.ts",
+    "./secret": "./secret.ts"
   }
 }

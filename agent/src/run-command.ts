@@ -2,6 +2,8 @@
  * Runs a local command and captures its output. Used by the inventory,
  * process-list and screenshot handlers (never exposed to the server directly).
  */
+import { snapshotEnv } from "@mrc/shared/env";
+
 export interface CommandResult {
   code: number;
   stdout: string;
@@ -14,14 +16,7 @@ export interface RunCommandOptions {
 }
 
 export async function runCommand(cmd: string[], opts: RunCommandOptions = {}): Promise<CommandResult> {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (typeof value === "string") env[key] = value;
-  }
-  for (const [key, value] of Object.entries(opts.env ?? {})) {
-    if (value === undefined) delete env[key];
-    else env[key] = value;
-  }
+  const env = snapshotEnv(opts.env);
 
   const proc = Bun.spawn({
     cmd,

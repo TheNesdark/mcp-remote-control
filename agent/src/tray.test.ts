@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { waitFor } from "../../scripts/test-utils.ts";
 import { TrayIntegration } from "./tray.ts";
 
 /**
@@ -34,18 +35,6 @@ process.stdin.on("data", (chunk) => {
   }
 });
 `;
-
-function waitFor(fn: () => boolean, timeoutMs = 3_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const tick = () => {
-      if (fn()) return resolve();
-      if (Date.now() > deadline) return reject(new Error("waitFor timed out"));
-      setTimeout(tick, 25);
-    };
-    tick();
-  });
-}
 
 test("tray integration exchanges state and actions with the helper", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mrc-tray-"));

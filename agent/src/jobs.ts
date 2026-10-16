@@ -33,8 +33,42 @@ export interface JobManagerOptions {
 
 const DEFAULT_MAX_CONCURRENT = 4;
 
-/** Job types that are short and handled by a single async function. */
-const SHORT_JOB_TYPES = new Set(["fs.list", "fs.read", "fs.write", "fs.hash", "info", "ps.list", "ps.kill", "screenshot"]);
+interface ShortJobContext {
+  agentInfo: () => AgentInfoContext | undefined;
+}
+
+type ShortJobHandler = (params: unknown, ctx: ShortJobContext) => Promise<ShortJobResult>;
+
+function parseOrThrow<T>(
+  schema: {
+    safeParse(params: unknown): { success: true; data: T } | { success: false; error: import("zod").ZodError };
+  },
+  jobType: string,
+  params: unknown,
+): T {
+  const parsed = schema.safeParse(params);
+  if (!parsed.success) throw new Error(`invalid ${jobType} params: ${firstIssue(parsed.error)}`);
+  return parsed.data;
+}
+
+/** Short jobs: one chunk in, one result out (exec aside, everything the agent serves). */
+const SHORT_JOBS: Record<string, ShortJobHandler> = {
+  "fs.list": (params) => fsList(parseOrThrow(FsListSchema, "fs.list", params)),
+  "fs.read": (params) => fsRead(parseOrThrow(FsReadSchema, "fs.read", params)),
+  "fs.write": (params) => fsWrite(parseOrThrow(FsWriteSchema, "fs.write", params)),
+  "fs.hash": (params) => fsHash(parseOrThrow(FsHashSchema, "fs.hash", params)),
+  info: (params, ctx) => {
+    const context = ctx.agentInfo();
+    if (!context) throw new Error("agent context unavailable");
+    return collectInfo(parseOrThrow(InfoSchema, "info", params), context);
+  },
+  "ps.list": (params) => listProcesses(parseOrThrow(PsListSchema, "ps.list", params)),
+  "ps.kill": (params) => killProcesses(parseOrThrow(PsKillSchema, "ps.kill", params)),
+  screenshot: (params) => takeScreenshot(parseOrThrow(ScreenshotSchema, "screenshot", params)),
+};
+
+/** Job types handled by a single async function. */
+const SHORT_JOB_TYPES = new Set(Object.keys(SHORT_JOBS));
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -144,52 +178,9 @@ export class JobManager {
   }
 
   private async runShortJob(msg: JobRequestMsg): Promise<ShortJobResult> {
-    switch (msg.jobType) {
-      case "fs.list": {
-        const parsed = FsListSchema.safeParse(msg.params);
-        if (!parsed.success) throw new Error(`invalid fs.list params: ${firstIssue(parsed.error)}`);
-        return fsList(parsed.data);
-      }
-      case "fs.read": {
-        const parsed = FsReadSchema.safeParse(msg.params);
-        if (!parsed.success) throw new Error(`invalid fs.read params: ${firstIssue(parsed.error)}`);
-        return fsRead(parsed.data);
-      }
-      case "fs.write": {
-        const parsed = FsWriteSchema.safeParse(msg.params);
-        if (!parsed.success) throw new Error(`invalid fs.write params: ${firstIssue(parsed.error)}`);
-        return fsWrite(parsed.data);
-      }
-      case "fs.hash": {
-        const parsed = FsHashSchema.safeParse(msg.params);
-        if (!parsed.success) throw new Error(`invalid fs.hash params: ${firstIssue(parsed.error)}`);
-        return fsHash(parsed.data);
-      }
-      case "info": {
-        const parsed = InfoSchema.safeParse(msg.params);
-        if (!parsed.success) throw new Error(`invalid info params: ${firstIssue(parsed.error)}`);
-        const context = this.opts.context?.();
-        if (!context) throw new Error("agent context unavailable");
-        return collectInfo(parsed.data, context);
-      }
-      case "ps.list": {
-        const parsed = PsListSchema.safeParse(msg.params);
-        if (!parsed.success) throw new Error(`invalid ps.list params: ${firstIssue(parsed.error)}`);
-        return listProcesses(parsed.data);
-      }
-      case "ps.kill": {
-        const parsed = PsKillSchema.safeParse(msg.params);
-        if (!parsed.success) throw new Error(`invalid ps.kill params: ${firstIssue(parsed.error)}`);
-        return killProcesses(parsed.data);
-      }
-      case "screenshot": {
-        const parsed = ScreenshotSchema.safeParse(msg.params);
-        if (!parsed.success) throw new Error(`invalid screenshot params: ${firstIssue(parsed.error)}`);
-        return takeScreenshot(parsed.data);
-      }
-      default:
-        throw new Error(`unsupported job type '${msg.jobType}'`);
-    }
+    const handler = SHORT_JOBS[msg.jobType];
+    if (!handler) throw new Error(`unsupported job type '${msg.jobType}'`);
+    return handler(msg.params, { agentInfo: () => this.opts.context?.() });
   }
 
   private sendResult(

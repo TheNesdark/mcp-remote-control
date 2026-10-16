@@ -9,7 +9,7 @@
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { timingSafeEqual } from "node:crypto";
+import { sameSecret } from "@mrc/shared/secret";
 import type { AuditLog } from "./audit.ts";
 import type { Hub } from "./hub.ts";
 import { registerTools } from "./tools/index.ts";
@@ -21,12 +21,6 @@ export interface McpHttpOptions {
   screenshotDir: string;
   audit: AuditLog;
   bearerToken: string;
-}
-
-function sameSecret(a: string, b: string): boolean {
-  const aBuf = Buffer.from(a, "utf8");
-  const bBuf = Buffer.from(b, "utf8");
-  return aBuf.length === bBuf.length && timingSafeEqual(aBuf, bBuf);
 }
 
 export function createMcpHttpHandler(hub: Hub, opts: McpHttpOptions): (req: Request) => Promise<Response> {

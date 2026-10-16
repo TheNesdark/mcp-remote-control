@@ -9,14 +9,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
+import { isAutostartEnabled, setAutostartEnabled } from "./autostart.ts";
 import { protectString, unprotectString } from "./dpapi.ts";
-import { resolveHelperScript } from "./helper-scripts.ts";
-import { runCommand } from "./run-command.ts";
+import { runFirstRunDialog } from "./first-run.ts";
 
 const DEFAULT_SERVER = "ws://127.0.0.1:8787";
 const DEV_TOKEN = "dev-token";
-const AUTOSTART_NAME = "mcp-remote-control";
-const AUTOSTART_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 
 interface ConfigFile {
   name?: string;
@@ -179,7 +177,7 @@ export async function loadSettings(input: SettingsInput = {}, deps: SettingsDeps
     tags,
     agentId,
     paused,
-    autostart: readAutostart(),
+    autostart: isAutostartEnabled(),
     usingDefaultToken: token === DEV_TOKEN || usingDefaultTokenFromEnv,
     configPath,
     logDir,
@@ -207,33 +205,7 @@ export async function loadSettings(input: SettingsInput = {}, deps: SettingsDeps
       }
     },
     async setAutostart(enabled: boolean): Promise<void> {
-      if (process.platform !== "win32") {
-        throw new Error("autostart is only supported on Windows");
-      }
-      const execPath = process.execPath;
-      if (/[/\\]bun(\.exe)?$/i.test(execPath)) {
-        throw new Error("autostart needs the compiled rc-agent.exe (running under bun)");
-      }
-      if (enabled) {
-        const res = await runCommand([
-          "reg",
-          "add",
-          AUTOSTART_KEY,
-          "/v",
-          AUTOSTART_NAME,
-          "/t",
-          "REG_SZ",
-          "/d",
-          `"${execPath}"`,
-          "/f",
-        ]);
-        if (res.code !== 0) throw new Error(`reg add failed: ${res.stderr.trim() || `exit ${res.code}`}`);
-      } else {
-        const res = await runCommand(["reg", "delete", AUTOSTART_KEY, "/v", AUTOSTART_NAME, "/f"]);
-        if (res.code !== 0 && !/cannot find|no se encuentra/i.test(res.stderr)) {
-          throw new Error(`reg delete failed: ${res.stderr.trim() || `exit ${res.code}`}`);
-        }
-      }
+      await setAutostartEnabled(enabled);
       settings.autostart = enabled;
     },
     openLogs(): void {
@@ -251,61 +223,4 @@ export async function loadSettings(input: SettingsInput = {}, deps: SettingsDeps
     },
   };
   return settings;
-}
-
-function readAutostart(): boolean {
-  if (process.platform !== "win32") return false;
-  try {
-    const result = Bun.spawnSync({ cmd: ["reg", "query", AUTOSTART_KEY, "/v", AUTOSTART_NAME], stdout: "pipe", stderr: "ignore" });
-    return result.exitCode === 0;
-  } catch {
-    return false;
-  }
-}
-
-export interface FirstRunResult {
-  name: string;
-  server: string;
-  token: string;
-}
-
-/** Windows-only: ask the local user for name/server/token (tray/first-run.ps1). */
-export async function runFirstRunDialog(defaults: FirstRunResult): Promise<FirstRunResult | null> {
-  const script = resolveHelperScript("first-run.ps1");
-  if (!script) {
-    throw new Error("first-run dialog script not found (looked next to the exe, in %APPDATA% and in the checkout)");
-  }
-  const res = await runCommand(
-    [
-      "powershell.exe",
-      "-NoProfile",
-      "-NonInteractive",
-      "-Sta",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-File",
-      script,
-      "-DefaultName",
-      defaults.name,
-      "-DefaultServer",
-      defaults.server,
-      "-DefaultToken",
-      defaults.token,
-    ],
-    { timeoutMs: 5 * 60_000 },
-  );
-
-  const line = res.stdout.split("\n").map((l) => l.trim()).filter(Boolean).pop() ?? "";
-  let parsed: { name?: string; server?: string; token?: string; cancelled?: boolean; error?: string } = {};
-  try {
-    parsed = JSON.parse(line) as typeof parsed;
-  } catch {
-    throw new Error(`first-run dialog returned no JSON (exit ${res.code})`);
-  }
-  if (parsed.cancelled) return null;
-  if (parsed.error === "invalid_name") {
-    throw new Error(`invalid computer name '${parsed.name}' (use letters, digits, dot, dash or underscore)`);
-  }
-  if (!parsed.name) return null;
-  return { name: parsed.name, server: parsed.server ?? defaults.server, token: parsed.token ?? defaults.token };
 }

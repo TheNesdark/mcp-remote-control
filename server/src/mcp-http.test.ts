@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { FakeAgent } from "../../scripts/fake-agent.ts";
+import { testServerConfig } from "../../scripts/test-utils.ts";
 import type { ServerConfig } from "./config.ts";
 import { createMcpHttpHandler } from "./mcp-http.ts";
 import { createService, type Service } from "./service.ts";
@@ -9,26 +10,7 @@ import { createService, type Service } from "./service.ts";
 const TOKEN = "test-token";
 
 function testConfig(overrides: Partial<ServerConfig> = {}): ServerConfig {
-  return {
-    host: "127.0.0.1",
-    port: 0,
-    token: TOKEN,
-    usingDefaultToken: false,
-    heartbeatIntervalMs: 300,
-    heartbeatTimeoutMs: 1_500,
-    defaultJobTimeoutMs: 2_000,
-    maxJobOutputBytes: 1_000_000,
-    screenshotDir: "/tmp/mrc-test-screenshots",
-    dataDir: "/tmp/mrc-test-data",
-    dbPath: ":memory:",
-    auditPath: "/tmp/mrc-test-audit.jsonl",
-    requireDbTokens: false,
-    maxJobsPerAgent: 8,
-    maxJobsPerMinute: 120,
-    mcpHttpPort: 0,
-    logLevel: "error",
-    ...overrides,
-  };
+  return testServerConfig(TOKEN, overrides);
 }
 
 let service: Service | null = null;

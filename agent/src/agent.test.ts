@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMsg } from "@mrc/shared";
+import { testServerConfig, waitFor } from "../../scripts/test-utils.ts";
 import type { ServerConfig } from "../../server/src/config.ts";
 import { createService, type Service } from "../../server/src/service.ts";
 import { downloadFile, uploadFile } from "../../server/src/transfers.ts";
@@ -13,35 +14,7 @@ import { JobManager } from "./jobs.ts";
 const TOKEN = "test-token";
 
 function testConfig(): ServerConfig {
-  return {
-    host: "127.0.0.1",
-    port: 0,
-    token: TOKEN,
-    usingDefaultToken: false,
-    heartbeatIntervalMs: 300,
-    heartbeatTimeoutMs: 1_500,
-    defaultJobTimeoutMs: 5_000,
-    maxJobOutputBytes: 1_000_000,
-    screenshotDir: "/tmp/mrc-test-screenshots",
-    dataDir: "/tmp/mrc-test-data",
-    dbPath: ":memory:",
-    auditPath: "/tmp/mrc-test-audit.jsonl",
-    requireDbTokens: false,
-    maxJobsPerAgent: 8,
-    maxJobsPerMinute: 120,
-    mcpHttpPort: 0,
-    logLevel: "error",
-  };
-}
-
-async function waitFor<T>(fn: () => T | undefined, timeoutMs = 5_000): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const value = fn();
-    if (value !== undefined) return value;
-    await Bun.sleep(50);
-  }
-  throw new Error("waitFor timed out");
+  return testServerConfig(TOKEN, { defaultJobTimeoutMs: 5_000 });
 }
 
 function startAgent(service: Service): { connection: AgentConnection; jobs: JobManager } {
@@ -150,7 +123,7 @@ test("agent reconnects automatically after a dropped connection", async () => {
     await waitFor(() => (service.hub.list()[0]?.online === false ? true : undefined));
 
     // The agent retries with backoff and reattaches with the same agentId.
-    await waitFor(() => (service.hub.list()[0]?.online === true ? true : undefined), 8_000);
+    await waitFor(() => (service.hub.list()[0]?.online === true ? true : undefined), { timeoutMs: 8_000 });
     expect(service.hub.list().length).toBe(1);
 
     const outcome = await service.hub.request("AI-01", "exec", { command: "printf reconnected" });
@@ -343,7 +316,7 @@ test("reconnectNow() reconnects without waiting for the backoff", async () => {
 
     const started = Date.now();
     connection.reconnectNow();
-    await waitFor(() => (service.hub.list()[0]?.online === true ? true : undefined), 5_000);
+    await waitFor(() => (service.hub.list()[0]?.online === true ? true : undefined), { timeoutMs: 5_000 });
     // The first backoff is ~1000ms; skipping it must be much faster.
     expect(Date.now() - started).toBeLessThan(700);
   } finally {
@@ -399,7 +372,7 @@ test("agent reconnects with a stable id after a server restart", async () => {
     // Same port, same registry: the same agent process must come back alone.
     const second = createService({ ...base, port: first.port });
     try {
-      await waitFor(() => (second.hub.list()[0]?.online === true ? true : undefined), 30_000);
+      await waitFor(() => (second.hub.list()[0]?.online === true ? true : undefined), { timeoutMs: 30_000 });
       expect(second.hub.list().length).toBe(1);
       expect(second.hub.list()[0]!.id).toBe(agentId);
 

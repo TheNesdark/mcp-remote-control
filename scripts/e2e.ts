@@ -11,6 +11,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeAgent } from "./fake-agent.ts";
+import { cleanEnv, waitFor } from "./test-utils.ts";
 
 const PORT = Number(process.env.E2E_PORT ?? 18_999);
 const TOKEN = "e2e-token";
@@ -37,28 +38,6 @@ function check(label: string, condition: boolean, detail?: unknown): void {
   }
   failures++;
   console.error(`  FAIL ${label}${detail !== undefined ? ` -> ${JSON.stringify(detail)}` : ""}`);
-}
-
-async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitFor<T>(label: string, fn: () => Promise<T | undefined>, timeoutMs = 8_000): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const value = await fn();
-    if (value !== undefined) return value;
-    await sleep(150);
-  }
-  throw new Error(`waitFor '${label}' timed out`);
-}
-
-function cleanEnv(): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (typeof value === "string") out[key] = value;
-  }
-  return out;
 }
 
 const client = new Client({ name: "e2e-client", version: "0.0.0" });
@@ -147,10 +126,13 @@ try {
   agents.push(a2);
   await a2.start();
 
-  const listed = await waitFor("two agents in agents_list", async () => {
-    const all = await listAgents();
-    return all.length === 2 ? all : undefined;
-  });
+  const listed = await waitFor(
+    async () => {
+      const all = await listAgents();
+      return all.length === 2 ? all : undefined;
+    },
+    { label: "two agents in agents_list", timeoutMs: 8_000 },
+  );
   const one = listed.find((a) => a.name === "FAKE-01")!;
   const two = listed.find((a) => a.name === "FAKE-02")!;
   check("FAKE-01 online and not paused", one.online && !one.paused);
@@ -158,19 +140,25 @@ try {
   check("tags round-trip through the protocol", one.tags.includes("test"));
 
   a1.pause();
-  await waitFor("FAKE-01 paused", async () => {
-    const all = await listAgents();
-    return all.find((a) => a.name === "FAKE-01")?.paused ? true : undefined;
-  });
+  await waitFor(
+    async () => {
+      const all = await listAgents();
+      return all.find((a) => a.name === "FAKE-01")?.paused ? true : undefined;
+    },
+    { label: "FAKE-01 paused", timeoutMs: 8_000 },
+  );
   check("presence pause reaches the server", true);
   a1.resume();
 
   a2.stop();
-  await waitFor("FAKE-02 offline", async () => {
-    const all = await listAgents();
-    const f = all.find((a) => a.name === "FAKE-02");
-    return f && !f.online ? true : undefined;
-  });
+  await waitFor(
+    async () => {
+      const all = await listAgents();
+      const f = all.find((a) => a.name === "FAKE-02");
+      return f && !f.online ? true : undefined;
+    },
+    { label: "FAKE-02 offline", timeoutMs: 8_000 },
+  );
   check("disconnect marks the agent offline", true);
 
   const bad = new FakeAgent({ url: `ws://127.0.0.1:${PORT}`, token: "wrong-token", name: "FAKE-BAD" });
@@ -196,11 +184,14 @@ try {
   forwardLines(agentProc.stdout, "  [E2E-01] ");
   forwardLines(agentProc.stderr, "  [E2E-01] ");
 
-  await waitFor("real agent online", async () => {
-    const all = await listAgents();
-    const real = all.find((a) => a.name === "E2E-01");
-    return real?.online ? true : undefined;
-  });
+  await waitFor(
+    async () => {
+      const all = await listAgents();
+      const real = all.find((a) => a.name === "E2E-01");
+      return real?.online ? true : undefined;
+    },
+    { label: "real agent online", timeoutMs: 8_000 },
+  );
   check("real agent connected to the hub", true);
 
   const echo = await callAgentTool("agent_exec", { agent: "E2E-01", command: "echo hello-e2e" });

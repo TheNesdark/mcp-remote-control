@@ -101,9 +101,14 @@ Using it from opencode: see [`docs/OPENCODE-MCP.md`](./docs/OPENCODE-MCP.md).
 ## Layout
 
 ```
-shared/     wire protocol (server <-> agent), zod schemas, helpers
-server/     MCP stdio server + websocket hub (one Bun process)
-agent/      agent sources (exec engine, connection) + tray helper (Windows)
-scripts/    fake agent + e2e harness (Linux, no Windows needed)
+shared/     wire protocol (server <-> agent), zod schemas, helpers (args,
+            env, log, secret)
+server/     MCP server (stdio + HTTP) + websocket hub (one Bun process):
+            hub + job-limits, registry/store (SQLite tokens), audit,
+            tools/* (one MCP tool per file, job-tool.ts helper), cli (admin)
+agent/      agent sources: connection, jobs dispatch, exec/fs/ps (procfs
+            readers)/sysinfo/screenshot handlers, settings + autostart +
+            first-run, tray integration + tray/*.ps1 helpers (Windows)
+scripts/    fake agent + e2e harness + test-utils (Linux, no Windows needed)
 docs/       opencode integration, install + operations notes
 ```

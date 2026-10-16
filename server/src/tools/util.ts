@@ -1,4 +1,4 @@
-import { HubError } from "../hub.ts";
+import { HubError } from "../hub-error.ts";
 
 export type ToolContent =
   | { type: "text"; text: string }

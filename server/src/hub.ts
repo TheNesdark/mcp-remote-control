@@ -17,7 +17,9 @@ import {
   parseAgentMsg,
   type ServerMsg,
 } from "@mrc/shared";
-import { AuditLog, pickResultBytes, sanitizeParams } from "./audit.ts";
+import { appendJobOutcome, appendJobRejection, AuditLog } from "./audit.ts";
+import { HubError } from "./hub-error.ts";
+import { JobLimiter } from "./job-limits.ts";
 import { logger } from "./log.ts";
 import type { TokenRegistry } from "./registry.ts";
 
@@ -104,15 +106,6 @@ export interface ToolAuditMeta {
   internal?: boolean;
 }
 
-export class HubError extends Error {
-  constructor(
-    public readonly code: string,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
 export interface HubOptions {
   registry: TokenRegistry;
   audit: AuditLog;
@@ -130,11 +123,15 @@ export class Hub {
   private readonly agents = new Map<string, AgentRecord>();
   private readonly bySocket = new Map<AgentSocket, AgentRecord>();
   private readonly pending = new Map<string, PendingJob>();
-  private readonly inflight = new Map<string, number>();
-  private readonly jobStamps = new Map<string, number[]>();
+  private readonly limiter: JobLimiter;
   private sweeper: Timer | null = null;
 
-  constructor(private readonly opts: HubOptions) {}
+  constructor(private readonly opts: HubOptions) {
+    this.limiter = new JobLimiter({
+      maxJobsPerAgent: opts.maxJobsPerAgent,
+      maxJobsPerMinute: opts.maxJobsPerMinute,
+    });
+  }
 
   start(): void {
     this.sweeper = setInterval(() => this.sweep(), Math.min(5_000, this.opts.heartbeatIntervalMs));
@@ -403,26 +400,23 @@ export class Hub {
     auditMeta?: ToolAuditMeta,
   ): Promise<JobOutcome> {
     const startedAt = Date.now();
-    const auditFailure = (error: unknown): void => {
-      if (!auditMeta || auditMeta.internal) return;
-      this.opts.audit.append({
-        actor: "tool",
-        op: auditMeta.op,
-        agent: agentIdOrName,
-        params: sanitizeParams(auditMeta.params),
-        ok: false,
-        error: error instanceof Error ? error.message : String(error),
-        durationMs: Date.now() - startedAt,
-      });
-    };
+    const internal = auditMeta?.internal === true;
 
     let record: AgentRecord;
     try {
       record = this.resolve(agentIdOrName);
       this.assertAgentReady(record);
-      this.checkLimits(record, auditMeta?.internal === true);
+      this.limiter.acquire(record.agentId, record.name, internal);
     } catch (err) {
-      auditFailure(err);
+      if (auditMeta && !internal) {
+        appendJobRejection(this.opts.audit, {
+          op: auditMeta.op,
+          agent: agentIdOrName,
+          params: auditMeta.params,
+          error: err,
+          durationMs: Date.now() - startedAt,
+        });
+      }
       throw err;
     }
 
@@ -445,33 +439,10 @@ export class Hub {
       audit: auditMeta,
     };
     this.pending.set(jobId, job);
-    this.inflight.set(record.agentId, (this.inflight.get(record.agentId) ?? 0) + 1);
 
     this.send(record.ws!, { type: "job.request", jobId, jobType, params, timeoutMs: effectiveTimeout });
     logger.debug("job sent", { agentId: record.agentId, jobId, jobType, timeoutMs: effectiveTimeout });
     return promise;
-  }
-
-  /** Reject when the agent is saturated (concurrency) or too chatty (rate). */
-  private checkLimits(record: AgentRecord, internal: boolean): void {
-    const running = this.inflight.get(record.agentId) ?? 0;
-    if (running >= this.opts.maxJobsPerAgent) {
-      throw new HubError(
-        "agent_busy",
-        `Agent '${record.name}' already runs ${running} jobs (max ${this.opts.maxJobsPerAgent}); try again later.`,
-      );
-    }
-    if (internal) return;
-    const now = Date.now();
-    const stamps = (this.jobStamps.get(record.agentId) ?? []).filter((stamp) => now - stamp < 60_000);
-    if (stamps.length >= this.opts.maxJobsPerMinute) {
-      throw new HubError(
-        "rate_limited",
-        `Agent '${record.name}' exceeded ${this.opts.maxJobsPerMinute} jobs/min; slow down.`,
-      );
-    }
-    stamps.push(now);
-    this.jobStamps.set(record.agentId, stamps);
   }
 
   private onJobTimeout(jobId: string): void {
@@ -521,20 +492,17 @@ export class Hub {
     if (!this.pending.delete(jobId)) return;
     clearTimeout(job.timeoutTimer);
     if (job.graceTimer) clearTimeout(job.graceTimer);
-    this.inflight.set(job.agentId, Math.max(0, (this.inflight.get(job.agentId) ?? 1) - 1));
+    this.limiter.release(job.agentId);
     if (job.audit && !job.audit.internal) {
-      const entry: Parameters<AuditLog["append"]>[0] = {
-        actor: "tool",
+      appendJobOutcome(this.opts.audit, {
         op: job.audit.op,
         agent: job.agentName,
-        params: sanitizeParams(job.audit.params),
+        params: job.audit.params,
         ok: outcome.ok,
+        error: outcome.error,
         durationMs: outcome.durationMs,
-      };
-      if (outcome.error) entry.error = outcome.error;
-      const bytes = pickResultBytes(outcome.meta);
-      if (bytes !== undefined) entry.bytes = bytes;
-      this.opts.audit.append(entry);
+        meta: outcome.meta,
+      });
     }
     job.resolve({ jobId, ...outcome });
   }

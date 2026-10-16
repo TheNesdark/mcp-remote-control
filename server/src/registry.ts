@@ -10,7 +10,7 @@
  *
  * Everything is synchronous (bun:sqlite is sync) so the hub stays simple.
  */
-import { timingSafeEqual } from "node:crypto";
+import { sameSecret } from "@mrc/shared/secret";
 import { generateAgentId, hashToken, type AgentMeta, type AgentStore } from "./store.ts";
 
 export interface HelloIdentity extends AgentMeta {
@@ -36,12 +36,6 @@ export interface RegistryOptions {
   /** When false, the shared legacy token is rejected (production mode). */
   allowLegacy?: boolean;
   generateId?: () => string;
-}
-
-function sameSecret(a: string, b: string): boolean {
-  const aBuf = Buffer.from(a, "utf8");
-  const bBuf = Buffer.from(b, "utf8");
-  return aBuf.length === bBuf.length && timingSafeEqual(aBuf, bBuf);
 }
 
 export function createRegistry(store: AgentStore, opts: RegistryOptions = {}): TokenRegistry {

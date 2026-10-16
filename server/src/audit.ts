@@ -6,8 +6,7 @@
  * bytes when applicable. Rotates at `maxBytes` keeping one `<path>.1`.
  * Writes are synchronous and best-effort: auditing never breaks the caller.
  */
-import { appendFileSync, existsSync, renameSync, statSync, unlinkSync } from "node:fs";
-import { mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 
 export type AuditActor = "tool" | "admin" | "hub";
@@ -119,4 +118,46 @@ export function auditToolCall(audit: AuditLog, call: ToolCallAudit): void {
   if (call.error) entry.error = call.error;
   if (call.bytes !== undefined) entry.bytes = call.bytes;
   audit.append(entry);
+}
+
+export interface JobOutcomeAudit {
+  op: string;
+  agent: string;
+  params?: unknown;
+  ok: boolean;
+  error?: string;
+  durationMs: number;
+  meta?: Record<string, unknown>;
+}
+
+/** Audit entry for a finished hub job (success, remote failure or timeout). */
+export function appendJobOutcome(audit: AuditLog, job: JobOutcomeAudit): void {
+  const entry: Omit<AuditEntry, "ts"> = {
+    actor: "tool",
+    op: job.op,
+    agent: job.agent,
+    params: sanitizeParams(job.params),
+    ok: job.ok,
+    durationMs: job.durationMs,
+  };
+  if (job.error) entry.error = job.error;
+  const bytes = pickResultBytes(job.meta);
+  if (bytes !== undefined) entry.bytes = bytes;
+  audit.append(entry);
+}
+
+/** Audit entry for a job rejected before reaching the agent. */
+export function appendJobRejection(
+  audit: AuditLog,
+  rejection: { op: string; agent: string; params?: unknown; error: unknown; durationMs: number },
+): void {
+  audit.append({
+    actor: "tool",
+    op: rejection.op,
+    agent: rejection.agent,
+    params: sanitizeParams(rejection.params),
+    ok: false,
+    error: rejection.error instanceof Error ? rejection.error.message : String(rejection.error),
+    durationMs: rejection.durationMs,
+  });
 }
