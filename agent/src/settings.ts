@@ -16,6 +16,15 @@ import { runFirstRunDialog } from "./first-run.ts";
 const DEFAULT_SERVER = "ws://127.0.0.1:8787";
 const DEV_TOKEN = "dev-token";
 
+/**
+ * Compile-time defaults baked with: bun run build:exe --server ws://... --name ...
+ * Bun's --define replaces the whole member expression with the literal, so in
+ * dev (`bun run agent`) these just read the (usually unset) environment.
+ * Precedence: CLI flags > environment > config file > built-in > hardcoded.
+ */
+const BUILT_IN_SERVER = process.env.MRC_BUILT_IN_SERVER || "";
+const BUILT_IN_NAME = process.env.MRC_BUILT_IN_NAME || "";
+
 interface ConfigFile {
   name?: string;
   server?: string;
@@ -102,8 +111,8 @@ export async function loadSettings(input: SettingsInput = {}, deps: SettingsDeps
   const configPath = input.configPath ?? join(dataDir, "agent.json");
   const file = readConfig(configPath);
 
-  let name = input.name ?? file.name ?? process.env.MRC_NAME ?? "";
-  let server = input.server ?? file.server ?? process.env.MRC_SERVER ?? DEFAULT_SERVER;
+  let name = input.name ?? file.name ?? process.env.MRC_NAME ?? BUILT_IN_NAME;
+  let server = input.server ?? file.server ?? process.env.MRC_SERVER ?? BUILT_IN_SERVER ?? DEFAULT_SERVER;
   let token = input.token ?? process.env.MRC_TOKEN ?? "";
   const tags = parseTags(input.tags ?? file.tags);
   const agentId = input.id ?? file.id;
@@ -123,9 +132,14 @@ export async function loadSettings(input: SettingsInput = {}, deps: SettingsDeps
   // Default machine name (the dialog prefills with %COMPUTERNAME%).
   if (!name) name = process.env.COMPUTERNAME ?? hostname();
 
-  // First run: no config file and no explicit values -> ask (dialog on
-  // Windows, or the injected firstRun dep in tests).
-  const missingBasics = !existsSync(configPath) && !input.name && !input.server && !input.token;
+  // First run: no config file and something essential still missing -> ask
+  // (dialog on Windows, or the injected firstRun dep in tests). Every source
+  // counts (flags, env, file, built-in): a fully-configured exe never pops
+  // the dialog.
+  const hasName = Boolean(input.name ?? file.name ?? process.env.MRC_NAME ?? BUILT_IN_NAME);
+  const hasServer = Boolean(input.server ?? file.server ?? process.env.MRC_SERVER ?? BUILT_IN_SERVER);
+  const hasToken = Boolean(input.token ?? process.env.MRC_TOKEN ?? file.token ?? file.tokenProtected);
+  const missingBasics = !existsSync(configPath) && (!hasName || !hasServer || !hasToken);
   const wantFirstRun =
     missingBasics && (deps.firstRun !== undefined || (process.platform === "win32" && input.interactive !== false));
   let wroteConfig = false;

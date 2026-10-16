@@ -1,7 +1,14 @@
 #!/usr/bin/env bun
 /**
  * Cross-compile the Windows agent from Linux:
- *   bun run build:exe [--out dist/rc-agent.exe]
+ *   bun run build:exe [--out dist/rc-agent.exe] [--server ws://192.168.1.50:8787] [--name OFICINA-01]
+ *
+ * --server/--name bake compile-time defaults into the exe (lowest-priority
+ * config layer: CLI flags, env, agent.json and --name still override them).
+ * Typical fleet flow: bake --server once, distribute the same exe everywhere;
+ * names come from %COMPUTERNAME% (or the installer) automatically.
+ * NOTE: there is deliberately no --token flag: tokens are per-machine and
+ * belong in agent.json (installer/first-run), never inside a shared binary.
  *
  * Produces dist/rc-agent.exe (PE, no console window, embedded icon and
  * version metadata) and verifies the output. The tray/first-run .ps1 helpers
@@ -14,6 +21,13 @@ import { basename, dirname, join } from "node:path";
 const ROOT = join(import.meta.dir, "..");
 const ENTRY = join(ROOT, "agent", "src", "index.ts");
 const ICON = join(ROOT, "agent", "assets", "icon.ico");
+
+const NAME_PATTERN = /^[A-Za-z0-9._-]{1,32}$/;
+
+function flagValue(name: string): string | undefined {
+  const at = process.argv.indexOf(name);
+  return at >= 0 ? process.argv[at + 1] : undefined;
+}
 
 async function readVersion(): Promise<string> {
   const text = await Bun.file(ENTRY).text();
@@ -36,6 +50,25 @@ async function gitSha(): Promise<string> {
 const outFlag = process.argv.indexOf("--out");
 const out = outFlag >= 0 ? String(process.argv[outFlag + 1]) : join(ROOT, "dist", "rc-agent.exe");
 mkdirSync(dirname(out), { recursive: true });
+
+// Baked-in defaults (lowest-priority config layer in the exe).
+if (flagValue("--token") !== undefined) {
+  throw new Error(
+    "refusing to bake --token into the exe: tokens are per-machine and belong in agent.json " +
+      "(installer or first-run dialog), never inside a shared binary",
+  );
+}
+const bakedServer = flagValue("--server");
+if (bakedServer !== undefined && !/^wss?:\/\/[^/]+/.test(bakedServer)) {
+  throw new Error(`--server must look like ws://host:8787 or wss://host:8787, got '${bakedServer}'`);
+}
+const bakedName = flagValue("--name");
+if (bakedName !== undefined && !NAME_PATTERN.test(bakedName)) {
+  throw new Error(`--name must match ^[A-Za-z0-9._-]{1,32}$, got '${bakedName}'`);
+}
+const defines: string[] = [];
+if (bakedServer !== undefined) defines.push(`--define`, `process.env.MRC_BUILT_IN_SERVER="${bakedServer}"`);
+if (bakedName !== undefined) defines.push(`--define`, `process.env.MRC_BUILT_IN_NAME="${bakedName}"`);
 
 if (!existsSync(ICON)) {
   console.log("icon.ico missing, generating it");
