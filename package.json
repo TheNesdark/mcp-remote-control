@@ -1,0 +1,22 @@
+{
+  "name": "mcp-remote-control",
+  "private": true,
+  "type": "module",
+  "workspaces": ["shared", "server", "agent"],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@mrc/shared": "workspace:*",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "typescript": "^7.0.2"
+  },
+  "scripts": {
+    "server": "bun run server/src/index.ts",
+    "agent:fake": "bun run scripts/fake-agent.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "e2e": "bun run scripts/e2e.ts"
+  }
+}

@@ -1,0 +1,80 @@
+# Connecting opencode to mcp-remote-control
+
+The server speaks MCP over **stdio**: opencode spawns it as a local server, and
+exposes its tools as `remote_control_<tool>` (e.g. `remote_control_agents_list`).
+
+## CLI (recommended, V2)
+
+From the project where you want the tools:
+
+```sh
+opencode mcp add remote-control \
+  --env MRC_TOKEN=change-me \
+  --env MRC_HOST=0.0.0.0 \
+  --env MRC_PORT=8787 \
+  -- bun run /root/proyectos/mcp-remote-control/server/src/index.ts
+
+opencode mcp list
+```
+
+Add `--global` to make it available in every project.
+
+## Manual configuration
+
+`opencode.jsonc` (project) or `~/.config/opencode/opencode.jsonc` (global):
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "remote-control": {
+        "type": "local",
+        "command": ["bun", "run", "/root/proyectos/mcp-remote-control/server/src/index.ts"],
+        "environment": {
+          "MRC_HOST": "0.0.0.0",
+          "MRC_PORT": "8787",
+          "MRC_TOKEN": "{env:MRC_TOKEN}"
+        }
+      }
+    }
+  }
+}
+```
+
+Environment variables (all optional except the token in production):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MRC_HOST` | `127.0.0.1` | Bind address for the websocket hub. Use `0.0.0.0` (or the Tailscale IP) so Windows agents can connect. |
+| `MRC_PORT` | `8787` | Websocket port. |
+| `MRC_TOKEN` | `dev-token` | Shared enrollment token. **Always set this** outside local dev. |
+| `MRC_JOB_TIMEOUT_MS` | `30000` | Default job timeout. |
+| `MRC_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` (goes to stderr). |
+
+## Permissions
+
+To keep the agent from using the tools without asking, restrict them by name:
+
+```jsonc
+{
+  "permissions": [
+    { "action": "remote_control_*", "resource": "*", "effect": "ask" }
+  ]
+}
+```
+
+## Verify
+
+1. `opencode mcp list` → `remote-control` should show as connected.
+2. In a session, ask the model to run `agents_list` — with no agents running it
+   returns `[]`.
+3. Start a fake agent:
+
+   ```sh
+   bun run /root/proyectos/mcp-remote-control/scripts/fake-agent.ts \
+     --server ws://127.0.0.1:8787 --token change-me --name FAKE-01
+   ```
+
+4. Call `agents_list` again → `FAKE-01` online. Stop the fake agent (Ctrl+C) and
+   it turns offline.
