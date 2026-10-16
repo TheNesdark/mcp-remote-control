@@ -69,12 +69,28 @@ To keep the agent from using the tools without asking, restrict them by name:
 1. `opencode mcp list` → `remote-control` should show as connected.
 2. In a session, ask the model to run `agents_list` — with no agents running it
    returns `[]`.
-3. Start a fake agent:
+3. Start an agent (the real one runs on Linux for development):
+
+   ```sh
+   bun run /root/proyectos/mcp-remote-control/agent/src/index.ts \
+     --server ws://127.0.0.1:8787 --token change-me --name PC-01
+   ```
+
+   or the fake echo agent:
 
    ```sh
    bun run /root/proyectos/mcp-remote-control/scripts/fake-agent.ts \
      --server ws://127.0.0.1:8787 --token change-me --name FAKE-01
    ```
 
-4. Call `agents_list` again → `FAKE-01` online. Stop the fake agent (Ctrl+C) and
-   it turns offline.
+4. Call `agents_list` → the agent appears online. Stop it (Ctrl+C) and it turns
+   offline.
+5. Ask the model to run a command, e.g.:
+
+   ```
+   agent_exec(agent="PC-01", command="echo hello")
+   ```
+
+   Result JSON includes `stdout`, `stderr`, `exitCode`, `durationMs` y
+   `truncated`. On timeout the remote process tree is killed and `error`
+   explains it.

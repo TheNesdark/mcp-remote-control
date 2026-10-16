@@ -249,7 +249,9 @@ mcp-remote-control/
 **Estado (2026-10-16):**
 - ✅ **F0 completado en su parte Linux**: protocolo compartido, hub WS (hello/heartbeat/presence/jobs con timeout+cancel), tool `agents_list`, agente falso, 11 tests unitarios y e2e de caja negra en verde.
 - ⏳ **F0 pendiente de VM**: validar `agent/tray/first-run.ps1` y `agent/tray/tray.ps1` en Windows real (ver `agent/tray/README.md`) — es el spike de la pieza más arriesgada del diseño.
-- Siguiente: **F1** (`agent_exec` con streaming + `rc-agent.exe` real).
+- ✅ **F1 completado en su parte Linux**: agente real (`agent/src`) con reconexión/backoff, `agent_exec` con streaming de stdout/stderr, exit codes, stdin/env/cwd, timeout y cancel que matan el árbol de procesos (grupo POSIX / `taskkill /T /F` en Windows), 27 tests + e2e con agente real en verde.
+- ⏳ **F1 pendiente de VM**: validar en Windows los shells (`cmd.exe`, `powershell.exe`) y la ruta de kill con `taskkill /T /F`.
+- Siguiente: **F2** (archivos: list/read/write + upload/download chunked con SHA-256).
 
 ---
 

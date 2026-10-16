@@ -20,6 +20,7 @@ import {
   type ServerErrorMsg,
   type WelcomeMsg,
 } from "@mrc/shared";
+import { argFlag, argString, parseArgv } from "@mrc/shared/args";
 
 export interface FakeAgentOptions {
   url: string;
@@ -221,34 +222,15 @@ export class FakeAgent {
 // ---------------------------------------------------------------------------
 
 if (import.meta.main) {
-  function parseArgv(argv: string[]): Map<string, string | true> {
-    const args = new Map<string, string | true>();
-    for (let i = 0; i < argv.length; i++) {
-      const arg = argv[i]!;
-      if (!arg.startsWith("--")) continue;
-      const key = arg.slice(2);
-      const next = argv[i + 1];
-      if (next && !next.startsWith("--")) {
-        args.set(key, next);
-        i++;
-      } else {
-        args.set(key, true);
-      }
-    }
-    return args;
-  }
-
   const args = parseArgv(process.argv.slice(2));
-  const str = (key: string): string | undefined => (typeof args.get(key) === "string" ? (args.get(key) as string) : undefined);
-
-  const name = str("name") ?? "FAKE-01";
+  const name = argString(args, "name") ?? "FAKE-01";
   const agent = new FakeAgent({
-    url: str("server") ?? process.env.MRC_SERVER ?? "ws://127.0.0.1:8787",
-    token: str("token") ?? process.env.MRC_TOKEN ?? "dev-token",
+    url: argString(args, "server") ?? process.env.MRC_SERVER ?? "ws://127.0.0.1:8787",
+    token: argString(args, "token") ?? process.env.MRC_TOKEN ?? "dev-token",
     name,
-    agentId: str("id"),
-    tags: (str("tags") ?? "").split(",").filter(Boolean),
-    paused: args.get("paused") === true,
+    agentId: argString(args, "id"),
+    tags: (argString(args, "tags") ?? "").split(",").filter(Boolean),
+    paused: argFlag(args, "paused"),
     onLog: (line) => console.log(`${new Date().toISOString()} [fake-agent] ${line}`),
   });
 

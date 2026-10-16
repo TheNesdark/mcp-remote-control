@@ -13,6 +13,7 @@ import { FakeAgent } from "./fake-agent.ts";
 const PORT = Number(process.env.E2E_PORT ?? 18_999);
 const TOKEN = "e2e-token";
 const SERVER_ENTRY = join(import.meta.dir, "..", "server", "src", "index.ts");
+const AGENT_ENTRY = join(import.meta.dir, "..", "agent", "src", "index.ts");
 
 interface AgentSummary {
   id: string;
@@ -72,7 +73,45 @@ async function listAgents(): Promise<AgentSummary[]> {
   return JSON.parse(text) as AgentSummary[];
 }
 
+async function callAgentTool(
+  name: string,
+  args: Record<string, unknown>,
+): Promise<{ isError: boolean; data: Record<string, unknown> }> {
+  const res = await client.callTool({ name, arguments: args });
+  const content = res.content as Array<{ type: string; text?: string }>;
+  const text = content.find((c) => c.type === "text")?.text ?? "{}";
+  let data: Record<string, unknown>;
+  try {
+    data = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    data = { text };
+  }
+  return { isError: Boolean(res.isError), data };
+}
+
+/** Prefix a child process stream line-by-line for readable e2e output. */
+function forwardLines(stream: ReadableStream<Uint8Array>, prefix: string): void {
+  const decoder = new TextDecoder();
+  const reader = stream.getReader();
+  let buffer = "";
+  void (async () => {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let index = buffer.indexOf("\n");
+      while (index >= 0) {
+        const line = buffer.slice(0, index);
+        buffer = buffer.slice(index + 1);
+        if (line.trim()) console.log(`${prefix}${line}`);
+        index = buffer.indexOf("\n");
+      }
+    }
+  })();
+}
+
 const agents: FakeAgent[] = [];
+let agentProc: Bun.Subprocess<"ignore", "pipe", "pipe"> | null = null;
 try {
   console.log("e2e: spawning server process and connecting mcp client");
   await client.connect(transport);
@@ -141,11 +180,55 @@ try {
     rejected = true;
   }
   check("bad token is rejected with auth_failed", rejected && bad.lastError?.code === "auth_failed", bad.lastError);
+
+  // -------------------------------------------------------------------------
+  // Real agent: agent_exec end to end (streaming, exit codes, timeout kill)
+  // -------------------------------------------------------------------------
+  console.log("e2e: starting the real agent (agent/src)");
+  agentProc = Bun.spawn<"ignore", "pipe", "pipe">({
+    cmd: ["bun", "run", AGENT_ENTRY, "--server", `ws://127.0.0.1:${PORT}`, "--token", TOKEN, "--name", "E2E-01", "--tags", "e2e"],
+    stdout: "pipe",
+    stderr: "pipe",
+    stdin: "ignore",
+  });
+  forwardLines(agentProc.stdout, "  [E2E-01] ");
+  forwardLines(agentProc.stderr, "  [E2E-01] ");
+
+  await waitFor("real agent online", async () => {
+    const all = await listAgents();
+    const real = all.find((a) => a.name === "E2E-01");
+    return real?.online ? true : undefined;
+  });
+  check("real agent connected to the hub", true);
+
+  const echo = await callAgentTool("agent_exec", { agent: "E2E-01", command: "echo hello-e2e" });
+  check(
+    "agent_exec echoes stdout and exit code 0",
+    echo.data.ok === true && String(echo.data.stdout).includes("hello-e2e") && echo.data.exitCode === 0,
+    echo.data,
+  );
+
+  const failed = await callAgentTool("agent_exec", { agent: "E2E-01", command: "printf 'oops' 1>&2; exit 3" });
+  check(
+    "agent_exec reports non-zero exit code and stderr",
+    failed.data.ok === false && failed.data.exitCode === 3 && String(failed.data.stderr).includes("oops"),
+    failed.data,
+  );
+
+  const timed = await callAgentTool("agent_exec", { agent: "E2E-01", command: "sleep 3", timeoutMs: 500 });
+  check(
+    "agent_exec timeout kills the process quickly",
+    timed.isError === true &&
+      String(timed.data.error ?? "").match(/timed out|cancelled/) !== null &&
+      Number(timed.data.durationMs) < 3_000,
+    timed.data,
+  );
 } catch (err) {
   failures++;
   console.error("e2e error:", err);
 } finally {
   for (const agent of agents) agent.stop();
+  agentProc?.kill();
   try {
     await client.close();
   } catch {

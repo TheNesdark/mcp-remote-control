@@ -33,6 +33,23 @@ export const JobType = z.enum(JOB_TYPES);
 export type JobType = z.infer<typeof JobType>;
 
 // ---------------------------------------------------------------------------
+// Job parameters
+// ---------------------------------------------------------------------------
+
+/** Shell used for `exec` jobs. `native` = cmd.exe on Windows, sh on POSIX. */
+export const ShellType = z.enum(["native", "cmd", "powershell"]);
+export type ShellType = z.infer<typeof ShellType>;
+
+export const ExecParams = z.object({
+  command: z.string().min(1),
+  shell: ShellType.default("native"),
+  cwd: z.string().min(1).optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  stdin: z.string().optional(),
+});
+export type ExecParams = z.infer<typeof ExecParams>;
+
+// ---------------------------------------------------------------------------
 // Agent -> Server
 // ---------------------------------------------------------------------------
 

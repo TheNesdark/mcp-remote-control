@@ -59,6 +59,7 @@ export interface AgentSummary {
 }
 
 export interface JobOutcome {
+  jobId: string;
   ok: boolean;
   exitCode?: number;
   durationMs: number;
@@ -67,6 +68,9 @@ export interface JobOutcome {
   truncated: boolean;
   error?: string;
 }
+
+/** JobOutcome before the hub stamps it with the jobId. */
+type OutcomeData = Omit<JobOutcome, "jobId">;
 
 interface OutputStream {
   chunks: string[];
@@ -308,6 +312,18 @@ export class Hub {
     }
   }
 
+  /** Force-close an agent connection (admin use; the agent may reconnect). */
+  disconnect(ref: string): boolean {
+    const record = this.resolve(ref);
+    if (!record.ws) return false;
+    try {
+      record.ws.close(4000, "disconnected by server");
+    } catch {
+      return false;
+    }
+    return true;
+  }
+
   /**
    * Send a job to an agent and wait for its result.
    * Rejects with HubError for routing problems, or resolves with `ok:false`
@@ -382,11 +398,11 @@ export class Hub {
     });
   }
 
-  private finalizeJob(jobId: string, job: PendingJob, outcome: JobOutcome): void {
+  private finalizeJob(jobId: string, job: PendingJob, outcome: OutcomeData): void {
     if (!this.pending.delete(jobId)) return;
     clearTimeout(job.timeoutTimer);
     if (job.graceTimer) clearTimeout(job.graceTimer);
-    job.resolve(outcome);
+    job.resolve({ jobId, ...outcome });
   }
 
   private collectOutput(job: PendingJob): { stdout: string; stderr: string; truncated: boolean } {

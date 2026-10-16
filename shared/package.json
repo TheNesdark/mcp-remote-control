@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./protocol.ts"
+    ".": "./protocol.ts",
+    "./args": "./args.ts",
+    "./log": "./log.ts"
   }
 }
