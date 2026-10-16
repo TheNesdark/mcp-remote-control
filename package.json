@@ -14,6 +14,7 @@
   },
   "scripts": {
     "server": "bun run server/src/index.ts",
+    "admin": "bun run server/src/cli.ts",
     "agent": "bun run agent/src/index.ts",
     "agent:fake": "bun run scripts/fake-agent.ts",
     "test": "bun test",

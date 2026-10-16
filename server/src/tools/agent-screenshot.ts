@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { SCREENSHOT_FORMATS } from "@mrc/shared";
 import { z } from "zod";
+import { auditToolCall, type AuditLog } from "../audit.ts";
 import type { Hub } from "../hub.ts";
 import { downloadFile } from "../transfers.ts";
 import { toolError } from "./util.ts";
@@ -19,7 +20,7 @@ interface ScreenshotMeta {
   height?: number | null;
 }
 
-export function registerAgentScreenshot(server: McpServer, hub: Hub, screenshotDir: string): void {
+export function registerAgentScreenshot(server: McpServer, hub: Hub, screenshotDir: string, audit: AuditLog): void {
   server.registerTool(
     "agent_screenshot",
     {
@@ -38,15 +39,20 @@ export function registerAgentScreenshot(server: McpServer, hub: Hub, screenshotD
       },
     },
     async (args) => {
+      const startedAt = Date.now();
+      const fail = (error: string) => {
+        auditToolCall(audit, { op: "agent_screenshot", agent: args.agent, params: args, startedAt, ok: false, error });
+        return toolError(new Error(error));
+      };
       try {
         const format = args.format ?? "png";
         const quality = args.quality ?? 80;
         const embed = args.embed ?? true;
 
         const outcome = await hub.request(args.agent, "screenshot", { format, quality }, args.timeoutMs);
-        if (!outcome.ok) return toolError(new Error(outcome.error ?? "screenshot failed"));
+        if (!outcome.ok) return fail(outcome.error ?? "screenshot failed");
         const meta = (outcome.meta ?? {}) as ScreenshotMeta;
-        if (!meta.path) return toolError(new Error("screenshot failed: agent did not report an image path"));
+        if (!meta.path) return fail("screenshot failed: agent did not report an image path");
 
         await mkdir(screenshotDir, { recursive: true });
         const stamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
@@ -83,8 +89,24 @@ export function registerAgentScreenshot(server: McpServer, hub: Hub, screenshotD
         }
 
         content.push({ type: "text", text: JSON.stringify(payload, null, 2) });
+        auditToolCall(audit, {
+          op: "agent_screenshot",
+          agent: args.agent,
+          params: args,
+          startedAt,
+          ok: true,
+          bytes: transfer.bytes,
+        });
         return { content };
       } catch (err) {
+        auditToolCall(audit, {
+          op: "agent_screenshot",
+          agent: args.agent,
+          params: args,
+          startedAt,
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
         return toolError(err);
       }
     },

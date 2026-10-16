@@ -21,11 +21,17 @@ export function registerAgentPsList(server: McpServer, hub: Hub): void {
     },
     async (args) => {
       try {
-        const outcome = await hub.request(args.agent, "ps.list", {
-          filter: args.filter,
-          top: args.top ?? 100,
-          sort: args.sort ?? "cpu",
-        });
+        const outcome = await hub.request(
+          args.agent,
+          "ps.list",
+          {
+            filter: args.filter,
+            top: args.top ?? 100,
+            sort: args.sort ?? "cpu",
+          },
+          undefined,
+          { op: "agent_ps_list", params: args },
+        );
         if (!outcome.ok) return toolJson({ ok: false, error: outcome.error ?? "ps.list failed" }, true);
         const parsed = JSON.parse(outcome.stdout || "{}") as Record<string, unknown>;
         return toolJson(parsed);

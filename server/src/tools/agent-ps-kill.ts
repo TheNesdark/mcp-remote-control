@@ -1,9 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { auditToolCall, type AuditLog } from "../audit.ts";
 import type { Hub } from "../hub.ts";
 import { toolError, toolJson } from "./util.ts";
 
-export function registerAgentPsKill(server: McpServer, hub: Hub): void {
+export function registerAgentPsKill(server: McpServer, hub: Hub, audit: AuditLog): void {
   server.registerTool(
     "agent_ps_kill",
     {
@@ -25,16 +26,25 @@ export function registerAgentPsKill(server: McpServer, hub: Hub): void {
       },
     },
     async (args) => {
+      const startedAt = Date.now();
       try {
         if ((args.pid === undefined) === (args.name === undefined)) {
-          return toolJson({ ok: false, error: "provide exactly one of 'pid' or 'name'" }, true);
+          const error = "provide exactly one of 'pid' or 'name'";
+          auditToolCall(audit, { op: "agent_ps_kill", agent: args.agent, params: args, startedAt, ok: false, error });
+          return toolJson({ ok: false, error }, true);
         }
-        const outcome = await hub.request(args.agent, "ps.kill", {
-          ...(args.pid !== undefined ? { pid: args.pid } : {}),
-          ...(args.name !== undefined ? { name: args.name } : {}),
-          force: args.force ?? true,
-          tree: args.tree ?? true,
-        });
+        const outcome = await hub.request(
+          args.agent,
+          "ps.kill",
+          {
+            ...(args.pid !== undefined ? { pid: args.pid } : {}),
+            ...(args.name !== undefined ? { name: args.name } : {}),
+            force: args.force ?? true,
+            tree: args.tree ?? true,
+          },
+          undefined,
+          { op: "agent_ps_kill", params: args },
+        );
         if (!outcome.ok) return toolJson({ ok: false, error: outcome.error ?? "ps.kill failed" }, true);
         const parsed = JSON.parse(outcome.stdout || "{}") as Record<string, unknown>;
         return toolJson(parsed);

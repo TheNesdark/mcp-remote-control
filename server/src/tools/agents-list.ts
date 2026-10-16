@@ -1,7 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { auditToolCall, type AuditLog } from "../audit.ts";
 import type { Hub } from "../hub.ts";
 
-export function registerAgentsList(server: McpServer, hub: Hub): void {
+export function registerAgentsList(server: McpServer, hub: Hub, audit: AuditLog): void {
   server.registerTool(
     "agents_list",
     {
@@ -12,7 +13,9 @@ export function registerAgentsList(server: McpServer, hub: Hub): void {
       inputSchema: {},
     },
     async () => {
+      const startedAt = Date.now();
       const agents = hub.list();
+      auditToolCall(audit, { op: "agents_list", startedAt, ok: true });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(agents, null, 2) }],
       };

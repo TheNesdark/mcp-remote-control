@@ -1,12 +1,19 @@
 import type { Server } from "bun";
 import { AGENT_PATH, MAX_FRAME_BYTES } from "@mrc/shared";
+import { AuditLog } from "./audit.ts";
 import type { ServerConfig } from "./config.ts";
 import { Hub, type WsData } from "./hub.ts";
 import { logger, setLogLevel } from "./log.ts";
+import { createRegistry, type TokenRegistry } from "./registry.ts";
+import { AgentStore } from "./store.ts";
 
 export interface Service {
   server: Server<WsData>;
   hub: Hub;
+  store: AgentStore;
+  registry: TokenRegistry;
+  audit: AuditLog;
+  config: ServerConfig;
   port: number;
   wsUrl: string;
   close(): void;
@@ -15,14 +22,31 @@ export interface Service {
 /** Start the websocket hub that remote agents connect to. */
 export function createService(config: ServerConfig): Service {
   setLogLevel(config.logLevel);
+  const store = new AgentStore(config.dbPath);
+  const registry = createRegistry(store, {
+    legacyToken: config.token,
+    allowLegacy: !config.requireDbTokens,
+  });
+  const audit = new AuditLog(config.auditPath);
   const hub = new Hub({
-    token: config.token,
+    registry,
+    audit,
     heartbeatIntervalMs: config.heartbeatIntervalMs,
     heartbeatTimeoutMs: config.heartbeatTimeoutMs,
     defaultJobTimeoutMs: config.defaultJobTimeoutMs,
     maxJobOutputBytes: config.maxJobOutputBytes,
+    maxJobsPerAgent: config.maxJobsPerAgent,
+    maxJobsPerMinute: config.maxJobsPerMinute,
   });
   hub.start();
+
+  if (config.requireDbTokens) {
+    logger.info("auth mode: per-agent tokens only (legacy shared token disabled)");
+  } else if (config.usingDefaultToken) {
+    logger.warn("auth mode: insecure development token accepted; enroll agents and set MRC_REQUIRE_DB_TOKENS=1 for production");
+  } else {
+    logger.info("auth mode: shared MRC_TOKEN accepted alongside enrolled per-agent tokens");
+  }
 
   const server = Bun.serve<WsData>({
     hostname: config.host,
@@ -61,11 +85,16 @@ export function createService(config: ServerConfig): Service {
   return {
     server,
     hub,
+    store,
+    registry,
+    audit,
+    config,
     port,
     wsUrl,
     close() {
       hub.shutdown();
       void server.stop(true);
+      registry.close();
     },
   };
 }

@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { FS_MAX_CHUNK_BYTES } from "@mrc/shared";
+import { auditToolCall, type AuditLog } from "../audit.ts";
 import type { Hub } from "../hub.ts";
 import { toolError, toolJson } from "./util.ts";
 
@@ -10,7 +11,7 @@ interface WriteMeta {
   sizeAfter?: number;
 }
 
-export function registerAgentFsWrite(server: McpServer, hub: Hub): void {
+export function registerAgentFsWrite(server: McpServer, hub: Hub, audit: AuditLog): void {
   server.registerTool(
     "agent_fs_write",
     {
@@ -28,22 +29,28 @@ export function registerAgentFsWrite(server: McpServer, hub: Hub): void {
       },
     },
     async (args) => {
+      const startedAt = Date.now();
       try {
         const encoding = args.encoding ?? "utf8";
         const bytes = encoding === "base64" ? Buffer.from(args.content, "base64") : Buffer.from(args.content, "utf8");
         if (bytes.length > FS_MAX_CHUNK_BYTES) {
-          return toolJson(
-            { ok: false, error: `content too large (${bytes.length} bytes, max ${FS_MAX_CHUNK_BYTES}); use agent_fs_upload instead` },
-            true,
-          );
+          const error = `content too large (${bytes.length} bytes, max ${FS_MAX_CHUNK_BYTES}); use agent_fs_upload instead`;
+          auditToolCall(audit, { op: "agent_fs_write", agent: args.agent, params: args, startedAt, ok: false, error });
+          return toolJson({ ok: false, error }, true);
         }
 
-        const outcome = await hub.request(args.agent, "fs.write", {
-          path: args.path,
-          data: bytes.toString("base64"),
-          mode: "overwrite",
-          mkdirs: args.mkdirs ?? false,
-        });
+        const outcome = await hub.request(
+          args.agent,
+          "fs.write",
+          {
+            path: args.path,
+            data: bytes.toString("base64"),
+            mode: "overwrite",
+            mkdirs: args.mkdirs ?? false,
+          },
+          undefined,
+          { op: "agent_fs_write", params: args },
+        );
         if (!outcome.ok) return toolJson({ ok: false, error: outcome.error ?? "fs.write failed" }, true);
 
         const meta = (outcome.meta ?? {}) as WriteMeta;

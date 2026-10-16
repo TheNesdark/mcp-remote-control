@@ -53,6 +53,7 @@ export async function downloadFile(
         "fs.read",
         { path: remotePath, offset, length: FS_DEFAULT_CHUNK_BYTES },
         opts.timeoutMs,
+        { op: "fs.chunk", internal: true },
       );
       if (!chunk.ok) throw new Error(chunk.error ?? "remote read failed");
 
@@ -110,6 +111,7 @@ export async function uploadFile(
       "fs.write",
       { path: remotePath, data: "", mode: "overwrite", mkdirs },
       opts.timeoutMs,
+      { op: "fs.chunk", internal: true },
     );
     if (!res.ok) throw new Error(res.error ?? "remote write failed");
   } else {
@@ -128,6 +130,7 @@ export async function uploadFile(
           mkdirs: offset === 0 ? mkdirs : false,
         },
         opts.timeoutMs,
+        { op: "fs.chunk", internal: true },
       );
       if (!res.ok) throw new Error(res.error ?? "remote write failed");
       offset = end;

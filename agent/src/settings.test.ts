@@ -61,6 +61,20 @@ test("loadSettings uses the development token when nothing is configured", async
   expect(settings.usingDefaultToken).toBe(true);
 });
 
+test("setAgentId persists the id to the config file", async () => {
+  const dir = tempDir();
+  const configPath = join(dir, "agent.json");
+  const settings = await loadSettings({ configPath, name: "PC-Y", server: "ws://x:1", token: "tok" });
+  expect(settings.agentId).toBeUndefined();
+  await settings.setAgentId("ag_persist1");
+  expect(settings.agentId).toBe("ag_persist1");
+
+  const reloaded = await loadSettings({ configPath });
+  expect(reloaded.agentId).toBe("ag_persist1");
+  expect(reloaded.name).toBe("PC-Y");
+  expect(reloaded.token).toBe("tok");
+});
+
 test("loadSettings throws when the first-run dialog is cancelled", async () => {
   const dir = tempDir();
   // Simulate the Windows first-run path by removing every explicit value and

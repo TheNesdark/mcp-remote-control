@@ -17,7 +17,9 @@ import {
   parseAgentMsg,
   type ServerMsg,
 } from "@mrc/shared";
+import { AuditLog, pickResultBytes, sanitizeParams } from "./audit.ts";
 import { logger } from "./log.ts";
+import type { TokenRegistry } from "./registry.ts";
 
 /** Grace period between `job.cancel` and giving up on a job. */
 export const JOB_CANCEL_GRACE_MS = 2_000;
@@ -80,6 +82,7 @@ interface OutputStream {
 
 interface PendingJob {
   agentId: string;
+  agentName: string;
   timeoutMs: number;
   resolve: (outcome: JobOutcome) => void;
   timeoutTimer: Timer;
@@ -87,6 +90,18 @@ interface PendingJob {
   streams: { stdout: OutputStream; stderr: OutputStream };
   truncated: boolean;
   startedAt: number;
+  audit?: ToolAuditMeta;
+}
+
+/** Tool-level context for the audit trail (who ordered what, with which params). */
+export interface ToolAuditMeta {
+  op: string;
+  params?: unknown;
+  /**
+   * Internal plumbing (transfer chunks): skips rate-limit counting and audit
+   * entries. The enclosing tool call is what gets counted and audited.
+   */
+  internal?: boolean;
 }
 
 export class HubError extends Error {
@@ -99,17 +114,24 @@ export class HubError extends Error {
 }
 
 export interface HubOptions {
-  token: string;
+  registry: TokenRegistry;
+  audit: AuditLog;
   heartbeatIntervalMs: number;
   heartbeatTimeoutMs: number;
   defaultJobTimeoutMs: number;
   maxJobOutputBytes: number;
+  /** Max in-flight jobs per agent before new ones are rejected with agent_busy. */
+  maxJobsPerAgent: number;
+  /** Max accepted jobs per agent in a rolling 60s window (rate_limited above). */
+  maxJobsPerMinute: number;
 }
 
 export class Hub {
   private readonly agents = new Map<string, AgentRecord>();
   private readonly bySocket = new Map<AgentSocket, AgentRecord>();
   private readonly pending = new Map<string, PendingJob>();
+  private readonly inflight = new Map<string, number>();
+  private readonly jobStamps = new Map<string, number[]>();
   private sweeper: Timer | null = null;
 
   constructor(private readonly opts: HubOptions) {}
@@ -162,8 +184,22 @@ export class Hub {
     record.lastSeen = Date.now();
 
     switch (msg.type) {
-      case "heartbeat":
-        return; // lastSeen was already refreshed
+      case "heartbeat": {
+        this.opts.registry.touch(record.agentId);
+        if (this.opts.registry.isRevoked(record.agentId)) {
+          logger.warn("agent token was revoked, dropping connection", {
+            agentId: record.agentId,
+            name: record.name,
+          });
+          this.opts.audit.append({ actor: "hub", op: "agent:revoked", agent: record.name, ok: false, error: "token revoked" });
+          try {
+            ws.close(4001, "token revoked");
+          } catch {
+            // socket already gone
+          }
+        }
+        return;
+      }
       case "presence": {
         if (record.paused !== msg.paused) {
           record.paused = msg.paused;
@@ -191,6 +227,8 @@ export class Hub {
     record.ws = null;
     record.lastSeen = Date.now();
     logger.info("agent disconnected", { agentId: record.agentId, name: record.name });
+    this.opts.registry.touch(record.agentId);
+    this.opts.audit.append({ actor: "hub", op: "agent:disconnect", agent: record.name, ok: true });
 
     for (const [jobId, job] of this.pending) {
       if (job.agentId !== record.agentId) continue;
@@ -209,25 +247,44 @@ export class Hub {
       return;
     }
     if (hello.proto !== PROTOCOL_VERSION) {
+      this.opts.audit.append({
+        actor: "hub",
+        op: "agent:auth_failed",
+        agent: hello.name,
+        ok: false,
+        error: `protocol mismatch (server v${PROTOCOL_VERSION}, agent v${hello.proto})`,
+      });
       this.rejectHello(ws, "protocol_mismatch", `server speaks protocol v${PROTOCOL_VERSION}, agent speaks v${hello.proto}`);
       return;
     }
-    if (hello.token !== this.opts.token) {
-      logger.warn("rejected agent: invalid token", { name: hello.name, remote: ws.remoteAddress });
-      this.rejectHello(ws, "auth_failed", "invalid token");
+
+    const verdict = this.opts.registry.verify(hello.token, hello.agentId ?? null, {
+      name: hello.name,
+      host: hello.host,
+      os: hello.os,
+      version: hello.version,
+      tags: hello.tags,
+    });
+    if (verdict.status !== "ok") {
+      const message =
+        verdict.status === "revoked"
+          ? `token revoked for agent '${verdict.agentId}'`
+          : verdict.status === "bound-elsewhere"
+            ? `token is already bound to agent '${verdict.agentId}'`
+            : "invalid token";
+      logger.warn("rejected agent", { name: hello.name, remote: ws.remoteAddress, reason: verdict.status });
+      this.opts.audit.append({ actor: "hub", op: "agent:auth_failed", agent: hello.name, ok: false, error: message });
+      this.rejectHello(ws, "auth_failed", message);
       return;
     }
 
-    let record: AgentRecord | undefined;
-    if (hello.agentId) {
-      record = this.agents.get(hello.agentId);
-      if (record?.online) {
-        this.rejectHello(ws, "already_connected", `agent id '${hello.agentId}' is already connected`);
-        return;
-      }
+    const agentId = hello.agentId ?? verdict.agentId ?? `ag_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+    let record: AgentRecord | undefined = this.agents.get(agentId);
+    if (record?.online) {
+      this.rejectHello(ws, "already_connected", `agent id '${agentId}' is already connected`);
+      return;
     }
     if (!record) {
-      const agentId = hello.agentId ?? `ag_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
       record = {
         agentId,
         name: hello.name,
@@ -269,6 +326,14 @@ export class Hub {
       serverTime: Date.now(),
       heartbeatIntervalMs: this.opts.heartbeatIntervalMs,
     });
+    this.opts.registry.touch(record.agentId, {
+      name: hello.name,
+      host: hello.host,
+      os: hello.os,
+      version: hello.version,
+      tags: hello.tags,
+    });
+    this.opts.audit.append({ actor: "hub", op: "agent:connect", agent: record.name, ok: true });
     logger.info("agent connected", {
       agentId: record.agentId,
       name: record.name,
@@ -330,9 +395,36 @@ export class Hub {
    * Rejects with HubError for routing problems, or resolves with `ok:false`
    * for remote failures/timeouts (partial output included).
    */
-  async request(agentIdOrName: string, jobType: JobType, params: unknown, timeoutMs?: number): Promise<JobOutcome> {
-    const record = this.resolve(agentIdOrName);
-    this.assertAgentReady(record);
+  async request(
+    agentIdOrName: string,
+    jobType: JobType,
+    params: unknown,
+    timeoutMs?: number,
+    auditMeta?: ToolAuditMeta,
+  ): Promise<JobOutcome> {
+    const startedAt = Date.now();
+    const auditFailure = (error: unknown): void => {
+      if (!auditMeta || auditMeta.internal) return;
+      this.opts.audit.append({
+        actor: "tool",
+        op: auditMeta.op,
+        agent: agentIdOrName,
+        params: sanitizeParams(auditMeta.params),
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        durationMs: Date.now() - startedAt,
+      });
+    };
+
+    let record: AgentRecord;
+    try {
+      record = this.resolve(agentIdOrName);
+      this.assertAgentReady(record);
+      this.checkLimits(record, auditMeta?.internal === true);
+    } catch (err) {
+      auditFailure(err);
+      throw err;
+    }
 
     const effectiveTimeout = timeoutMs ?? this.opts.defaultJobTimeoutMs;
     const jobId = crypto.randomUUID();
@@ -343,18 +435,43 @@ export class Hub {
 
     const job: PendingJob = {
       agentId: record.agentId,
+      agentName: record.name,
       timeoutMs: effectiveTimeout,
       resolve: resolveFn,
       timeoutTimer: setTimeout(() => this.onJobTimeout(jobId), effectiveTimeout),
       streams: { stdout: { chunks: [], bytes: 0 }, stderr: { chunks: [], bytes: 0 } },
       truncated: false,
-      startedAt: Date.now(),
+      startedAt,
+      audit: auditMeta,
     };
     this.pending.set(jobId, job);
+    this.inflight.set(record.agentId, (this.inflight.get(record.agentId) ?? 0) + 1);
 
     this.send(record.ws!, { type: "job.request", jobId, jobType, params, timeoutMs: effectiveTimeout });
     logger.debug("job sent", { agentId: record.agentId, jobId, jobType, timeoutMs: effectiveTimeout });
     return promise;
+  }
+
+  /** Reject when the agent is saturated (concurrency) or too chatty (rate). */
+  private checkLimits(record: AgentRecord, internal: boolean): void {
+    const running = this.inflight.get(record.agentId) ?? 0;
+    if (running >= this.opts.maxJobsPerAgent) {
+      throw new HubError(
+        "agent_busy",
+        `Agent '${record.name}' already runs ${running} jobs (max ${this.opts.maxJobsPerAgent}); try again later.`,
+      );
+    }
+    if (internal) return;
+    const now = Date.now();
+    const stamps = (this.jobStamps.get(record.agentId) ?? []).filter((stamp) => now - stamp < 60_000);
+    if (stamps.length >= this.opts.maxJobsPerMinute) {
+      throw new HubError(
+        "rate_limited",
+        `Agent '${record.name}' exceeded ${this.opts.maxJobsPerMinute} jobs/min; slow down.`,
+      );
+    }
+    stamps.push(now);
+    this.jobStamps.set(record.agentId, stamps);
   }
 
   private onJobTimeout(jobId: string): void {
@@ -404,6 +521,21 @@ export class Hub {
     if (!this.pending.delete(jobId)) return;
     clearTimeout(job.timeoutTimer);
     if (job.graceTimer) clearTimeout(job.graceTimer);
+    this.inflight.set(job.agentId, Math.max(0, (this.inflight.get(job.agentId) ?? 1) - 1));
+    if (job.audit && !job.audit.internal) {
+      const entry: Parameters<AuditLog["append"]>[0] = {
+        actor: "tool",
+        op: job.audit.op,
+        agent: job.agentName,
+        params: sanitizeParams(job.audit.params),
+        ok: outcome.ok,
+        durationMs: outcome.durationMs,
+      };
+      if (outcome.error) entry.error = outcome.error;
+      const bytes = pickResultBytes(outcome.meta);
+      if (bytes !== undefined) entry.bytes = bytes;
+      this.opts.audit.append(entry);
+    }
     job.resolve({ jobId, ...outcome });
   }
 
@@ -447,6 +579,13 @@ export class Hub {
           agentId: record.agentId,
           name: record.name,
           silentMs: now - last,
+        });
+        this.opts.audit.append({
+          actor: "hub",
+          op: "agent:heartbeat_timeout",
+          agent: record.name,
+          ok: false,
+          error: `no heartbeat for ${now - last}ms`,
         });
         try {
           record.ws.close(4000, "heartbeat timeout");

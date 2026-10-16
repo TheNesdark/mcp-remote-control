@@ -24,7 +24,10 @@ export function registerAgentFsList(server: McpServer, hub: Hub): void {
     },
     async (args) => {
       try {
-        const outcome = await hub.request(args.agent, "fs.list", { path: args.path, limit: args.limit ?? 1000 });
+        const outcome = await hub.request(args.agent, "fs.list", { path: args.path, limit: args.limit ?? 1000 }, undefined, {
+          op: "agent_fs_list",
+          params: args,
+        });
         if (!outcome.ok) return toolJson({ ok: false, error: outcome.error ?? "fs.list failed" }, true);
         const payload = JSON.parse(outcome.stdout || "{}") as { path?: string; entries?: unknown[] };
         const meta = (outcome.meta ?? {}) as ListMeta;

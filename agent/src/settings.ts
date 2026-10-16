@@ -55,6 +55,8 @@ export interface AgentSettings {
   logDir: string;
   logFile: string | null;
   setAutostart(enabled: boolean): Promise<void>;
+  /** Persist the server-assigned agent id so reconnects keep the same identity. */
+  setAgentId(id: string): Promise<void>;
   openLogs(): void;
 }
 
@@ -181,6 +183,28 @@ export async function loadSettings(input: SettingsInput = {}, deps: SettingsDeps
     configPath,
     logDir,
     logFile: logFile ?? null,
+    async setAgentId(id: string): Promise<void> {
+      settings.agentId = id;
+      // Best-effort write-back: keep the same identity across restarts.
+      try {
+        const previous = readConfig(configPath);
+        const next: ConfigFile = {
+          ...previous,
+          name,
+          server,
+          tags,
+          id,
+          ...(previous.paused === undefined && !paused ? {} : { paused }),
+          // Keep the effective token so a reload resolves identically. When the
+          // file already carries a DPAPI blob (Windows), it stays untouched.
+          ...(previous.tokenProtected ? {} : { token }),
+        };
+        mkdirSync(dirname(configPath), { recursive: true });
+        writeFileSync(configPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+      } catch {
+        // The agent still runs with the in-memory id.
+      }
+    },
     async setAutostart(enabled: boolean): Promise<void> {
       if (process.platform !== "win32") {
         throw new Error("autostart is only supported on Windows");

@@ -12,7 +12,11 @@
  *   MRC_HOST         bind address            (default 127.0.0.1)
  *   MRC_PORT         websocket port          (default 8787)
  *   MRC_TOKEN        shared auth token       (default dev-token, insecure)
+ *   MRC_REQUIRE_DB_TOKENS  only enrolled per-agent tokens (default unset)
+ *   MRC_DATA_DIR / MRC_DB_PATH / MRC_AUDIT_PATH / MRC_SCREENSHOT_DIR
  *   MRC_JOB_TIMEOUT_MS default job timeout   (default 30000)
+ *   MRC_MAX_JOBS_PER_AGENT in-flight cap     (default 8)
+ *   MRC_MAX_JOBS_PER_MIN rate limit          (default 120)
  *   MRC_LOG_LEVEL    debug|info|warn|error   (default info)
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -22,7 +26,7 @@ import { logger, setLogLevel } from "./log.ts";
 import { createService } from "./service.ts";
 import { registerTools } from "./tools/index.ts";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 
 const config = loadConfig();
 setLogLevel(config.logLevel);
@@ -34,7 +38,7 @@ if (config.usingDefaultToken) {
 const service = createService(config);
 
 const mcp = new McpServer({ name: "mcp-remote-control", version: VERSION });
-registerTools(mcp, service.hub, { screenshotDir: config.screenshotDir });
+registerTools(mcp, service.hub, { screenshotDir: config.screenshotDir, audit: service.audit });
 
 const transport = new StdioServerTransport();
 await mcp.connect(transport);

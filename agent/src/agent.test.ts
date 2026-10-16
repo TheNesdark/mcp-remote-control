@@ -23,6 +23,12 @@ function testConfig(): ServerConfig {
     defaultJobTimeoutMs: 5_000,
     maxJobOutputBytes: 1_000_000,
     screenshotDir: "/tmp/mrc-test-screenshots",
+    dataDir: "/tmp/mrc-test-data",
+    dbPath: ":memory:",
+    auditPath: "/tmp/mrc-test-audit.jsonl",
+    requireDbTokens: false,
+    maxJobsPerAgent: 8,
+    maxJobsPerMinute: 120,
     logLevel: "error",
   };
 }
@@ -342,5 +348,67 @@ test("reconnectNow() reconnects without waiting for the backoff", async () => {
   } finally {
     connection.stop();
     service.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// F4: stable identity across server restarts
+// ---------------------------------------------------------------------------
+
+test("connection reports the server-assigned agent id", async () => {
+  const service = createService(testConfig());
+  const assigned: string[] = [];
+  const connection = new AgentConnection({
+    serverUrl: `ws://127.0.0.1:${service.port}`,
+    token: TOKEN,
+    name: "AI-ID",
+    host: "test-host",
+    os: "Linux test",
+    version: "0.4.0",
+    tags: [],
+    caps: ["exec"],
+    onJobRequest: () => {},
+    onJobCancel: () => {},
+    onIdAssigned: (id) => assigned.push(id),
+    log: () => {},
+  });
+  try {
+    connection.start();
+    await waitFor(() => (service.hub.list()[0]?.online ? true : undefined));
+    expect(assigned.length).toBeGreaterThanOrEqual(1);
+    expect(assigned[0]).toBe(service.hub.list()[0]!.id);
+  } finally {
+    connection.stop();
+    service.close();
+  }
+});
+
+test("agent reconnects with a stable id after a server restart", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mrc-restart-"));
+  const base = { ...testConfig(), dbPath: join(dir, "mcp.db"), auditPath: join(dir, "audit.jsonl") };
+
+  const first = createService({ ...base, port: 0 });
+  const { connection } = startAgent(first);
+  try {
+    await waitFor(() => (first.hub.list()[0]?.online ? true : undefined));
+    const agentId = first.hub.list()[0]!.id;
+    expect(agentId.startsWith("ag_")).toBe(true);
+    first.close();
+
+    // Same port, same registry: the same agent process must come back alone.
+    const second = createService({ ...base, port: first.port });
+    try {
+      await waitFor(() => (second.hub.list()[0]?.online === true ? true : undefined), 30_000);
+      expect(second.hub.list().length).toBe(1);
+      expect(second.hub.list()[0]!.id).toBe(agentId);
+
+      const info = await second.hub.request(agentId, "info", {});
+      expect(info.ok).toBe(true);
+      expect((JSON.parse(info.stdout) as { agent: { name: string } }).agent.name).toBe("AI-01");
+    } finally {
+      second.close();
+    }
+  } finally {
+    connection.stop();
   }
 });

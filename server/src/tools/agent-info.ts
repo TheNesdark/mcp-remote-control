@@ -17,7 +17,7 @@ export function registerAgentInfo(server: McpServer, hub: Hub): void {
     },
     async (args) => {
       try {
-        const outcome = await hub.request(args.agent, "info", {});
+        const outcome = await hub.request(args.agent, "info", {}, undefined, { op: "agent_info", params: args });
         if (!outcome.ok) return toolJson({ ok: false, error: outcome.error ?? "info failed" }, true);
         const parsed = JSON.parse(outcome.stdout || "{}") as Record<string, unknown>;
         return toolJson(parsed);

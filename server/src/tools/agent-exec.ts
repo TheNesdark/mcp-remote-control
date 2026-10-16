@@ -41,7 +41,10 @@ export function registerAgentExec(server: McpServer, hub: Hub): void {
       if (args.stdin !== undefined) params.stdin = args.stdin;
 
       try {
-        const outcome = await hub.request(args.agent, "exec", params, args.timeoutMs);
+        const outcome = await hub.request(args.agent, "exec", params, args.timeoutMs, {
+          op: "agent_exec",
+          params: args,
+        });
         const payload = {
           jobId: outcome.jobId,
           ok: outcome.ok,

@@ -48,8 +48,14 @@ Environment variables (all optional except the token in production):
 |---|---|---|
 | `MRC_HOST` | `127.0.0.1` | Bind address for the websocket hub. Use `0.0.0.0` (or the Tailscale IP) so Windows agents can connect. |
 | `MRC_PORT` | `8787` | Websocket port. |
-| `MRC_TOKEN` | `dev-token` | Shared enrollment token. **Always set this** outside local dev. |
+| `MRC_TOKEN` | `dev-token` | Shared enrollment token (dev convenience). In production, enroll per-agent tokens (`bun run admin -- agent add --name PC-01`) and set `MRC_REQUIRE_DB_TOKENS=1`. |
+| `MRC_REQUIRE_DB_TOKENS` | _(unset)_ | Set to `1` to reject the shared token; only enrolled per-agent tokens work. |
+| `MRC_DATA_DIR` | `server/data` | Directory for `mcp.db`, `audit.jsonl` and screenshots. |
+| `MRC_DB_PATH` | `<data>/mcp.db` | SQLite registry (agents, token hashes, first/last seen). |
+| `MRC_AUDIT_PATH` | `<data>/audit.jsonl` | Append-only audit trail (tool calls, hub events, admin actions). |
 | `MRC_JOB_TIMEOUT_MS` | `30000` | Default job timeout. |
+| `MRC_MAX_JOBS_PER_AGENT` | `8` | Max in-flight jobs per agent (`agent_busy` above). |
+| `MRC_MAX_JOBS_PER_MIN` | `120` | Max tool-call jobs per agent per rolling 60 s (`rate_limited` above). |
 | `MRC_SCREENSHOT_DIR` | `server/data/screenshots` | Where `agent_screenshot` saves pulled images. |
 | `MRC_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` (goes to stderr). |
 

@@ -20,7 +20,7 @@ import { JobManager } from "./jobs.ts";
 import { loadSettings } from "./settings.ts";
 import { TrayIntegration } from "./tray.ts";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 
 const args = parseArgv(process.argv.slice(2));
 setLogLevel((argString(args, "log-level") ?? process.env.MRC_LOG_LEVEL ?? "info") as LogLevel);
@@ -118,6 +118,9 @@ connection = new AgentConnection({
   caps: CAPS,
   onJobRequest: (msg) => jobs.handleRequest(msg),
   onJobCancel: (msg) => jobs.handleCancel(msg),
+  onIdAssigned: (id) => {
+    void settings.setAgentId(id).catch((err) => logger.debug(`could not persist agent id: ${String(err)}`));
+  },
   onStateChange: (state) => {
     lastConnectionState = state;
     logger.info(`state: ${state}`);

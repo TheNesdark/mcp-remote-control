@@ -38,6 +38,8 @@ export interface AgentConnectionOptions {
   onStateChange?: (state: ConnectionState) => void;
   /** Called for non-retryable rejects (bad token, protocol mismatch...). */
   onFatal?: (reason: string) => void;
+  /** Called every time the server assigns/confirms our agent id. */
+  onIdAssigned?: (agentId: string) => void;
   log?: AgentLogFn;
 }
 
@@ -232,6 +234,7 @@ export class AgentConnection {
             this.connected = true;
             this.startHeartbeat(msg.heartbeatIntervalMs);
             this.emit(this.paused ? "paused" : "connected");
+            this.opts.onIdAssigned?.(msg.agentId);
             this.log("info", "connected", { agentId: msg.agentId, server: this.opts.serverUrl });
             return;
           case "job.request":

@@ -349,6 +349,31 @@ try {
     shot.isError === true &&
     /no interactive session|no graphical display|no capture tool/.test(String(shot.data.text ?? shot.data.error ?? ""));
   check("agent_screenshot captures or reports a clear headless error", shotWorked || shotHeadless, shot.data);
+
+  // -------------------------------------------------------------------------
+  // Concurrent jobs across two agents (fake + real)
+  // -------------------------------------------------------------------------
+  console.log("e2e: running concurrent jobs against FAKE-01 and E2E-01");
+  const concurrent = await Promise.all([
+    callAgentTool("agent_exec", { agent: "FAKE-01", command: "echo a" }),
+    callAgentTool("agent_exec", { agent: "FAKE-01", command: "echo b" }),
+    callAgentTool("agent_exec", { agent: "FAKE-01", command: "echo c" }),
+    callAgentTool("agent_exec", { agent: "E2E-01", command: "echo x" }),
+    callAgentTool("agent_info", { agent: "E2E-01" }),
+    callAgentTool("agent_ps_list", { agent: "E2E-01", top: 10 }),
+  ]);
+  const [cFakeA, cFakeB, cFakeC, cExec, cInfo, cPs] = concurrent;
+  check(
+    "concurrent jobs across 2 agents all succeed",
+    concurrent.every((res) => res.isError === false) &&
+      cFakeA.data.ok === true &&
+      cFakeB.data.ok === true &&
+      cFakeC.data.ok === true &&
+      cExec.data.ok === true &&
+      typeof cInfo.data.host === "string" &&
+      Array.isArray(cPs.data.processes),
+    concurrent.map((res) => ({ isError: res.isError, ok: res.data.ok })),
+  );
 } catch (err) {
   failures++;
   console.error("e2e error:", err);

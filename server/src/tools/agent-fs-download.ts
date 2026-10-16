@@ -1,10 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { auditToolCall, type AuditLog } from "../audit.ts";
 import type { Hub } from "../hub.ts";
 import { downloadFile } from "../transfers.ts";
 import { toolError, toolJson } from "./util.ts";
 
-export function registerAgentFsDownload(server: McpServer, hub: Hub): void {
+export function registerAgentFsDownload(server: McpServer, hub: Hub, audit: AuditLog): void {
   server.registerTool(
     "agent_fs_download",
     {
@@ -20,12 +21,29 @@ export function registerAgentFsDownload(server: McpServer, hub: Hub): void {
       },
     },
     async (args) => {
+      const startedAt = Date.now();
       try {
         const result = await downloadFile(hub, args.agent, args.remotePath, args.localPath, {
           timeoutMs: args.timeoutMs,
         });
+        auditToolCall(audit, {
+          op: "agent_fs_download",
+          agent: args.agent,
+          params: args,
+          startedAt,
+          ok: true,
+          bytes: result.bytes,
+        });
         return toolJson({ ok: true, localPath: result.path, bytes: result.bytes, sha256: result.sha256 });
       } catch (err) {
+        auditToolCall(audit, {
+          op: "agent_fs_download",
+          agent: args.agent,
+          params: args,
+          startedAt,
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
         return toolError(err);
       }
     },

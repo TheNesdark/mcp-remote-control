@@ -37,7 +37,10 @@ export function registerAgentFsRead(server: McpServer, hub: Hub): void {
       try {
         const encoding = args.encoding ?? "utf8";
         const maxBytes = args.maxBytes ?? 65_536;
-        const outcome = await hub.request(args.agent, "fs.read", { path: args.path, offset: 0, length: maxBytes });
+        const outcome = await hub.request(args.agent, "fs.read", { path: args.path, offset: 0, length: maxBytes }, undefined, {
+          op: "agent_fs_read",
+          params: args,
+        });
         if (!outcome.ok) return toolJson({ ok: false, error: outcome.error ?? "fs.read failed" }, true);
 
         const meta = (outcome.meta ?? {}) as ReadMeta;
