@@ -1,9 +1,14 @@
 /**
  * Screenshot of the primary monitor (`screenshot` job).
  *
- * - Windows: PowerShell + System.Windows.Forms/System.Drawing (CopyFromScreen).
- *   Requires an interactive desktop session: in session 0 (a Windows service)
- *   CopyFromScreen fails and we surface a clear "no interactive session" error.
+ * Windows, in order:
+ * 1. PowerShell + System.Windows.Forms/System.Drawing (CopyFromScreen).
+ *    Some antivirus/AMSI builds flag that script ("ScriptContainedMaliciousContent")
+ *    and refuse to parse it.
+ * 2. Fallback: compile a tiny C# capturer with csc.exe (ships with .NET
+ *    Framework on every Windows 10/11) and run it. No PowerShell involved.
+ * Requires an interactive desktop session: in session 0 or a locked screen
+ * CopyFromScreen fails and we surface a clear "no interactive session" error.
  * - POSIX (development only): tries grim (Wayland), scrot or ImageMagick
  *   `import` (X11) and fails with a clear message when there is no graphical
  *   session or no backend installed.
@@ -12,11 +17,13 @@
  * its path so the server can pull it down with the chunked fs.read loop.
  */
 import os from "node:os";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { unlink } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { ScreenshotParams } from "@mrc/shared";
 import { sha256File } from "./fs.ts";
 import type { ShortJobResult } from "./job-result.ts";
-import { runCommand } from "./run-command.ts";
+import { runCommand, type CommandResult } from "./run-command.ts";
 
 export const MAX_SCREENSHOT_BYTES = 20 * 1024 * 1024;
 
@@ -55,12 +62,97 @@ try {
 Write-Output ("OK {0}x{1}" -f $bounds.Width, $bounds.Height)
 `;
 
-export async function takeScreenshot(params: ScreenshotParams): Promise<ShortJobResult> {
+/**
+ * Native C# capturer for the PowerShell fallback (the plan's "Plan B").
+ * Compiled with the csc.exe that ships with .NET Framework; args:
+ *   mrc-shot.exe <outPath> <png|jpeg> <quality 1-100>
+ * Captures the primary monitor work area; prints "OK <w>x<h>" on success.
+ */
+export const WINDOWS_CSHARP = `
+using System;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
+
+class MrcShot
+{
+    [StructLayout(LayoutKind.Sequential)]
+    struct Rect { public int Left; public int Top; public int Right; public int Bottom; }
+
+    [DllImport("user32.dll")]
+    static extern bool SystemParametersInfo(int action, int param, ref Rect rect, int flags);
+
+    const int SPI_GETWORKAREA = 0x0030;
+
+    static int Main(string[] argv)
+    {
+        if (argv.Length < 1) { Console.Error.WriteLine("usage: mrc-shot.exe <out> [png|jpeg] [quality]"); return 2; }
+        string outPath = argv[0];
+        string format = argv.Length > 1 ? argv[1] : "png";
+        long quality = 80;
+        if (argv.Length > 2) long.TryParse(argv[2], out quality);
+
+        Rect area = new Rect();
+        if (!SystemParametersInfo(SPI_GETWORKAREA, 0, ref area, 0) || area.Right <= area.Left || area.Bottom <= area.Top)
+        {
+            Console.Error.WriteLine("no interactive session: work area unavailable (no desktop or session 0)");
+            return 3;
+        }
+        int width = area.Right - area.Left;
+        int height = area.Bottom - area.Top;
+
+        using (Bitmap bmp = new Bitmap(width, height, PixelFormat.Format32bppArgb))
+        using (Graphics g = Graphics.FromImage(bmp))
+        {
+            try
+            {
+                g.CopyFromScreen(area.Left, area.Top, 0, 0, new Size(width, height), CopyPixelOperation.SourceCopy);
+            }
+            catch (Exception e)
+            {
+                Console.Error.WriteLine("copyfromscreen-failed " + e.GetType().Name + ": " + e.Message);
+                return 4;
+            }
+            if (format == "jpeg")
+            {
+                ImageCodecInfo codec = null;
+                foreach (ImageCodecInfo c in ImageCodecInfo.GetImageEncoders())
+                    if (c.MimeType == "image/jpeg") { codec = c; break; }
+                if (codec == null) { Console.Error.WriteLine("no jpeg encoder"); return 5; }
+                using (EncoderParameters ep = new EncoderParameters(1))
+                {
+                    ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
+                    bmp.Save(outPath, codec, ep);
+                }
+            }
+            else
+            {
+                bmp.Save(outPath, ImageFormat.Png);
+            }
+        }
+        Console.WriteLine("OK " + width + "x" + height);
+        return 0;
+    }
+}
+`.trimStart();
+
+/** Injectable seams so the Windows flow can be unit-tested on Linux. */
+export interface ScreenshotDeps {
+  runCommand?: (cmd: string[], opts?: { timeoutMs?: number; env?: Record<string, string | undefined> }) => Promise<CommandResult>;
+  platform?: NodeJS.Platform;
+  /** Resolves the .NET Framework compiler, or null when it is unavailable. */
+  findCsc?: () => string | null;
+}
+
+export async function takeScreenshot(params: ScreenshotParams, deps: ScreenshotDeps = {}): Promise<ShortJobResult> {
+  const platform = deps.platform ?? process.platform;
+  const run = deps.runCommand ?? runCommand;
+  const resolveCsc = deps.findCsc ?? (() => findCsc());
   const extension = params.format === "jpeg" ? "jpg" : "png";
   const path = join(os.tmpdir(), `mrc-screenshot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${extension}`);
 
-  if (process.platform === "win32") {
-    await captureWindows(path, params);
+  if (platform === "win32") {
+    await captureWindows(path, params, run, resolveCsc);
   } else {
     await capturePosix(path);
   }
@@ -89,8 +181,78 @@ export async function takeScreenshot(params: ScreenshotParams): Promise<ShortJob
   return { meta: meta as unknown as Record<string, unknown> };
 }
 
-async function captureWindows(path: string, params: ScreenshotParams): Promise<void> {
-  const res = await runCommand(
+/** Well-known .NET Framework compilers, newest first. */
+export function findCsc(env: Record<string, string | undefined> = process.env): string | null {
+  const windir = env.WINDIR ?? "C:\\Windows";
+  const candidates = [
+    "Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe",
+    "Microsoft.NET\\Framework\\v4.0.30319\\csc.exe",
+    "Microsoft.NET\\Framework64\\v3.5\\csc.exe",
+    "Microsoft.NET\\Framework\\v3.5\\csc.exe",
+    "Microsoft.NET\\Framework64\\v2.0.50727\\csc.exe",
+    "Microsoft.NET\\Framework\\v2.0.50727\\csc.exe",
+  ].map((rel) => join(windir, rel));
+  return candidates.find((path) => existsSync(path)) ?? null;
+}
+
+/** PowerShell/AMSI refusal signatures (Spanish and English Windows). */
+export function isAmsiBlocked(output: string): boolean {
+  return /ScriptContainedMaliciousContent|malintencionad|software antivirus|antivirus software|AMSI/i.test(output);
+}
+
+/** "OK 1368x768" -> { width, height }; null when absent. */
+export function parseShotDims(stdout: string): { width: number; height: number } | null {
+  const match = /OK (\d+)x(\d+)/.exec(stdout);
+  return match ? { width: Number(match[1]), height: Number(match[2]) } : null;
+}
+
+/** First informative line of a localized PowerShell output (skips position/caret lines). */
+function informativeLine(result: CommandResult): string | null {
+  const positionMarker = /^(en|at)\s+.*(carácter|caracter|character)\s*:?\s*\d*/i;
+  const lines = `${result.stderr}\n${result.stdout}`
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        line.length > 0 &&
+        !/^[\s+~.]+$/.test(line) &&
+        !line.startsWith("+") &&
+        !positionMarker.test(line),
+    );
+  return lines[0] ?? null;
+}
+
+/**
+ * Build the final error after every Windows attempt failed, classifying the
+ * common causes. Reads the *last* informative line of localized PowerShell
+ * output instead of the first (which is usually just a position marker).
+ */
+export function windowsCaptureError(ps: CommandResult, fallback: CommandResult | null, cscMissing: boolean): Error {
+  const all = [ps, fallback].flatMap((r) => (r ? [`${r.stderr}\n${r.stdout}`] : [])).join("\n");
+  if (/no interactive session|copyfromscreen-failed|handle is invalid|generic error occurred in GDI/i.test(all)) {
+    return new Error(
+      "no interactive session: screenshot requires a logged-in, unlocked desktop session; " +
+        "in session 0 (running as a Windows service) screenshots are not possible",
+    );
+  }
+  if (isAmsiBlocked(all)) {
+    const detail = cscMissing
+      ? "; the csc.exe fallback is unavailable on this machine"
+      : fallback
+        ? `; the csc.exe fallback also failed: ${informativeLine(fallback) ?? `exit ${fallback.code}`}`
+        : "";
+    return new Error(
+      `screenshot blocked by antivirus/AMSI (PowerShell script refused)${detail}; ` +
+        "add an exclusion for the agent or make sure .NET Framework csc.exe is installed",
+    );
+  }
+  return new Error(`screenshot failed: ${informativeLine(ps) ?? `powershell exit ${ps.code}`}`);
+}
+
+type Runner = NonNullable<ScreenshotDeps["runCommand"]>;
+
+async function captureWindows(path: string, params: ScreenshotParams, run: Runner, findCscFn: () => string | null): Promise<void> {
+  const ps = await run(
     ["powershell.exe", "-NoProfile", "-NonInteractive", "-Sta", "-ExecutionPolicy", "Bypass", "-Command", WINDOWS_SCRIPT],
     {
       timeoutMs: 30_000,
@@ -101,22 +263,35 @@ async function captureWindows(path: string, params: ScreenshotParams): Promise<v
       },
     },
   );
-  if (res.code === 0 && res.stdout.includes("OK")) return;
+  if (ps.code === 0 && parseShotDims(ps.stdout)) return;
 
-  const message = `${res.stderr}\n${res.stdout}`;
-  if (/no interactive session/i.test(message)) {
-    throw new Error(
-      "no interactive session: screenshot requires a logged-in desktop session; " +
-        "in session 0 (running as a Windows service) screenshots are not possible",
-    );
+  // PowerShell refused (typically AMSI/antivirus): try the native C# capturer.
+  const csc = findCscFn();
+  if (!csc) {
+    if (isAmsiBlocked(`${ps.stderr}\n${ps.stdout}`)) {
+      throw windowsCaptureError(ps, null, true);
+    }
+    throw windowsCaptureError(ps, null, false);
   }
-  if (/handle is invalid|generic error occurred in GDI/i.test(message)) {
-    throw new Error(
-      "no interactive session: the desktop is locked or the agent runs without a visible session",
+
+  const base = join(dirname(path), `mrc-shot-${Date.now()}`);
+  const csPath = `${base}.cs`;
+  const exePath = `${base}.exe`;
+  try {
+    await Bun.write(csPath, WINDOWS_CSHARP);
+    const compiled = await run(
+      [csc, "/nologo", "/target:exe", "/optimize+", `/out:${exePath}`, "/reference:System.Drawing.dll", csPath],
+      { timeoutMs: 60_000 },
     );
+    if (compiled.code !== 0) throw windowsCaptureError(ps, compiled, false);
+
+    const shot = await run([exePath, path, params.format, String(params.quality)], { timeoutMs: 30_000 });
+    if (shot.code === 0 && parseShotDims(shot.stdout)) return;
+    throw windowsCaptureError(ps, shot, false);
+  } finally {
+    await unlink(csPath).catch(() => {});
+    await unlink(exePath).catch(() => {});
   }
-  const firstLine = message.split("\n").map((line) => line.trim()).filter(Boolean)[0];
-  throw new Error(`screenshot failed: ${firstLine ?? `powershell exit ${res.code}`}`);
 }
 
 async function capturePosix(path: string): Promise<void> {
