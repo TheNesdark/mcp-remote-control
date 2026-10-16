@@ -7,7 +7,25 @@ no ports are opened on the Windows side.
 
 Full design and roadmap: [`PLAN.md`](./PLAN.md).
 
-## Status — F4 (operations: admin CLI, revocable tokens, audit, limits)
+## Status — F5 (packaging + LAN: exe, installer, MCP over HTTP, systemd)
+
+- [x] `bun run build:exe` cross-compiles `dist/rc-agent.exe` (valid PE: MZ +
+      PE signature, ~92 MB, no console window; icon/version metadata only when
+      built on Windows — Bun limitation, documented)
+- [x] `agent/assets/icon.ico` (16/32/48/256, generated in-repo, determinism test)
+- [x] `agent/install.ps1`: user scope, no admin, DPAPI token, HKCU autostart,
+      idempotent re-runs, uninstall + purge
+- [x] Helpers resolved next to the exe first (`helper-scripts.ts`), then
+      %APPDATA%, then the checkout
+- [x] MCP over Streamable HTTP at `/mcp` (Bearer `<MRC_TOKEN>`, 401 otherwise):
+      `--mcp-http-port` / `--no-mcp-stdio` flags for the systemd persistent server
+- [x] `server/mcp-remote-control.service` + `server/env.example`; LAN deployment
+      docs (`docs/OPERATIONS.md`): static IP, ufw firewall, remote opencode client
+- [x] LAN-only posture (no Tailscale/VPN): plain `ws://` + `http://` on the
+      trusted LAN; TLS stays in the F6 backlog
+- [ ] Windows validation (VM): clean-machine install < 10 min, branded exe built
+      on Windows, remote opencode against `:8788` — F1–F5 close-out
+- [ ] `rc-agent.exe` code signing — F6 backlog
 
 - [x] Per-agent enrollment tokens in SQLite (`server/src/store.ts`, `bun:sqlite`):
       `admin agent add/list/revoke/rotate`, token id pinned on first `hello`,
@@ -31,7 +49,7 @@ Full design and roadmap: [`PLAN.md`](./PLAN.md).
       close-out
 - [ ] `rc-agent.exe` packaging + installer (`install.ps1`) — F5
 
-### Earlier phases (F0–F3)
+### Earlier phases (F0–F4)
 
 - [x] Shared wire protocol (`shared/protocol.ts`, zod-validated)
 - [x] WebSocket hub: `hello`/`welcome`, heartbeats, `presence`, jobs with

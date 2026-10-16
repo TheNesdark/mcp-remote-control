@@ -20,7 +20,7 @@ import { JobManager } from "./jobs.ts";
 import { loadSettings } from "./settings.ts";
 import { TrayIntegration } from "./tray.ts";
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
 
 const args = parseArgv(process.argv.slice(2));
 setLogLevel((argString(args, "log-level") ?? process.env.MRC_LOG_LEVEL ?? "info") as LogLevel);

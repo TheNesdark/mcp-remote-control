@@ -31,6 +31,8 @@ export interface ServerConfig {
   maxJobsPerAgent: number;
   /** Max accepted jobs per agent in a rolling 60s window (MRC_MAX_JOBS_PER_MIN, default 120). */
   maxJobsPerMinute: number;
+  /** Serve MCP over Streamable HTTP on the hub port (MRC_MCP_HTTP_PORT, 0 = disabled). */
+  mcpHttpPort: number;
   logLevel: LogLevel;
 }
 
@@ -42,6 +44,16 @@ function positiveInt(raw: string | undefined, name: string, fallback: number): n
   const value = Number(raw);
   if (!Number.isInteger(value) || value <= 0) {
     throw new Error(`${name} must be a positive integer, got '${raw}'`);
+  }
+  return value;
+}
+
+/** Port where 0 means "disabled" (MRC_MCP_HTTP_PORT). */
+function portOrZero(raw: string | undefined, name: string, fallback: number): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0 || value > 65_535) {
+    throw new Error(`${name} must be a TCP port or 0 to disable, got '${raw}'`);
   }
   return value;
 }
@@ -73,6 +85,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     requireDbTokens: ["1", "true", "yes"].includes((env.MRC_REQUIRE_DB_TOKENS ?? "").trim().toLowerCase()),
     maxJobsPerAgent: positiveInt(env.MRC_MAX_JOBS_PER_AGENT, "MRC_MAX_JOBS_PER_AGENT", 8),
     maxJobsPerMinute: positiveInt(env.MRC_MAX_JOBS_PER_MIN, "MRC_MAX_JOBS_PER_MIN", 120),
+    mcpHttpPort: portOrZero(env.MRC_MCP_HTTP_PORT, "MRC_MCP_HTTP_PORT", 0),
     logLevel,
   };
 }

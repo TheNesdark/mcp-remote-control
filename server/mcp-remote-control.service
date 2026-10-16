@@ -1,0 +1,27 @@
+[Unit]
+Description=mcp-remote-control central server (agent hub + MCP over HTTP)
+Documentation=https://github.com/mcp-remote-control
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mrc
+Group=mrc
+# Checkout or copy of this repo (needs Bun on PATH for the mrc user):
+WorkingDirectory=/opt/mcp-remote-control
+Environment=BUN_INSTALL=/home/mrc/.bun
+Environment=PATH=/home/mrc/.bun/bin:/usr/local/bin:/usr/bin:/bin
+# All server settings live here (see ../env.example):
+EnvironmentFile=/etc/mcp-remote-control/env
+# Hub (agents) + MCP over HTTP; no MCP stdio under systemd:
+ExecStart=/home/mrc/.bun/bin/bun run server/src/index.ts --no-mcp-stdio
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/mcp-remote-control/server/data
+
+[Install]
+WantedBy=multi-user.target

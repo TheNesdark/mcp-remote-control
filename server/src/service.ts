@@ -4,6 +4,7 @@ import { AuditLog } from "./audit.ts";
 import type { ServerConfig } from "./config.ts";
 import { Hub, type WsData } from "./hub.ts";
 import { logger, setLogLevel } from "./log.ts";
+import { createMcpHttpHandler, MCP_HTTP_PATH } from "./mcp-http.ts";
 import { createRegistry, type TokenRegistry } from "./registry.ts";
 import { AgentStore } from "./store.ts";
 
@@ -16,11 +17,14 @@ export interface Service {
   config: ServerConfig;
   port: number;
   wsUrl: string;
+  /** Actual MCP-HTTP port (0 when disabled) and URL. */
+  mcpHttpPort: number;
+  mcpHttpUrl: string;
   close(): void;
 }
 
 /** Start the websocket hub that remote agents connect to. */
-export function createService(config: ServerConfig): Service {
+export function createService(config: ServerConfig, version = "0.0.0"): Service {
   setLogLevel(config.logLevel);
   const store = new AgentStore(config.dbPath);
   const registry = createRegistry(store, {
@@ -82,6 +86,40 @@ export function createService(config: ServerConfig): Service {
   const wsUrl = `ws://${config.host}:${port}${AGENT_PATH}`;
   logger.info("websocket hub listening", { url: wsUrl });
 
+  // Optional second face: MCP over Streamable HTTP for LAN clients
+  // (persistent server under systemd; opencode connects as a remote server).
+  let mcpServer: Server<unknown> | null = null;
+  let mcpHttpPort = 0;
+  let mcpHttpUrl = "";
+  if (config.mcpHttpPort > 0) {
+    if (config.usingDefaultToken) {
+      logger.error("serving MCP over HTTP with the insecure development token; set a strong MRC_TOKEN");
+    }
+    const handleMcp = createMcpHttpHandler(hub, {
+      version,
+      screenshotDir: config.screenshotDir,
+      audit,
+      bearerToken: config.token,
+    });
+    mcpServer = Bun.serve({
+      hostname: config.host,
+      port: config.mcpHttpPort,
+      fetch(req) {
+        const url = new URL(req.url);
+        if (
+          url.pathname === MCP_HTTP_PATH &&
+          (req.method === "POST" || req.method === "GET" || req.method === "DELETE")
+        ) {
+          return handleMcp(req);
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+    mcpHttpPort = mcpServer.port ?? config.mcpHttpPort;
+    mcpHttpUrl = `http://${config.host}:${mcpHttpPort}${MCP_HTTP_PATH}`;
+    logger.info("mcp http listening", { url: mcpHttpUrl });
+  }
+
   return {
     server,
     hub,
@@ -91,9 +129,12 @@ export function createService(config: ServerConfig): Service {
     config,
     port,
     wsUrl,
+    mcpHttpPort,
+    mcpHttpUrl,
     close() {
       hub.shutdown();
       void server.stop(true);
+      if (mcpServer) void mcpServer.stop(true);
       registry.close();
     },
   };

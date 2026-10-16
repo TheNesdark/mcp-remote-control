@@ -4,27 +4,48 @@
 server. No inbound ports are opened on the Windows machine; a firewall rule is
 not needed for the agent to work.
 
-> **Status**: F3. The `.exe` packaging + one-shot installer (`install.ps1`) land
-> in F5. Until then this document describes the manual deployment: run the agent
-> from source (`bun run agent`) or from a compiled `rc-agent.exe`
-> (`bun build --compile --target=bun-windows-x64`, see `PLAN.md` §2.2).
+> **Status**: F5. One-shot installer (`agent/install.ps1`) + cross-compiled
+> `rc-agent.exe` (`bun run build:exe`). LAN-only deployment: no Tailscale/VPN,
+> plain `ws://` + `http://` on the trusted local network.
 
 ## Requirements
 
 - Windows 10/11 (x64). PowerShell 5.1 is used by the tray/first-run helpers and
   by `agent_ps_*`/`agent_screenshot`; it ships with Windows.
-- Network reachability to the central server (LAN or Tailscale/WireGuard).
-- An agent token from the server operator (`MRC_TOKEN` on the server side in
-  the current single-token mode; per-agent tokens arrive in F4).
+- Network reachability to the central server on the LAN
+  (e.g. `ws://192.168.1.50:8787` — see `docs/OPERATIONS.md` for the server
+  side: static IP, firewall, systemd).
+- A per-agent token from the server operator:
+  `bun run admin -- agent add --name PC-01` on the server host.
 
-## First run
+## One-shot install (recommended)
+
+Copy `rc-agent.exe`, `install.ps1` and `tray/*.ps1` to the machine (USB,
+network share — whatever your LAN allows), then from an **unelevated**
+PowerShell:
+
+```powershell
+.\install.ps1 -Server ws://192.168.1.50:8787 -Token mrc_xxxx -Name OFICINA-01
+```
+
+This installs to `%LOCALAPPDATA%\mcp-remote-control` (no admin needed),
+writes `%APPDATA%\mcp-remote-control\agent.json` (token encrypted with DPAPI,
+current user), registers Start with Windows (`HKCU\...\Run`) and starts the
+agent — look for the tray icon next to the clock. Re-running updates files
+and config (existing values are kept unless overridden).
+
+Useful switches: `-InstallDir`, `-NoAutostart`, `-NoStart`,
+`-Uninstall` (removes exe/autostart/process, keeps config),
+`-Uninstall -Purge` (also removes `agent.json`).
+
+## Manual first run (no installer)
 
 1. Copy `rc-agent.exe` (or the repo for `bun run agent`) to the machine.
 2. Run it. On Windows, if there is no config yet and no `--name/--server/--token`
    flags were given, a **first-run dialog** asks for:
    - **Computer name** — how this machine appears in `agents_list`
      (prefilled with `%COMPUTERNAME%`, pattern `^[A-Za-z0-9._-]{1,32}$`).
-   - **Server URL** — e.g. `ws://100.x.y.z:8787` (Tailscale) or `ws://10.0.0.5:8787`.
+   - **Server URL** — e.g. `ws://192.168.1.50:8787`.
    - **Agent token**.
 3. The name/server/token are stored in
    `%APPDATA%\mcp-remote-control\agent.json`; the token is **encrypted with
@@ -89,11 +110,12 @@ Screenshot failures are explicit: the agent detects session 0 /
 - Unsigned binaries can be blocked: add an exclusion for `rc-agent.exe` or plan
   for code signing (backlog).
 
-## Verifying on a fresh VM (checklist)
+## Verifying on a fresh machine (checklist, < 10 min)
 
-1. No config file present → run the exe → dialog asks for name/server/token;
-   cancel exits cleanly (`Cancelled`) and Save writes `agent.json`.
-2. `agents_list` from opencode shows the machine as **online** (not paused).
+1. Copy `rc-agent.exe` + `install.ps1` + `tray/*.ps1`; run
+   `.\install.ps1 -Server ws://<lan-ip>:8787 -Token <token> -Name TEST-01`.
+2. Tray icon appears within seconds; tooltip `TEST-01 - Connected - ws://...`.
+   `agents_list` from opencode shows the machine as **online** (not paused).
 3. Tray: icon appears; tooltip `NAME - Connected - ws://...`; menu open/disable
    works; `Disable agent` flips the tooltip to *Paused* and
    `agents_list` shows `paused: true`; `Enable agent` reverses it.

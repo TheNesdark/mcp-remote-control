@@ -1,4 +1,7 @@
-# Server operations (F4)
+# Server operations (F4–F5)
+
+How to enroll agents, manage tokens, read the audit trail, run the server
+persistently on the LAN, and understand the safety limits.
 
 How to enroll agents, manage tokens, read the audit trail, and understand
 the server's safety limits. All admin commands work whether the server is
@@ -88,3 +91,71 @@ on the client side. Agent identities and tokens survive restarts (same
 - `mcp.db` — enrolled agents, token hashes, first/last seen (`MRC_DB_PATH`)
 - `audit.jsonl` — audit trail (`MRC_AUDIT_PATH`)
 - `screenshots/` — images pulled by `agent_screenshot` (`MRC_SCREENSHOT_DIR`)
+
+## LAN deployment (F5, no VPN)
+
+Posture: plain `ws://` (agents) + `http://` (MCP) on the **trusted local
+network**. No Tailscale/VPN, no TLS in v1 — never expose these ports
+beyond the LAN. (`wss://`/TLS is backlog.)
+
+### 1. Server host (always-on Linux box, static LAN IP)
+
+1. Give the host a stable address: static IP or a DHCP reservation in the
+   router (e.g. `192.168.1.50`).
+2. Copy this repo to `/opt/mcp-remote-control`, create user `mrc`, install
+   Bun for that user, `bun install`.
+3. Copy `server/env.example` to `/etc/mcp-remote-control/env` and set at
+   least `MRC_HOST=0.0.0.0`, `MRC_TOKEN` (long random value),
+   `MRC_REQUIRE_DB_TOKENS=1` and `MRC_MCP_HTTP_PORT=8788`.
+4. Install the unit and start it:
+
+   ```sh
+   sudo cp server/mcp-remote-control.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now mcp-remote-control
+   sudo systemctl status mcp-remote-control
+   ```
+
+   It runs hub (`:8787`) + MCP over HTTP (`:8788`), no MCP stdio.
+5. Firewall (server host): allow LAN → TCP 8787 (agents) and 8788 (opencode).
+   Example with ufw:
+
+   ```sh
+   sudo ufw allow from 192.168.1.0/24 to any port 8787,8788 proto tcp
+   ```
+
+   Windows agents need **no** firewall rule (outbound only).
+
+### 2. opencode (any LAN machine, incl. the server host)
+
+Point opencode at the persistent server as a **remote** MCP server instead
+of spawning stdio (if your opencode version names these keys differently,
+check `opencode mcp add --help`):
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "remote-control": {
+        "type": "remote",
+        "url": "http://192.168.1.50:8788/mcp",
+        "headers": { "Authorization": "Bearer <MRC_TOKEN>" }
+      }
+    }
+  }
+}
+```
+
+Tools behave exactly like the stdio face (same hub underneath). The audit
+trail records these calls with `actor: "tool"` like any other.
+
+### 3. Agents
+
+Enroll each machine (`bun run admin -- agent add --name PC-01`, run with the
+same `MRC_DB_PATH` the service uses), then install with
+`docs/INSTALL-WINDOWS.md`:
+
+```powershell
+.\install.ps1 -Server ws://192.168.1.50:8787 -Token mrc_xxxx -Name OFICINA-01
+```

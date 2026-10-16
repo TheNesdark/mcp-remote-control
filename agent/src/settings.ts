@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { protectString, unprotectString } from "./dpapi.ts";
+import { resolveHelperScript } from "./helper-scripts.ts";
 import { runCommand } from "./run-command.ts";
 
 const DEFAULT_SERVER = "ws://127.0.0.1:8787";
@@ -270,9 +271,9 @@ export interface FirstRunResult {
 
 /** Windows-only: ask the local user for name/server/token (tray/first-run.ps1). */
 export async function runFirstRunDialog(defaults: FirstRunResult): Promise<FirstRunResult | null> {
-  const script = join(import.meta.dir, "..", "tray", "first-run.ps1");
-  if (!existsSync(script)) {
-    throw new Error(`first-run dialog script not found at ${script}`);
+  const script = resolveHelperScript("first-run.ps1");
+  if (!script) {
+    throw new Error("first-run dialog script not found (looked next to the exe, in %APPDATA% and in the checkout)");
   }
   const res = await runCommand(
     [

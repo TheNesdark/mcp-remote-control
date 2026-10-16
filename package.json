@@ -17,6 +17,7 @@
     "admin": "bun run server/src/cli.ts",
     "agent": "bun run agent/src/index.ts",
     "agent:fake": "bun run scripts/fake-agent.ts",
+    "build:exe": "bun run agent/build.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "e2e": "bun run scripts/e2e.ts"

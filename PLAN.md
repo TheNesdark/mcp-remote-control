@@ -11,7 +11,7 @@ Windows, cada una ejecutando un agente `.exe` que se conecta al servidor y recib
 > | Transporte | **WebSocket persistente** iniciado por el agente (outbound) |
 > | Capacidades v1 | Ejecutar comandos, archivos (subir/bajar), inventario + procesos, screenshot (**solo monitor primario**) |
 > | UI del agente | **App de bandeja (system tray)**: icono junto al reloj (como volumen/batería) con activar/desactivar; el primer arranque pide el nombre de la máquina |
-> | Red | **Solo infraestructura propia** (LAN / Tailscale), sin exposición pública a internet |
+> | Red | **Solo LAN local de confianza** (sin Tailscale/VPN desde F5), sin exposición pública a internet |
 > | Idioma | **Logs y errores en inglés** (agente y servidor) |
 > | Fuera de v1 | Reboot/shutdown, registro de Windows, UI automation (clicks), escritorio remoto, servicios Windows, screenshot multi-monitor |
 >
@@ -34,10 +34,10 @@ Windows, cada una ejecutando un agente `.exe` que se conecta al servidor y recib
                                   │  ├─────────────────────────────────────┤  │
                                   │  │ Registry: tokens, metadatos (SQLite)│  │
                                   │  ├─────────────────────────────────────┤  │
-                                  │  │ WS server  :8787  (LAN/Tailscale)   │  │
+                                  │  │ WS server  :8787  (LAN local)       │  │
                                   │  └─────────────────────────────────────┘  │
                                   └───────────────▲───────────────────────────┘
-                                                  │  ws:// (o wss:// con cert propio)
+                                                  │  ws:// en LAN local de confianza
                         ┌─────────────────────────┼─────────────────────────┐
                      ┌──┴───┐                 ┌──┴───┐                 ┌──┴───┐
                      │PC-01 │                 │PC-02 │                 │PC-03 │
@@ -194,15 +194,19 @@ descripciones y errores) va en inglés.**
 
 ---
 
-## 4. Seguridad (LAN / Tailscale)
+## 4. Seguridad (solo LAN local, sin VPN)
+
+> Decisión F5: despliegue exclusivamente en red local de confianza; sin
+> Tailscale/WireGuard. `ws://` + `http://` en claro dentro de la LAN.
 
 1. **Token de enrolamiento por agente**, generado por CLI, guardado hasheado (SHA-256) en
    SQLite, revocable. En el primer `hello` se *fija* el `agentId` al token (si otra máquina
    usa el mismo token, se rechaza y se audita). En el agente, el token se guarda
    **cifrado con DPAPI** (ámbito usuario) en `%APPDATA%\mcp-remote-control\agent.json`.
-2. **Cifrado de transporte**: `ws://` aceptable si ya viaja sobre Tailscale/WireGuard.
-   Soporte de `wss://` con certificado propio y flag `--ca <pem>` en el agente para LAN sin
-   cifrar (autofirmado). Nunca exponer `ws://` a internet.
+   El endpoint MCP-HTTP exige `Authorization: Bearer <MRC_TOKEN>` (401 sin él).
+2. **Cifrado de transporte**: `ws://`/`http://` en claro, aceptable solo en LAN
+   de confianza. Nunca exponer estos puertos a internet. Soporte de `wss://` con
+   certificado propio y flag `--ca <pem>` en el agente queda en backlog (F6).
 3. **Allowlist/denylist simple de comandos** por agente (patrones) para bloquear lo
    destructivo que quede fuera de v1.
 4. **Auditoría** JSONL append-only de toda operación.
@@ -246,7 +250,7 @@ mcp-remote-control/
 | **F2** Archivos | list/read/write + upload/download chunked con SHA-256 | Transferir un binario de 50 MB ida y vuelta con hash idéntico |
 | **F3** Inventario, procesos, screenshot, bandeja | `agent_info`, `agent_ps_*`, `agent_screenshot` (monitor primario); app de bandeja completa (estados, enable/disable, autostart, open logs); doc de instalación | Screenshot correcto en Windows con sesión de usuario; error claro en sesión 0; el tray refleja connected/paused y el usuario puede desactivar |
 | **F4** Operación | CLI admin, tokens revocables, auditoría, backoff, límites, E2E con 2+ agentes concurrentes | Matar/revivir el server: los agentes se reconectan solos ≤ 60 s; token revocado rechazado |
-| **F5** Empaquetado | Build `.exe` reproducible (icono embebido, metadatos), `install.ps1`, unit systemd para el server, checklist Tailscale | Instalación desde cero en una Windows limpia en < 10 min (doble clic → nombre → icono en bandeja verificado) |
+| **F5** Empaquetado + LAN | Build `.exe` (`bun run build:exe`, icono multi-tamaño generado en repo, metadatos Windows en builds desde Windows), `agent/install.ps1` (ámbito usuario, DPAPI, autostart, uninstall), MCP por HTTP con Bearer (`--mcp-http-port`, `--no-mcp-stdio`), unit systemd + `server/env.example`, checklist LAN (sin Tailscale/VPN: IP estática, firewall, `ws://`+`http://` en red local de confianza) | Instalación desde cero en una Windows limpia en < 10 min (instalador → icono en bandeja verificado); servidor persistente bajo systemd operable desde opencode remoto |
 | **F6** Backlog | Modo servicio para el agente (sin UI), servicios Windows, registry, shutdown/reboot gateado, UI automation, multi-monitor, OTA del agente | — |
 
 **Estado (2026-10-16):**
@@ -260,7 +264,9 @@ mcp-remote-control/
 - ⏳ **F3 pendiente de VM**: bandeja (iconos/estados/menú/instancia única), primer arranque + DPAPI, screenshot con sesión interactiva y error en sesión 0, `taskkill /T /F`, `Get-Process`/`Get-CimInstance`, `Stop-Process`.
 - ✅ **F4 completado**: tokens de enrolamiento por agente en SQLite (`server/src/store.ts` + `registry.ts`): CLI `admin agent add/list/revoke/rotate`, id fijado al primer `hello`, solo hashes SHA-256 guardados, nombres activos únicos; revocación efectiva en conexiones nuevas y en sesiones vivas (caen en el siguiente heartbeat); modo estricto `MRC_REQUIRE_DB_TOKENS=1`; auditoría JSONL append-only (`server/data/audit.jsonl`, rotación 10 MB: tool calls con params sanitizados, eventos del hub, acciones admin; secretos redactados, blobs truncados); límites en el hub (`agent_busy` por concurrencia, `rate_limited` por ritmo, chunks internos exentos); identidad estable del agente ante reinicios (id persistido en `agent.json`); docs en `docs/OPERATIONS.md`; **81 tests + e2e (25 checks) en verde**, typecheck limpio.
 - ⏳ **F4 pendiente de VM**: nada específico (todo validable en Linux); el cierre F1–F3 en VM sigue pendiente para cuando haya una Windows disponible.
-- Siguiente: **F5** (empaquetado: build `.exe` reproducible, `install.ps1`, unit systemd, checklist Tailscale).
+- ✅ **F5 completado en su parte Linux**: `bun run build:exe` cross-compila `dist/rc-agent.exe` (PE válido verificado: MZ + firma PE, ~92 MB, `--windows-hide-console`; metadatos icono/versión solo al compilar en Windows, limitación de Bun); `agent/assets/icon.ico` multi-tamaño (16/32/48/256) generado en repo con test de determinismo; `agent/install.ps1` (sin admin, DPAPI, autostart HKCU, uninstall/purge, idempotente); MCP por Streamable HTTP en `/mcp` con Bearer (`MRC_MCP_HTTP_PORT`, `--no-mcp-stdio`) con tests (401 + handshake + tools); unit systemd + `server/env.example`; docs LAN en `docs/OPERATIONS.md` (IP estática, ufw, opencode remoto, agentes); **88 tests + e2e (25 checks) en verde**, typecheck limpio.
+- ⏳ **F5 pendiente de VM/Windows real**: instalador de cero en Windows limpia (< 10 min), exe con icono + metadatos compilado en Windows, opencode remoto contra `:8788`, checklist `docs/INSTALL-WINDOWS.md`.
+- Siguiente: **F6** (backlog: modo servicio, `wss://`/TLS en LAN, firma de código, etc.).
 
 ---
 
@@ -287,7 +293,7 @@ mcp-remote-control/
 | Screenshot requiere sesión interactiva | Detección + error claro; modo de instalación recomendado (tarea programada/autostart); modo servicio documentado para el resto de capacidades |
 | `.exe` de ~92 MB (runtime de Bun) | Aceptable en LAN; backlog: UPX/compresión o evaluar Go solo para el agente si molesta |
 | Salida gigante satura el WebSocket | Límites + truncado + recomendación de volcar a archivo y usar `agent_fs_download` |
-| Certificados autofirmados en LAN | `--ca` en agente; o Tailscale que ya cifra |
+| Certificados autofirmados en LAN | Postura v1: LAN de confianza sin cifrar; `wss://` + `--ca` en backlog (F6) |
 | Bun cross-compile evoluciona | Spike ya validado en 1.4.3; el build queda fijado por versión en CI |
 
 ---

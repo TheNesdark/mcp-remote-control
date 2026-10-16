@@ -9,9 +9,8 @@
  * command override. The helper is a child process: stop() asks it to exit and
  * kills it if it does not leave on its own.
  */
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import type { ConnectionState } from "./connection.ts";
+import { resolveHelperScript } from "./helper-scripts.ts";
 
 export interface TrayActionMessage {
   type: "action";
@@ -210,14 +209,10 @@ export class TrayIntegration {
   }
 }
 
-/** Default helper command on Windows (dev: agent/tray/tray.ps1). */
+/** Default helper command on Windows (installed exe dir, %APPDATA%, or dev checkout). */
 export function defaultTrayCommand(label: string): string[] | null {
   if (process.platform !== "win32") return null;
-  const candidates = [
-    join(import.meta.dir, "..", "tray", "tray.ps1"),
-    join(process.env.APPDATA ?? "", "mcp-remote-control", "tray.ps1"),
-  ];
-  const script = candidates.find((path) => path && existsSync(path));
+  const script = resolveHelperScript("tray.ps1");
   if (!script) return null;
   return [
     "powershell.exe",

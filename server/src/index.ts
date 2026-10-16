@@ -2,8 +2,9 @@
 /**
  * mcp-remote-control -- central server.
  *
- * One process, two faces:
+ * One process, up to three faces:
  *   - MCP over stdio (for the LLM client, e.g. opencode)
+ *   - MCP over Streamable HTTP at /mcp (LAN clients, Bearer <MRC_TOKEN>)
  *   - WebSocket hub for the remote agents (rc-agent.exe)
  *
  * IMPORTANT: stdout is reserved for the MCP stdio transport; logs go to stderr.
@@ -17,16 +18,25 @@
  *   MRC_JOB_TIMEOUT_MS default job timeout   (default 30000)
  *   MRC_MAX_JOBS_PER_AGENT in-flight cap     (default 8)
  *   MRC_MAX_JOBS_PER_MIN rate limit          (default 120)
+ *   MRC_MCP_HTTP_PORT  MCP over HTTP port    (default 0 = disabled)
  *   MRC_LOG_LEVEL    debug|info|warn|error   (default info)
+ *
+ * Flags: --mcp-http-port <n>, --no-mcp-stdio (systemd: hub + HTTP only).
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { argFlag, argString, parseArgv } from "@mrc/shared/args";
 import { loadConfig } from "./config.ts";
 import { logger, setLogLevel } from "./log.ts";
 import { createService } from "./service.ts";
 import { registerTools } from "./tools/index.ts";
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
+
+const args = parseArgv(process.argv.slice(2));
+const httpPortFlag = argString(args, "mcp-http-port");
+if (httpPortFlag !== undefined) process.env.MRC_MCP_HTTP_PORT = httpPortFlag;
+const noStdio = argFlag(args, "no-mcp-stdio");
 
 const config = loadConfig();
 setLogLevel(config.logLevel);
@@ -35,14 +45,19 @@ if (config.usingDefaultToken) {
   logger.warn("MRC_TOKEN is not set; using the insecure development token 'dev-token'");
 }
 
-const service = createService(config);
+const service = createService(config, VERSION);
 
-const mcp = new McpServer({ name: "mcp-remote-control", version: VERSION });
-registerTools(mcp, service.hub, { screenshotDir: config.screenshotDir, audit: service.audit });
+let transport: StdioServerTransport | null = null;
+if (!noStdio) {
+  const mcp = new McpServer({ name: "mcp-remote-control", version: VERSION });
+  registerTools(mcp, service.hub, { screenshotDir: config.screenshotDir, audit: service.audit });
 
-const transport = new StdioServerTransport();
-await mcp.connect(transport);
-logger.info("mcp server connected over stdio", { name: "mcp-remote-control", version: VERSION });
+  transport = new StdioServerTransport();
+  await mcp.connect(transport);
+  logger.info("mcp server connected over stdio", { name: "mcp-remote-control", version: VERSION });
+} else {
+  logger.info("mcp stdio disabled (--no-mcp-stdio); serving hub" + (service.mcpHttpPort > 0 ? " + mcp http" : " only"));
+}
 
 let shuttingDown = false;
 function shutdown(reason: string): void {
@@ -55,4 +70,9 @@ function shutdown(reason: string): void {
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
-transport.onclose = () => shutdown("mcp stdio closed");
+if (transport) {
+  transport.onclose = () => shutdown("mcp stdio closed");
+} else {
+  // No stdio client attached (e.g. systemd): stay alive for hub + HTTP.
+  await new Promise(() => {});
+}

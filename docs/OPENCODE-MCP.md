@@ -46,7 +46,7 @@ Environment variables (all optional except the token in production):
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MRC_HOST` | `127.0.0.1` | Bind address for the websocket hub. Use `0.0.0.0` (or the Tailscale IP) so Windows agents can connect. |
+| `MRC_HOST` | `127.0.0.1` | Bind address for the websocket hub. Use `0.0.0.0` (or the LAN IP) so machines on the LAN can connect. |
 | `MRC_PORT` | `8787` | Websocket port. |
 | `MRC_TOKEN` | `dev-token` | Shared enrollment token (dev convenience). In production, enroll per-agent tokens (`bun run admin -- agent add --name PC-01`) and set `MRC_REQUIRE_DB_TOKENS=1`. |
 | `MRC_REQUIRE_DB_TOKENS` | _(unset)_ | Set to `1` to reject the shared token; only enrolled per-agent tokens work. |
@@ -57,7 +57,28 @@ Environment variables (all optional except the token in production):
 | `MRC_MAX_JOBS_PER_AGENT` | `8` | Max in-flight jobs per agent (`agent_busy` above). |
 | `MRC_MAX_JOBS_PER_MIN` | `120` | Max tool-call jobs per agent per rolling 60 s (`rate_limited` above). |
 | `MRC_SCREENSHOT_DIR` | `server/data/screenshots` | Where `agent_screenshot` saves pulled images. |
+| `MRC_MCP_HTTP_PORT` | _(unset)_ | Serve MCP over Streamable HTTP at `/mcp` on this port (LAN clients, `Authorization: Bearer <MRC_TOKEN>`). Used with `--no-mcp-stdio` under systemd. |
 | `MRC_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` (goes to stderr). |
+
+## Remote client (persistent LAN server)
+
+Instead of spawning the server per session over stdio, point opencode at a
+server running under systemd (`docs/OPERATIONS.md`, LAN deployment) as a
+remote MCP server:
+
+```jsonc
+{
+  "mcp": {
+    "servers": {
+      "remote-control": {
+        "type": "remote",
+        "url": "http://192.168.1.50:8788/mcp",
+        "headers": { "Authorization": "Bearer <MRC_TOKEN>" }
+      }
+    }
+  }
+}
+```
 
 ## Permissions
 

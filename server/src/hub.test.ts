@@ -23,6 +23,7 @@ function testConfig(overrides: Partial<ServerConfig> = {}): ServerConfig {
     requireDbTokens: false,
     maxJobsPerAgent: 8,
     maxJobsPerMinute: 120,
+    mcpHttpPort: 0,
     logLevel: "error",
     ...overrides,
   };
