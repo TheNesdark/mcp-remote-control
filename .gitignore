@@ -4,3 +4,4 @@ server/data/
 dist/
 *.log
 .bun/
+run/
