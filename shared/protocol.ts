@@ -86,6 +86,45 @@ export const FsHashParams = z.object({
 export type FsHashParams = z.infer<typeof FsHashParams>;
 
 // ---------------------------------------------------------------------------
+// Inventory / processes / screenshot
+// ---------------------------------------------------------------------------
+
+export const InfoParams = z.object({});
+export type InfoParams = z.infer<typeof InfoParams>;
+
+export const PS_SORTS = ["cpu", "mem", "pid", "name"] as const;
+export const PsListParams = z.object({
+  /** Case-insensitive substring match on process name or command line. */
+  filter: z.string().optional(),
+  top: z.number().int().positive().max(5_000).default(100),
+  sort: z.enum(PS_SORTS).default("cpu"),
+});
+export type PsListParams = z.infer<typeof PsListParams>;
+
+export const PsKillParams = z
+  .object({
+    pid: z.number().int().positive().optional(),
+    /** Kill every process whose executable name matches (case-insensitive). */
+    name: z.string().min(1).optional(),
+    /** true = SIGKILL / taskkill /F; false = SIGTERM / taskkill without /F. */
+    force: z.boolean().default(true),
+    /** Kill the whole process tree rooted at each target. */
+    tree: z.boolean().default(true),
+  })
+  .refine((value) => (value.pid === undefined) !== (value.name === undefined), {
+    message: "provide exactly one of 'pid' or 'name'",
+  });
+export type PsKillParams = z.infer<typeof PsKillParams>;
+
+export const SCREENSHOT_FORMATS = ["png", "jpeg"] as const;
+export const ScreenshotParams = z.object({
+  format: z.enum(SCREENSHOT_FORMATS).default("png"),
+  /** JPEG quality (1-100); ignored for png. */
+  quality: z.number().int().min(1).max(100).default(80),
+});
+export type ScreenshotParams = z.infer<typeof ScreenshotParams>;
+
+// ---------------------------------------------------------------------------
 // Agent -> Server
 // ---------------------------------------------------------------------------
 

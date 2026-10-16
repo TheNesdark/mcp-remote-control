@@ -22,6 +22,7 @@ function testConfig(): ServerConfig {
     heartbeatTimeoutMs: 1_500,
     defaultJobTimeoutMs: 5_000,
     maxJobOutputBytes: 1_000_000,
+    screenshotDir: "/tmp/mrc-test-screenshots",
     logLevel: "error",
   };
 }
@@ -42,6 +43,13 @@ function startAgent(service: Service): { connection: AgentConnection; jobs: JobM
     send: (msg: AgentMsg) => connection?.send(msg),
     log: () => {},
     maxConcurrent: 2,
+    context: () => ({
+      name: "AI-01",
+      version: "0.3.0-test",
+      agentId: service.hub.list()[0]?.id ?? null,
+      server: "ws://127.0.0.1:0",
+      caps: ["exec", "fs", "info", "ps", "screenshot"],
+    }),
   });
   connection = new AgentConnection({
     serverUrl: `ws://127.0.0.1:${service.port}`,
@@ -49,9 +57,9 @@ function startAgent(service: Service): { connection: AgentConnection; jobs: JobM
     name: "AI-01",
     host: "test-host",
     os: "Linux test",
-    version: "0.2.0",
+    version: "0.3.0",
     tags: ["test"],
-    caps: ["exec"],
+    caps: ["exec", "fs", "info", "ps", "screenshot"],
     onJobRequest: (msg) => jobs.handleRequest(msg),
     onJobCancel: (msg) => jobs.handleCancel(msg),
     log: () => {},
@@ -109,15 +117,15 @@ test("job timeout on the server settles while the agent kills the process", asyn
   }
 });
 
-test("unsupported job types get a clear error", async () => {
+test("invalid job params get a clear error from the agent", async () => {
   const service = createService(testConfig());
   const { connection } = startAgent(service);
   try {
     await waitFor(() => (service.hub.list()[0]?.online ? true : undefined));
 
-    const outcome = await service.hub.request("AI-01", "screenshot", {});
+    const outcome = await service.hub.request("AI-01", "ps.kill", {});
     expect(outcome.ok).toBe(false);
-    expect(outcome.error).toMatch(/unsupported job type/);
+    expect(outcome.error).toMatch(/exactly one of 'pid' or 'name'/);
   } finally {
     connection.stop();
     service.close();
@@ -221,3 +229,118 @@ test("50 MB binary upload/download round trip with matching sha256 (F2 acceptanc
     service.close();
   }
 }, 180_000);
+
+// ---------------------------------------------------------------------------
+// F3: inventory, processes, screenshots, reconnect
+// ---------------------------------------------------------------------------
+
+test("agent_info reports the host inventory through the hub", async () => {
+  const service = createService(testConfig());
+  const { connection } = startAgent(service);
+  try {
+    await waitFor(() => (service.hub.list()[0]?.online ? true : undefined));
+
+    const outcome = await service.hub.request("AI-01", "info", {});
+    expect(outcome.ok).toBe(true);
+    const info = JSON.parse(outcome.stdout) as {
+      agent: { name: string; version: string; caps: string[] };
+      host: string;
+      os: { platform: string };
+      cpu: { cores: number };
+      memory: { totalBytes: number };
+      ips: unknown[];
+      disks: unknown[];
+    };
+    expect(info.host.length).toBeGreaterThan(0);
+    expect(info.os.platform).toBe(process.platform);
+    expect(info.cpu.cores).toBeGreaterThan(0);
+    expect(info.memory.totalBytes).toBeGreaterThan(0);
+    expect(Array.isArray(info.ips)).toBe(true);
+    expect(Array.isArray(info.disks)).toBe(true);
+    expect(info.agent.name).toBe("AI-01");
+    expect(info.agent.caps).toContain("info");
+  } finally {
+    connection.stop();
+    service.close();
+  }
+});
+
+test("ps.list and ps.kill work end to end through the hub", async () => {
+  const service = createService(testConfig());
+  const { connection } = startAgent(service);
+  const victim = Bun.spawn({ cmd: ["sleep", "60"], stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  try {
+    await waitFor(() => (service.hub.list()[0]?.online ? true : undefined));
+
+    const listed = await service.hub.request("AI-01", "ps.list", { filter: "sleep", top: 50, sort: "pid" });
+    expect(listed.ok).toBe(true);
+    const payload = JSON.parse(listed.stdout) as { processes: Array<{ pid: number; name: string }> };
+    expect(payload.processes.some((proc) => proc.pid === victim.pid)).toBe(true);
+
+    const killed = await service.hub.request("AI-01", "ps.kill", { pid: victim.pid, force: true, tree: true });
+    expect(killed.ok).toBe(true);
+    expect(killed.meta?.killedCount).toBeGreaterThanOrEqual(1);
+    const exited = await Promise.race([victim.exited.then(() => true), Bun.sleep(3_000).then(() => false)]);
+    expect(exited).toBe(true);
+  } finally {
+    try {
+      victim.kill();
+    } catch {
+      // already gone
+    }
+    connection.stop();
+    service.close();
+  }
+});
+
+test("ps.kill refuses to kill the agent itself", async () => {
+  const service = createService(testConfig());
+  const { connection } = startAgent(service);
+  try {
+    await waitFor(() => (service.hub.list()[0]?.online ? true : undefined));
+
+    const outcome = await service.hub.request("AI-01", "ps.kill", { pid: process.pid, force: true, tree: true });
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toMatch(/own process/);
+  } finally {
+    connection.stop();
+    service.close();
+  }
+});
+
+test("screenshot reports a clear error on headless hosts", async () => {
+  if (process.env.DISPLAY || process.env.WAYLAND_DISPLAY) return; // graphical dev host: skip
+  const service = createService(testConfig());
+  const { connection } = startAgent(service);
+  try {
+    await waitFor(() => (service.hub.list()[0]?.online ? true : undefined));
+
+    const outcome = await service.hub.request("AI-01", "screenshot", { format: "png", quality: 80 });
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toMatch(/no interactive session|no capture tool/);
+  } finally {
+    connection.stop();
+    service.close();
+  }
+});
+
+test("reconnectNow() reconnects without waiting for the backoff", async () => {
+  const service = createService(testConfig());
+  const { connection } = startAgent(service);
+  try {
+    await waitFor(() => (service.hub.list()[0]?.online ? true : undefined));
+
+    expect(service.hub.disconnect("AI-01")).toBe(true);
+    await waitFor(() => (service.hub.list()[0]?.online === false ? true : undefined));
+    await Bun.sleep(100); // let the loop enter its backoff wait
+
+    const started = Date.now();
+    connection.reconnectNow();
+    await waitFor(() => (service.hub.list()[0]?.online === true ? true : undefined), 5_000);
+    // The first backoff is ~1000ms; skipping it must be much faster.
+    expect(Date.now() - started).toBeLessThan(700);
+  } finally {
+    connection.stop();
+    service.close();
+  }
+});

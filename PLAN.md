@@ -124,11 +124,14 @@ PowerShell: `tray.exe` en C# compilado con `csc.exe` (presente en Windows).
   por chunks con número de secuencia.
 - `fs.ts` — listar, leer (utf8/base64), escribir, y transferencias chunked con
   verificación **SHA-256** extremo a extremo.
-- `ps.ts` — procesos vía PowerShell (`Get-CimInstance Win32_Process` / `Get-Process`
-  a JSON): pid, nombre, CPU, RAM, usuario; kill con `Stop-Process -Force`.
+- `ps.ts` — procesos: en Windows vía PowerShell (`Get-Process` a JSON, dos muestras
+  separadas 500 ms para el % de CPU, `-IncludeUserName` cuando hay privilegios) y kill
+  con `taskkill /PID <pid> /T /F`; en Linux/dev lee `/proc` directamente (sin procps) y
+  en el resto de POSIX usa `ps`; el kill en árbol recorre el mapa de ppid.
 - `screenshot.ts` — captura del **monitor primario** con `System.Windows.Forms` +
-  `System.Drawing` vía PowerShell; PNG/JPG; detecta si no hay sesión interactiva y
-  devuelve error claro.
+  `System.Drawing` vía PowerShell a un archivo temporal; PNG/JPEG; si no hay sesión
+  interactiva (sesión 0, escritorio bloqueado) devuelve un error claro. El servidor la
+  descarga chunked con el mismo mecanismo que `fs.read`.
 
 > ⚠️ **Sesión 0 vs sesión interactiva**: si el `.exe` corre como *servicio Windows* no hay
 > escritorio → **screenshot no funciona**. Instalación recomendada v1: **Tarea Programada /
@@ -172,16 +175,16 @@ rechaza versiones incompatibles con mensaje explícito.
 | Tool | Parámetros clave | Devuelve |
 |---|---|---|
 | `agents_list` | — | id, nombre, host, OS, online/**paused**, lastSeen, tags, caps |
-| `agent_info` | `agent` | hostname, OS, CPU, RAM, discos, uptime, usuario, IPs |
+| `agent_info` | `agent` | hostname, OS, usuario, uptime, CPU (modelo/núcleos/load), RAM total/libre, IPs, discos con espacio libre, versión/caps del agente |
 | `agent_exec` | `agent`, `command`, `shell` (`cmd`\|`powershell`), `cwd?`, `env?`, `timeoutMs?`, `stdin?` | jobId, exitCode, stdout, stderr, truncado |
 | `agent_fs_list` | `agent`, `path` | entradas con tipo, tamaño, fecha |
 | `agent_fs_read` | `agent`, `path`, `encoding?`, `maxBytes?` | contenido utf8/base64 |
 | `agent_fs_write` | `agent`, `path`, `content`, `encoding?` | ok, bytes, sha256 |
 | `agent_fs_upload` | `agent`, `localPath` (host central), `remotePath` | ok, bytes, sha256 |
 | `agent_fs_download` | `agent`, `remotePath`, `localPath` (host central) | ok, bytes, sha256 |
-| `agent_ps_list` | `agent`, `filter?`, `top?` | pid, nombre, cpu, mem, usuario |
-| `agent_ps_kill` | `agent`, `pid`\|`name`, `force?` | ok, afectados |
-| `agent_screenshot` | `agent`, `format` (`png`\|`jpg`), `quality?` | imagen (contenido MCP) + path · **solo monitor primario** |
+| `agent_ps_list` | `agent`, `filter?` (substring nombre/cmdline), `top?` (def 100, máx 5000), `sort?` (`cpu`\|`mem`\|`pid`\|`name`) | pid, ppid, nombre, cpuPercent, memBytes, usuario, command |
+| `agent_ps_kill` | `agent`, `pid`\|`name` (exactamente uno), `force?` (def true), `tree?` (def true) | outcomes por pid, `killedCount`; nunca mata al propio agente ni a pid 1 |
+| `agent_screenshot` | `agent`, `format` (`png`\|`jpeg`, def png), `quality?` (def 80, solo jpeg), `embed?` (def true) | imagen MCP (base64) + `localPath` en el host central, bytes, sha256, width/height · **solo monitor primario** |
 
 Convenciones para el LLM: nombres estables `agent_*`, ids cortos legibles, errores
 accionables (`agent offline`, `agent paused locally`, `token revoked`, `no interactive
@@ -253,7 +256,9 @@ mcp-remote-control/
 - ⏳ **F1 pendiente de VM**: validar en Windows los shells (`cmd.exe`, `powershell.exe`) y la ruta de kill con `taskkill /T /F`.
 - ✅ **F2 completado en su parte Linux** (criterio de aceptación verificado): jobs `fs.list/fs.read/fs.write/fs.hash` en el agente; tools `agent_fs_list/read/write/upload/download`; transferencias chunked (256 KiB, tope de chunk 512 KiB) con verificación SHA-256 y tamaño en ambos sentidos; **transferencia de 50 MB ida y vuelta con hash idéntico en el test de integración**; 36 tests + e2e (19 checks) en verde.
 - ⏳ **F2 pendiente de VM**: probar rutas Windows (`C:\...`), archivos con tamaño de chunk límite y nombres con acentos.
-- Siguiente: **F3** (inventario, procesos, screenshot del monitor primario, bandeja completa).
+- ✅ **F3 completado en su parte Linux**: jobs `info`/`ps.list`/`ps.kill`/`screenshot` en el agente; tools `agent_info`, `agent_ps_list`, `agent_ps_kill`, `agent_screenshot`; screenshot capturado a temporal en el agente y descargado chunked al servidor (imagen embebida en el resultado MCP o solo path); bandeja completa (`agent/tray/tray.ps1` + `agent/src/tray.ts` por JSON-lines: iconos de color por estado, enable/disable sin desconectar, reconnect now, open logs, autostart, exit) con test de integración contra un helper falso; ajustes de agente (`agent.json` + DPAPI + diálogo de primer arranque + logs rotativos a archivo); procesos Windows vía `Get-Process` (dos muestras para CPU%) y Linux vía `/proc`; **64 tests + e2e (25 checks) en verde**, typecheck limpio.
+- ⏳ **F3 pendiente de VM**: bandeja (iconos/estados/menú/instancia única), primer arranque + DPAPI, screenshot con sesión interactiva y error en sesión 0, `taskkill /T /F`, `Get-Process`/`Get-CimInstance`, `Stop-Process`.
+- Siguiente: **F4** (operación: CLI admin, tokens revocables, auditoría, límites), dejando el cierre F1–F3 en VM para cuando haya una Windows disponible.
 
 ---
 

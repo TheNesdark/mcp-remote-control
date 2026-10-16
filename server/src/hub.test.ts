@@ -15,6 +15,7 @@ function testConfig(overrides: Partial<ServerConfig> = {}): ServerConfig {
     heartbeatTimeoutMs: 1_500,
     defaultJobTimeoutMs: 2_000,
     maxJobOutputBytes: 1_000_000,
+    screenshotDir: "/tmp/mrc-test-screenshots",
     logLevel: "error",
     ...overrides,
   };

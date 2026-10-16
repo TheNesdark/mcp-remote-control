@@ -22,7 +22,7 @@ import { logger, setLogLevel } from "./log.ts";
 import { createService } from "./service.ts";
 import { registerTools } from "./tools/index.ts";
 
-const VERSION = "0.1.0";
+const VERSION = "0.3.0";
 
 const config = loadConfig();
 setLogLevel(config.logLevel);
@@ -34,7 +34,7 @@ if (config.usingDefaultToken) {
 const service = createService(config);
 
 const mcp = new McpServer({ name: "mcp-remote-control", version: VERSION });
-registerTools(mcp, service.hub);
+registerTools(mcp, service.hub, { screenshotDir: config.screenshotDir });
 
 const transport = new StdioServerTransport();
 await mcp.connect(transport);

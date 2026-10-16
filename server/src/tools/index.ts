@@ -6,10 +6,19 @@ import { registerAgentFsList } from "./agent-fs-list.ts";
 import { registerAgentFsRead } from "./agent-fs-read.ts";
 import { registerAgentFsUpload } from "./agent-fs-upload.ts";
 import { registerAgentFsWrite } from "./agent-fs-write.ts";
+import { registerAgentInfo } from "./agent-info.ts";
+import { registerAgentPsKill } from "./agent-ps-kill.ts";
+import { registerAgentPsList } from "./agent-ps-list.ts";
+import { registerAgentScreenshot } from "./agent-screenshot.ts";
 import { registerAgentsList } from "./agents-list.ts";
 
+export interface ToolsOptions {
+  /** Where agent_screenshot saves pulled images. */
+  screenshotDir: string;
+}
+
 /** Register every MCP tool exposed by the server. */
-export function registerTools(server: McpServer, hub: Hub): void {
+export function registerTools(server: McpServer, hub: Hub, options: ToolsOptions): void {
   registerAgentsList(server, hub);
   registerAgentExec(server, hub);
   registerAgentFsList(server, hub);
@@ -17,4 +26,8 @@ export function registerTools(server: McpServer, hub: Hub): void {
   registerAgentFsWrite(server, hub);
   registerAgentFsUpload(server, hub);
   registerAgentFsDownload(server, hub);
+  registerAgentInfo(server, hub);
+  registerAgentPsList(server, hub);
+  registerAgentPsKill(server, hub);
+  registerAgentScreenshot(server, hub, options.screenshotDir);
 }

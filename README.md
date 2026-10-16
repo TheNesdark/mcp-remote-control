@@ -7,25 +7,33 @@ no ports are opened on the Windows side.
 
 Full design and roadmap: [`PLAN.md`](./PLAN.md).
 
-## Status — F2 (files)
+## Status — F3 (inventory, processes, screenshots, tray)
 
 - [x] Shared wire protocol (`shared/protocol.ts`, zod-validated)
 - [x] WebSocket hub: `hello`/`welcome`, heartbeats, `presence`, jobs with
       timeout + cancel, liveness sweeper
-- [x] MCP tools: `agents_list`, `agent_exec`, `agent_fs_list`, `agent_fs_read`,
-      `agent_fs_write`, `agent_fs_upload`, `agent_fs_download`
-- [x] Real agent (`agent/src`) with reconnect/backoff: executes commands,
-      streams stdout/stderr, kills the process tree on timeout/cancel; serves
-      `fs.list/fs.read/fs.write/fs.hash` jobs
-- [x] Chunked file transfers (256 KiB chunks, 512 KiB max per chunk, 1 GiB cap)
-      with end-to-end SHA-256 + size verification in both directions
-- [x] Fake agent for development/CI on Linux
+- [x] MCP tools: `agents_list`, `agent_exec`, `agent_fs_*` (list/read/write/
+      upload/download), `agent_info`, `agent_ps_list`, `agent_ps_kill`,
+      `agent_screenshot`
+- [x] Real agent (`agent/src`) with reconnect/backoff: exec with process-tree
+      kill, fs jobs, inventory, process listing/killing, screenshots
+- [x] Chunked file transfers (SHA-256 verified both ways) and screenshots
+      pulled chunked from the agent temp file (image embedded in the tool
+      result, or path only)
+- [x] Agent tray app for Windows: colored state icon, enable/disable without
+      disconnecting, reconnect now, open logs, start with Windows, exit
+      (PowerShell + WinForms helper)
+- [x] Agent settings: `agent.json` config, first-run dialog on Windows, token
+      encrypted with DPAPI, rotating file logs (`--log-file`)
+- [x] Linux process listing without procps (reads `/proc`), BSD/macOS via `ps`,
+      Windows via PowerShell (`Get-Process`, two-sample CPU%)
 - [x] Unit tests (`bun test`) + black-box e2e (`bun run e2e`), including a
-      50 MB binary upload/download round trip with matching hash
-- [x] Tray spike scripts for Windows (`agent/tray/`, to validate on a VM)
-- [ ] Windows validation of the agent: `cmd.exe`/`powershell.exe` shells,
-      `taskkill /T /F` kill path and `C:\` file paths (VM) — F1/F2 close-out
-- [ ] `rc-agent.exe` packaging (tray + file config + DPAPI token) — F3
+      50 MB binary transfer with matching hash
+- [ ] Windows validation (VM): tray states/menu, DPAPI config + first-run,
+      `cmd.exe`/`powershell.exe` shells, `taskkill /T /F`, `C:\` paths,
+      screenshot with an interactive session and the session-0 error — F1–F3
+      close-out
+- [ ] `rc-agent.exe` packaging + installer (`install.ps1`) — F5
 
 ## Quickstart (dev)
 

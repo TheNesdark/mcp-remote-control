@@ -295,6 +295,60 @@ try {
     missingRes.isError === true && String(missingRes.data.error ?? "").includes("ENOENT"),
     missingRes.data,
   );
+
+  // -------------------------------------------------------------------------
+  // Real agent: inventory, processes and screenshot
+  // -------------------------------------------------------------------------
+  console.log("e2e: exercising inventory/process/screenshot tools");
+  const infoRes = await callAgentTool("agent_info", { agent: "E2E-01" });
+  check(
+    "agent_info returns host, cpu and disks",
+    typeof infoRes.data.host === "string" &&
+      Number((infoRes.data.cpu as { cores?: number } | undefined)?.cores ?? 0) > 0 &&
+      Array.isArray(infoRes.data.disks),
+    infoRes.data,
+  );
+
+  const psRes = await callAgentTool("agent_ps_list", { agent: "E2E-01", top: 500, sort: "pid" });
+  const psProcesses = (psRes.data.processes ?? []) as Array<{ pid: number; name: string }>;
+  check(
+    "agent_ps_list returns processes with pids",
+    psProcesses.length > 0 && psProcesses.every((proc) => typeof proc.pid === "number"),
+    { total: psRes.data.total, sample: psProcesses.slice(0, 3) },
+  );
+
+  const spawned = await callAgentTool("agent_exec", {
+    agent: "E2E-01",
+    command: "sh -c 'sleep 45 >/dev/null 2>&1 & echo pid:$!'",
+  });
+  const remotePid = Number(/pid:(\d+)/.exec(String(spawned.data.stdout ?? ""))?.[1] ?? 0);
+  check("spawned a remote sleep process to kill", Number.isInteger(remotePid) && remotePid > 0, spawned.data);
+
+  const killRes = await callAgentTool("agent_ps_kill", { agent: "E2E-01", pid: remotePid });
+  check(
+    "agent_ps_kill reports the killed process",
+    killRes.isError === false && Number(killRes.data.killedCount) >= 1,
+    killRes.data,
+  );
+
+  // A killed orphan may linger as a zombie when PID 1 does not reap (e.g. CI
+  // containers), so both "gone" and state Z count as dead.
+  const probe = await callAgentTool("agent_exec", {
+    agent: "E2E-01",
+    command: `if [ -e /proc/${remotePid} ]; then awk '{print "state:" $3}' /proc/${remotePid}/stat; else echo state:gone; fi`,
+  });
+  check(
+    "killed process is gone or a zombie",
+    /state:(gone|Z)/.test(String(probe.data.stdout ?? "")),
+    probe.data,
+  );
+
+  const shot = await callAgentTool("agent_screenshot", { agent: "E2E-01" });
+  const shotWorked = shot.isError === false && typeof shot.data.localPath === "string";
+  const shotHeadless =
+    shot.isError === true &&
+    /no interactive session|no graphical display|no capture tool/.test(String(shot.data.text ?? shot.data.error ?? ""));
+  check("agent_screenshot captures or reports a clear headless error", shotWorked || shotHeadless, shot.data);
 } catch (err) {
   failures++;
   console.error("e2e error:", err);

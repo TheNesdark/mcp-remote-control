@@ -8,20 +8,33 @@ import {
   FsListParams as FsListSchema,
   FsReadParams as FsReadSchema,
   FsWriteParams as FsWriteSchema,
+  InfoParams as InfoSchema,
+  PsKillParams as PsKillSchema,
+  PsListParams as PsListSchema,
+  ScreenshotParams as ScreenshotSchema,
   type AgentMsg,
   type JobCancelMsg,
   type JobRequestMsg,
 } from "@mrc/shared";
 import { runExec, type RunningExec } from "./exec.ts";
-import { fsHash, fsList, fsRead, fsWrite, type FsHandlerResult } from "./fs.ts";
+import { fsHash, fsList, fsRead, fsWrite } from "./fs.ts";
+import type { ShortJobResult } from "./job-result.ts";
+import { killProcesses, listProcesses } from "./ps.ts";
+import { takeScreenshot } from "./screenshot.ts";
+import { collectInfo, type AgentInfoContext } from "./sysinfo.ts";
 
 export interface JobManagerOptions {
   send: (msg: AgentMsg) => void;
   log: (msg: string, fields?: Record<string, unknown>) => void;
   maxConcurrent?: number;
+  /** Static metadata reported by the `info` job. */
+  context?: () => AgentInfoContext;
 }
 
 const DEFAULT_MAX_CONCURRENT = 4;
+
+/** Job types that are short and handled by a single async function. */
+const SHORT_JOB_TYPES = new Set(["fs.list", "fs.read", "fs.write", "fs.hash", "info", "ps.list", "ps.kill", "screenshot"]);
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -52,8 +65,8 @@ export class JobManager {
       void this.handleExec(msg);
       return;
     }
-    if (msg.jobType.startsWith("fs.")) {
-      this.handleFsJob(msg);
+    if (SHORT_JOB_TYPES.has(msg.jobType)) {
+      this.handleShortJob(msg);
       return;
     }
     this.sendResult(msg.jobId, {
@@ -105,12 +118,12 @@ export class JobManager {
   }
 
   // -------------------------------------------------------------------------
-  // fs.*  (short jobs: read/write one chunk, list, hash)
+  // Short jobs: fs.*, info, ps.*, screenshot
   // -------------------------------------------------------------------------
 
-  private handleFsJob(msg: JobRequestMsg): void {
+  private handleShortJob(msg: JobRequestMsg): void {
     const startedAt = Date.now();
-    void this.runFsJob(msg)
+    void this.runShortJob(msg)
       .then((result) => {
         let seq = 0;
         for (const output of result.outputs ?? []) {
@@ -130,7 +143,7 @@ export class JobManager {
       });
   }
 
-  private async runFsJob(msg: JobRequestMsg): Promise<FsHandlerResult> {
+  private async runShortJob(msg: JobRequestMsg): Promise<ShortJobResult> {
     switch (msg.jobType) {
       case "fs.list": {
         const parsed = FsListSchema.safeParse(msg.params);
@@ -151,6 +164,28 @@ export class JobManager {
         const parsed = FsHashSchema.safeParse(msg.params);
         if (!parsed.success) throw new Error(`invalid fs.hash params: ${firstIssue(parsed.error)}`);
         return fsHash(parsed.data);
+      }
+      case "info": {
+        const parsed = InfoSchema.safeParse(msg.params);
+        if (!parsed.success) throw new Error(`invalid info params: ${firstIssue(parsed.error)}`);
+        const context = this.opts.context?.();
+        if (!context) throw new Error("agent context unavailable");
+        return collectInfo(parsed.data, context);
+      }
+      case "ps.list": {
+        const parsed = PsListSchema.safeParse(msg.params);
+        if (!parsed.success) throw new Error(`invalid ps.list params: ${firstIssue(parsed.error)}`);
+        return listProcesses(parsed.data);
+      }
+      case "ps.kill": {
+        const parsed = PsKillSchema.safeParse(msg.params);
+        if (!parsed.success) throw new Error(`invalid ps.kill params: ${firstIssue(parsed.error)}`);
+        return killProcesses(parsed.data);
+      }
+      case "screenshot": {
+        const parsed = ScreenshotSchema.safeParse(msg.params);
+        if (!parsed.success) throw new Error(`invalid screenshot params: ${firstIssue(parsed.error)}`);
+        return takeScreenshot(parsed.data);
       }
       default:
         throw new Error(`unsupported job type '${msg.jobType}'`);

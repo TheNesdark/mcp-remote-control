@@ -1,12 +1,15 @@
-# mcp-remote-control - tray helper (spike)
+# mcp-remote-control - tray helper (F3)
 #
 # Shows a NotifyIcon next to the clock (like the volume/battery icons) and lets
 # the local user enable/disable the agent, reconnect, open logs, toggle autostart
 # and exit. It talks JSON-lines with the Bun agent over stdin/stdout:
 #
-#   stdin  <- {"type":"state","state":"connecting|connected|paused|disconnected","label":"PC-01","detail":"..."}
+#   stdin  <- {"type":"state","state":"connecting|connected|paused|disconnected","label":"PC-01","detail":"ws://...","autostart":true,"logDir":"C:\\...\\logs"}
 #   stdin  <- {"type":"exit"}
-#   stdout -> {"type":"action","action":"toggle|reconnect|open_logs|autostart|exit","enabled":true}
+#   stdout -> {"type":"action","action":"toggle|reconnect|open_logs|autostart|exit|already_running","enabled":true}
+#
+# The agent performs the actual registry write for "Start with Windows" and
+# sends the resulting state back (the helper never touches the registry).
 #
 # Run (STA is required for WinForms):
 #   powershell -NoProfile -Sta -ExecutionPolicy Bypass -File tray.ps1 -Label "PC-01"
@@ -36,16 +39,46 @@ if (-not $mutex.WaitOne(0)) {
 
 $script:state = $InitialState
 $script:label = $Label
-$script:autostartName = "mcp-remote-control"
-$script:runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+$script:detail = ""
+$script:logDir = ""
 
 function Emit {
   param($Object)
   $Object | ConvertTo-Json -Compress | Write-Output
 }
 
+# ---------------------------------------------------------------------------
+# State icons: a colored dot per state (drawn at runtime, no .ico files needed)
+# ---------------------------------------------------------------------------
+function New-StateIcon {
+  param([System.Drawing.Color]$Color)
+  $bmp = New-Object System.Drawing.Bitmap 16, 16
+  $g = [System.Drawing.Graphics]::FromImage($bmp)
+  try {
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $g.Clear([System.Drawing.Color]::Transparent)
+    $brush = New-Object System.Drawing.SolidBrush $Color
+    try {
+      $g.FillEllipse($brush, 1, 1, 14, 14)
+      $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(160, 0, 0, 0)), 1
+      try { $g.DrawEllipse($pen, 1, 1, 14, 14) } finally { $pen.Dispose() }
+    } finally { $brush.Dispose() }
+  } finally { $g.Dispose() }
+  $handle = $bmp.GetHicon()
+  $icon = [System.Drawing.Icon]::FromHandle($handle)
+  $bmp.Dispose()
+  return $icon
+}
+
+$script:icons = @{
+  connected    = New-StateIcon ([System.Drawing.Color]::FromArgb(34, 177, 76))    # green
+  paused       = New-StateIcon ([System.Drawing.Color]::FromArgb(255, 201, 14))   # yellow
+  connecting   = New-StateIcon ([System.Drawing.Color]::FromArgb(127, 127, 127))  # gray
+  disconnected = New-StateIcon ([System.Drawing.Color]::FromArgb(237, 28, 36))    # red
+}
+
 $notify = New-Object System.Windows.Forms.NotifyIcon
-$notify.Icon = [System.Drawing.SystemIcons]::Application   # TODO(F3): custom .ico
+$notify.Icon = $script:icons[$script:state]
 $notify.Visible = $true
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
@@ -87,8 +120,10 @@ function Update-Status {
     "disconnected" { "Disconnected" }
     default        { $script:state }
   }
+  if ($script:icons.ContainsKey($script:state)) { $notify.Icon = $script:icons[$script:state] }
   $statusItem.Text = "$($script:label) - $text"
   $tooltip = "$($script:label) - $text"
+  if ($script:detail) { $tooltip = "$tooltip - $($script:detail)" }
   if ($tooltip.Length -gt 63) { $tooltip = $tooltip.Substring(0, 63) }   # NotifyIcon limit
   $notify.Text = $tooltip
   $toggleItem.Text = if ($script:state -eq "paused") { "Enable agent" } else { "Disable agent" }
@@ -98,13 +133,9 @@ $toggleItem.Add_Click({ Emit @{ type = "action"; action = "toggle" } })
 $reconnectItem.Add_Click({ Emit @{ type = "action"; action = "reconnect" } })
 $logsItem.Add_Click({ Emit @{ type = "action"; action = "open_logs" } })
 
+# The agent owns the registry: just report the desired value and wait for the
+# next state line to confirm (it echoes autostart back).
 $autostartItem.Add_Click({
-  $exe = (Get-Process -Id $PID).Path   # spike: powershell.exe; F3: rc-agent.exe path
-  if ($autostartItem.Checked) {
-    Set-ItemProperty -Path $script:runKey -Name $script:autostartName -Value "`"$exe`""
-  } else {
-    Remove-ItemProperty -Path $script:runKey -Name $script:autostartName -ErrorAction SilentlyContinue
-  }
   Emit @{ type = "action"; action = "autostart"; enabled = [bool]$autostartItem.Checked }
 })
 
@@ -117,11 +148,6 @@ $exitItem.Add_Click({
 $notify.Add_MouseDoubleClick({
   Emit @{ type = "action"; action = "toggle" }
 })
-
-# Autostart checkbox state from the registry.
-$autostartItem.Checked = $null -ne (
-  Get-ItemProperty -Path $script:runKey -Name $script:autostartName -ErrorAction SilentlyContinue
-)
 
 Update-Status
 
@@ -153,6 +179,9 @@ $stdinTimer.Add_Tick({
     "state" {
       if ($msg.state) { $script:state = $msg.state }
       if ($msg.label) { $script:label = $msg.label }
+      $script:detail = if ($msg.detail) { $msg.detail } else { "" }
+      if ($msg.logDir) { $script:logDir = $msg.logDir }
+      if ($null -ne $msg.autostart) { $autostartItem.Checked = [bool]$msg.autostart }
       Update-Status
     }
     "exit" {
@@ -174,12 +203,14 @@ if ($Demo) {
   $demoTimer.Add_Tick({
     $script:state = $script:demoStates[$script:demoIndex % $script:demoStates.Count]
     $script:demoIndex++
+    $script:detail = "demo"
     Update-Status
   })
   $demoTimer.Start()
 }
 
 [System.Windows.Forms.Application]::Run()
+$notify.Visible = $false
 $notify.Dispose()
 $mutex.ReleaseMutex()
 exit 0

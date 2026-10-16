@@ -4,6 +4,7 @@ import {
   HEARTBEAT_TIMEOUT_MS,
   MAX_JOB_OUTPUT_BYTES,
 } from "@mrc/shared";
+import { join } from "node:path";
 import type { LogLevel } from "./log.ts";
 
 export interface ServerConfig {
@@ -16,6 +17,8 @@ export interface ServerConfig {
   heartbeatTimeoutMs: number;
   defaultJobTimeoutMs: number;
   maxJobOutputBytes: number;
+  /** Where agent_screenshot saves images pulled from remote agents. */
+  screenshotDir: string;
   logLevel: LogLevel;
 }
 
@@ -41,6 +44,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     heartbeatTimeoutMs: HEARTBEAT_TIMEOUT_MS,
     defaultJobTimeoutMs: Number(env.MRC_JOB_TIMEOUT_MS ?? 30_000),
     maxJobOutputBytes: MAX_JOB_OUTPUT_BYTES,
+    screenshotDir: env.MRC_SCREENSHOT_DIR?.trim() || join(import.meta.dir, "..", "data", "screenshots"),
     logLevel,
   };
 }

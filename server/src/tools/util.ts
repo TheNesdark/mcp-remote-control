@@ -1,7 +1,11 @@
 import { HubError } from "../hub.ts";
 
+export type ToolContent =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string };
+
 export interface ToolTextResult {
-  content: Array<{ type: "text"; text: string }>;
+  content: ToolContent[];
   isError?: boolean;
   [key: string]: unknown;
 }

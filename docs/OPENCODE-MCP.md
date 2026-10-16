@@ -50,6 +50,7 @@ Environment variables (all optional except the token in production):
 | `MRC_PORT` | `8787` | Websocket port. |
 | `MRC_TOKEN` | `dev-token` | Shared enrollment token. **Always set this** outside local dev. |
 | `MRC_JOB_TIMEOUT_MS` | `30000` | Default job timeout. |
+| `MRC_SCREENSHOT_DIR` | `server/data/screenshots` | Where `agent_screenshot` saves pulled images. |
 | `MRC_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` (goes to stderr). |
 
 ## Permissions
@@ -108,3 +109,26 @@ To keep the agent from using the tools without asking, restrict them by name:
    machine in chunks, and verify SHA-256 (and size) in both directions. Writes
    are limited to 512 KiB per call; use upload for bigger files
    (`agent_fs_write` supports `mkdirs=true`).
+7. Inventory, processes and screenshots:
+
+   ```
+   agent_info(agent="PC-01")
+   agent_ps_list(agent="PC-01", filter="chrome", top=20, sort="cpu")
+   agent_ps_kill(agent="PC-01", pid=1234)               # tree + force by default
+   agent_ps_kill(agent="PC-01", name="notepad.exe")     # kills every match
+   agent_screenshot(agent="PC-01")                      # primary monitor, embedded image
+   agent_screenshot(agent="PC-01", format="jpeg", quality=70, embed=false)
+   ```
+
+   - `agent_info` returns hostname, OS, user, uptime, CPU, memory, IPs and disks
+     with free space.
+   - `agent_ps_list` sorts by `cpu` (default), `mem`, `pid` or `name` and can
+     filter by process name / command line substring. `force=false` and
+     `tree=false` request a graceful single-process kill instead.
+   - `agent_screenshot` captures **only the primary monitor** and saves the
+     image on the server host (path in `localPath`) while embedding it in the
+     tool result (`embed=false` for path-only). On Windows the agent must run in
+     an interactive desktop session: session 0 (service) or a locked desktop
+     fails with `no interactive session`. Screenshots above 8 MB are not
+     embedded (use the `localPath` or JPEG).
+   - `agent_ps_kill` refuses to kill the agent process itself.

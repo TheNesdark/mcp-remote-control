@@ -18,17 +18,7 @@ import {
   type FsReadParams,
   type FsWriteParams,
 } from "@mrc/shared";
-
-export interface FsOutput {
-  stream: "stdout" | "stderr";
-  data: string;
-  encoding: "utf8" | "base64";
-}
-
-export interface FsHandlerResult {
-  outputs?: FsOutput[];
-  meta: Record<string, unknown>;
-}
+import type { ShortJobResult } from "./job-result.ts";
 
 export interface FileEntry {
   name: string;
@@ -53,7 +43,7 @@ function toEntry(name: string, st: Stats): FileEntry {
   };
 }
 
-export async function fsList(params: FsListParams): Promise<FsHandlerResult> {
+export async function fsList(params: FsListParams): Promise<ShortJobResult> {
   const target = params.path;
   const targetStat = await lstat(target);
 
@@ -82,7 +72,7 @@ export async function fsList(params: FsListParams): Promise<FsHandlerResult> {
   };
 }
 
-export async function fsRead(params: FsReadParams): Promise<FsHandlerResult> {
+export async function fsRead(params: FsReadParams): Promise<ShortJobResult> {
   const file = Bun.file(params.path);
   if (!(await file.exists())) {
     throw new Error(`ENOENT: no such file or directory '${params.path}'`);
@@ -107,7 +97,7 @@ export async function fsRead(params: FsReadParams): Promise<FsHandlerResult> {
   };
 }
 
-export async function fsWrite(params: FsWriteParams): Promise<FsHandlerResult> {
+export async function fsWrite(params: FsWriteParams): Promise<ShortJobResult> {
   const data = Buffer.from(params.data, "base64");
   if (data.length > FS_MAX_CHUNK_BYTES) {
     throw new Error(`chunk too large: ${data.length} bytes (max ${FS_MAX_CHUNK_BYTES})`);
@@ -124,7 +114,7 @@ export async function fsWrite(params: FsWriteParams): Promise<FsHandlerResult> {
   return { meta: { bytesWritten: data.length, sizeAfter } };
 }
 
-export async function fsHash(params: FsHashParams): Promise<FsHandlerResult> {
+export async function fsHash(params: FsHashParams): Promise<ShortJobResult> {
   const st = await stat(params.path);
   const sha256 = await sha256File(params.path);
   return { meta: { sha256, size: st.size } };

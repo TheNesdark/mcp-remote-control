@@ -56,10 +56,6 @@ export function backoffDelay(attempt: number): number {
   return Math.max(250, Math.round(base + jitter));
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export class AgentConnection {
   private ws: WebSocket | null = null;
   private heartbeat: Timer | null = null;
@@ -67,6 +63,7 @@ export class AgentConnection {
   private stopped = false;
   private paused: boolean;
   private currentAgentId: string | null = null;
+  private wake: (() => void) | null = null;
 
   constructor(private readonly opts: AgentConnectionOptions) {
     this.paused = opts.paused ?? false;
@@ -97,6 +94,17 @@ export class AgentConnection {
       // already closed
     }
     this.ws = null;
+  }
+
+  /** Drop the current socket (if any) and skip the pending backoff sleep. */
+  reconnectNow(): void {
+    this.log("info", "reconnect requested");
+    try {
+      this.ws?.close(4000, "reconnect requested");
+    } catch {
+      // already closed
+    }
+    this.wake?.();
   }
 
   pause(): void {
@@ -158,8 +166,23 @@ export class AgentConnection {
       const delay = backoffDelay(attempt);
       attempt++;
       this.log("info", "reconnecting", { inMs: delay, attempt });
-      await sleep(delay);
+      await this.waitBackoff(delay);
     }
+  }
+
+  /** Sleep for `ms`, but return early when reconnectNow() asks for it. */
+  private waitBackoff(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.wake = null;
+        resolve();
+      }, ms);
+      this.wake = () => {
+        clearTimeout(timer);
+        this.wake = null;
+        resolve();
+      };
+    });
   }
 
   private connectOnce(): Promise<CloseInfo> {
