@@ -94,6 +94,46 @@ test("mcp over http lists tools and runs them", async () => {
   expect((JSON.parse(execText) as { ok: boolean }).ok).toBe(true);
 });
 
+test("mcp http serves concurrent and reconnecting clients", async () => {
+  const url = await startHttp();
+
+  async function connectedClient(name: string): Promise<Client> {
+    const client = new Client({ name, version: "0.0.0" });
+    clients.push(client);
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(url), {
+        requestInit: { headers: { authorization: `Bearer ${TOKEN}` } },
+      }),
+    );
+    return client;
+  }
+
+  // Two sessions alive at the same time.
+  const first = await connectedClient("http-test-a");
+  const second = await connectedClient("http-test-b");
+  const tools = await second.listTools();
+  expect(tools.tools.some((tool) => tool.name === "agents_list")).toBe(true);
+
+  // A client that reconnects after closing gets a fresh session.
+  await first.close();
+  clients.splice(clients.indexOf(first), 1);
+  const reopened = await connectedClient("http-test-a-retry");
+  const listed = await reopened.callTool({ name: "agents_list", arguments: {} });
+  const text = (listed.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "[]";
+  expect((JSON.parse(text) as Array<{ name: string }>).some((agent) => agent.name === "H-01")).toBe(true);
+});
+
+test("unknown session ids are 404, missing session ids on non-POST are 400", async () => {
+  const url = await startHttp();
+  const auth = { authorization: `Bearer ${TOKEN}` };
+
+  const unknown = await fetch(url, { method: "POST", headers: { ...auth, "mcp-session-id": "nope" }, body: "{}" });
+  expect(unknown.status).toBe(404);
+
+  const missing = await fetch(url, { method: "GET", headers: auth });
+  expect(missing.status).toBe(400);
+});
+
 test("mcp http is disabled by default in the service", () => {
   service = createService(testConfig());
   expect(service.mcpHttpPort).toBe(0);

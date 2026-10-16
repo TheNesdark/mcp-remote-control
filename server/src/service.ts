@@ -91,6 +91,7 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
   let mcpServer: Server<unknown> | null = null;
   let mcpHttpPort = 0;
   let mcpHttpUrl = "";
+  let closeMcpSessions: (() => void) | null = null;
   if (config.mcpHttpPort > 0) {
     if (config.usingDefaultToken) {
       logger.error("serving MCP over HTTP with the insecure development token; set a strong MRC_TOKEN");
@@ -101,6 +102,7 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
       audit,
       bearerToken: config.token,
     });
+    closeMcpSessions = handleMcp.close;
     mcpServer = Bun.serve({
       hostname: config.host,
       port: config.mcpHttpPort,
@@ -135,6 +137,7 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
       hub.shutdown();
       void server.stop(true);
       if (mcpServer) void mcpServer.stop(true);
+      closeMcpSessions?.();
       registry.close();
     },
   };
