@@ -36,6 +36,9 @@ $formHeight = 100 + ($fieldCount * 38) + 40
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+# Diagnostic: confirm the script is running.
+[System.Windows.Forms.MessageBox]::Show("first-run.ps1 iniciado", "debug") | Out-Null
+
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "mcp-remote-control - first run"
 $form.Size = New-Object System.Drawing.Size(430, $formHeight)
