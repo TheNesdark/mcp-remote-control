@@ -1,4 +1,5 @@
 import type { Server } from "bun";
+import { basename } from "node:path";
 import { AGENT_PATH, MAX_FRAME_BYTES } from "@mrc/shared";
 import { AuditLog } from "./audit.ts";
 import type { ServerConfig } from "./config.ts";
@@ -20,8 +21,10 @@ function tlsOptions(config: ServerConfig): { cert: string; key: string } | undef
   } as unknown as { cert: string; key: string };
 }
 
-export interface Service {
-  server: Server<WsData>;
+/** Auto-update: path where the hub hands out the published agent binary. */
+export const AGENT_BINARY_PATH = "/agent/latest.exe";
+
+export interface Service {  server: Server<WsData>;
   hub: Hub;
   store: AgentStore;
   registry: TokenRegistry;
@@ -53,6 +56,17 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
     maxJobOutputBytes: config.maxJobOutputBytes,
     maxJobsPerAgent: config.maxJobsPerAgent,
     maxJobsPerMinute: config.maxJobsPerMinute,
+    ...(config.agentLatestVersion
+      ? {
+          update: {
+            latestVersion: config.agentLatestVersion,
+            ...(config.agentBinaryUrl || config.agentBinaryPath
+              ? { binaryUrl: config.agentBinaryUrl || "/agent/latest.exe" }
+              : {}),
+            ...(config.agentBinarySha256 ? { binarySha256: config.agentBinarySha256 } : {}),
+          },
+        }
+      : {}),
   });
   hub.start();
 
@@ -80,6 +94,18 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
           service: "mcp-remote-control",
           ok: true,
           agents: hub.list().length,
+        });
+      }
+      // Auto-update: hand out the published agent binary (opt-in via
+      // MRC_AGENT_BINARY_PATH). Unauthenticated by design: the file is a
+      // public program, and the agents themselves still need a token.
+      if (url.pathname === AGENT_BINARY_PATH && config.agentBinaryPath) {
+        const file = Bun.file(config.agentBinaryPath);
+        return new Response(file, {
+          headers: {
+            "content-type": "application/octet-stream",
+            "content-disposition": `attachment; filename="${basename(config.agentBinaryPath)}"`,
+          },
         });
       }
       return new Response("not found", { status: 404 });

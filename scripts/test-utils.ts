@@ -6,8 +6,24 @@ import { snapshotEnv } from "@mrc/shared/env";
 import type { ServerConfig } from "../server/src/config.ts";
 
 /** Copy of the process environment as plain string pairs (for child processes). */
+/** Environment variables an e2e/test server must not inherit from the operator's .env. */
+const MRC_ENV_KEYS = [
+  "MRC_TOKEN", "MRC_HOST", "MRC_PORT", "MRC_MCP_HTTP_PORT", "MRC_LOG_LEVEL", "MRC_DATA_DIR",
+  "MRC_DB_PATH", "MRC_AUDIT_PATH", "MRC_SCREENSHOT_DIR", "MRC_REQUIRE_DB_TOKENS", "MRC_JOB_TIMEOUT_MS",
+  "MRC_MAX_JOBS_PER_AGENT", "MRC_MAX_JOBS_PER_MIN", "MRC_TLS_CERT", "MRC_TLS_KEY", "MRC_SERVER",
+  "MRC_NAME", "MRC_TAGS", "MRC_AUTO_UPDATE", "MRC_AGENT_LATEST_VERSION", "MRC_AGENT_BINARY_URL",
+  "MRC_AGENT_BINARY_SHA256", "MRC_AGENT_BINARY_PATH",
+];
+
+/**
+ * Snapshot of process.env with every agent/server variable removed. Bun loads
+ * the operator's `.env` for every command, and an e2e/test server must not
+ * silently inherit a real token, port or auto-update source.
+ */
 export function cleanEnv(extra?: Record<string, string>): Record<string, string> {
-  return snapshotEnv(extra);
+  const env = snapshotEnv();
+  for (const key of MRC_ENV_KEYS) delete env[key];
+  return snapshotEnv({ ...env, ...extra });
 }
 
 export interface WaitForOptions {
@@ -56,6 +72,10 @@ export function testServerConfig(token: string, overrides: Partial<ServerConfig>
     maxJobsPerAgent: 8,
     maxJobsPerMinute: 120,
     mcpHttpPort: 0,
+    agentLatestVersion: "",
+    agentBinaryUrl: "",
+    agentBinarySha256: "",
+    agentBinaryPath: "",
     tlsCertPath: "",
     tlsKeyPath: "",
     logLevel: "error",

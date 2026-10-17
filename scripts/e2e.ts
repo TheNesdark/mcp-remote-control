@@ -43,8 +43,18 @@ function check(label: string, condition: boolean, detail?: unknown): void {
 const client = new Client({ name: "e2e-client", version: "0.0.0" });
 const transport = new StdioClientTransport({
   command: "bun",
-  args: ["run", SERVER_ENTRY],
-  env: { ...cleanEnv(), MRC_PORT: String(PORT), MRC_TOKEN: TOKEN, MRC_LOG_LEVEL: "info" },
+  // --env-file is a bun-level flag (before `run`) and replaces the operator's
+  // .env, which Bun would otherwise merge into this child; inherited env wins.
+  args: ["--env-file", join(import.meta.dir, "..", "tests", "e2e-sandbox", ".env"), SERVER_ENTRY],
+  env: {
+    ...cleanEnv(),
+    MRC_PORT: String(PORT),
+    // explicit 0: even if a stray .env would re-add the operator's MCP port,
+    // an inherited variable wins over file values in Bun.
+    MRC_MCP_HTTP_PORT: "0",
+    MRC_TOKEN: TOKEN,
+    MRC_LOG_LEVEL: "info",
+  },
 });
 
 async function listAgents(): Promise<AgentSummary[]> {

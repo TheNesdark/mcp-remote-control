@@ -212,6 +212,12 @@ export const WelcomeMsg = z.object({
   agentId: z.string().min(1),
   serverTime: z.number(),
   heartbeatIntervalMs: z.number().int().positive(),
+  /** Latest agent build published by the server (auto-update, MRC_AGENT_LATEST_VERSION). */
+  latestAgentVersion: z.string().min(1).optional(),
+  /** Where to fetch that build; relative URLs resolve against the hub origin. */
+  agentBinaryUrl: z.string().min(1).optional(),
+  /** sha256 of the published build: the agent MUST verify before swapping. */
+  agentBinarySha256: z.string().min(1).optional(),
 });
 
 export const JobRequestMsg = z.object({

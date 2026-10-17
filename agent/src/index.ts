@@ -17,6 +17,7 @@ import { argFlag, argString, parseArgv } from "@mrc/shared/args";
 import { logger, setLogFile, setLogLevel, type LogLevel } from "@mrc/shared/log";
 import { AgentConnection, type ConnectionState } from "./connection.ts";
 import { JobManager } from "./jobs.ts";
+import { handleAutoUpdate } from "./auto-update.ts";
 import { loadSettings } from "./settings.ts";
 import { TrayIntegration } from "./tray.ts";
 
@@ -63,6 +64,9 @@ if (settings.usingDefaultToken) {
 }
 
 let connection: AgentConnection | null = null;
+// Auto-update: pull the published build on connect (--no-auto-update to opt out).
+const autoUpdateEnabled = !argFlag(args, "no-auto-update") && !["0", "false", "no"].includes((process.env.MRC_AUTO_UPDATE ?? "").toLowerCase());
+let autoUpdateScheduled = false;
 let trayWanted = argFlag(args, "tray") || (process.platform === "win32" && !argFlag(args, "no-tray"));
 if (argFlag(args, "no-tray")) trayWanted = false;
 
@@ -130,6 +134,18 @@ connection = new AgentConnection({
   onJobCancel: (msg) => jobs.handleCancel(msg),
   onIdAssigned: (id) => {
     void settings.setAgentId(id).catch((err) => logger.debug(`could not persist agent id: ${String(err)}`));
+  },
+  onWelcome: (msg) => {
+    if (autoUpdateScheduled) return; // one attempt per process; a failure retries next start
+    autoUpdateScheduled = true;
+    void handleAutoUpdate(msg, {
+      currentVersion: VERSION,
+      enabled: autoUpdateEnabled,
+      serverUrl,
+      platform: process.platform,
+      standalone: Bun.isStandaloneExecutable,
+      log: (line, fields) => logger.info(line, fields),
+    }).catch((err) => logger.error(`auto-update failed: ${err instanceof Error ? err.message : String(err)}`));
   },
   onStateChange: (state) => {
     lastConnectionState = state;

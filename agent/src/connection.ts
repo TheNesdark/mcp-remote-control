@@ -16,6 +16,7 @@ import {
   type AgentMsg,
   type JobCancelMsg,
   type JobRequestMsg,
+  type WelcomeMsg,
 } from "@mrc/shared";
 
 export type ConnectionState = "connecting" | "connected" | "disconnected" | "paused";
@@ -40,6 +41,8 @@ export interface AgentConnectionOptions {
   onFatal?: (reason: string) => void;
   /** Called every time the server assigns/confirms our agent id. */
   onIdAssigned?: (agentId: string) => void;
+  /** Called on every welcome, before anything else runs (auto-update hook). */
+  onWelcome?: (msg: WelcomeMsg) => void;
   log?: AgentLogFn;
 }
 
@@ -233,6 +236,7 @@ export class AgentConnection {
             this.currentAgentId = msg.agentId;
             this.connected = true;
             this.startHeartbeat(msg.heartbeatIntervalMs);
+            this.opts.onWelcome?.(msg);
             this.emit(this.paused ? "paused" : "connected");
             this.opts.onIdAssigned?.(msg.agentId);
             this.log("info", "connected", { agentId: msg.agentId, server: this.opts.serverUrl });

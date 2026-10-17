@@ -200,3 +200,44 @@ agents_list           -> back online in seconds, new version
 The swap+relaunch runs as a detached `cmd` script, so it works even while
 the old process is still running; it also works with the antivirus/AMSI
 posture (plain `cmd`, no PowerShell).
+
+## Auto-update (pull on connect)
+
+Redesplegar the server does **not** touch the agent binaries on the Windows
+machines, so agents pull updates themselves when they reconnect:
+
+```
+server env                      agent behaviour
+MRC_AGENT_LATEST_VERSION=0.6.0  -> welcome announces the version
+MRC_AGENT_BINARY_PATH=/opt/.../rc-agent.exe   -> served at /agent/latest.exe
+MRC_AGENT_BINARY_SHA256=<sha256>              -> verified before swapping
+```
+
+On every `welcome` the agent compares `latestAgentVersion` with its own
+version and, when the server is strictly ahead, downloads the binary,
+**verifies the sha256**, stages it next to the running exe and reuses the
+detached swap+relaunch from `agent_restart` (old binary kept as `.old`).
+
+Why pull: after a redeploy nobody is connected yet (agents reconnect with
+backoff up to 60 s), so a server-side push at boot would find an empty
+roster. Asking on connect covers every case — server restart, PC reboot,
+network blip.
+
+Safety:
+- never downgrades (strictly newer only) and never swaps an unverified file;
+- `--no-auto-update` / `MRC_AUTO_UPDATE=0` disables it per machine;
+- only standalone executables self-update (a dev `bun run agent` does not);
+- `MRC_AGENT_BINARY_URL` can point at a CDN instead of the hub (the 92 MB
+  binary then never travels through the server).
+
+Publishing a release:
+
+```sh
+bun run build:exe                                   # dist/rc-agent.exe
+sha256sum dist/rc-agent.exe                         # -> env
+cp dist/rc-agent.exe /opt/mcp-remote-control/dist/  # -> MRC_AGENT_BINARY_PATH
+# set MRC_AGENT_LATEST_VERSION=<new> (+ SHA256) and restart the server
+```
+
+Agents still running an older build pick it up on their next reconnect; new
+ones get it at first start. With Dokploy: redeploy after bumping the env vars.

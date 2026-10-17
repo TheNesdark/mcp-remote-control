@@ -33,6 +33,14 @@ export interface ServerConfig {
   maxJobsPerMinute: number;
   /** Serve MCP over Streamable HTTP on the hub port (MRC_MCP_HTTP_PORT, 0 = disabled). */
   mcpHttpPort: number;
+  /** Auto-update: newest agent build announced in `welcome` (empty = off). */
+  agentLatestVersion: string;
+  /** Auto-update: binary URL (relative resolves against the hub origin). */
+  agentBinaryUrl: string;
+  /** Auto-update: expected sha256 of that binary (optional but recommended). */
+  agentBinarySha256: string;
+  /** Auto-update: local file served at /agent/latest.exe (empty = not served). */
+  agentBinaryPath: string;
   /** TLS material for both faces (MRC_TLS_CERT/MRC_TLS_KEY); ws://+http:// when unset. */
   tlsCertPath: string;
   tlsKeyPath: string;
@@ -89,6 +97,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     maxJobsPerAgent: positiveInt(env.MRC_MAX_JOBS_PER_AGENT, "MRC_MAX_JOBS_PER_AGENT", 8),
     maxJobsPerMinute: positiveInt(env.MRC_MAX_JOBS_PER_MIN, "MRC_MAX_JOBS_PER_MIN", 120),
     mcpHttpPort: portOrZero(env.MRC_MCP_HTTP_PORT, "MRC_MCP_HTTP_PORT", 0),
+    agentLatestVersion: env.MRC_AGENT_LATEST_VERSION?.trim() ?? "",
+    agentBinaryUrl: env.MRC_AGENT_BINARY_URL?.trim() ?? "",
+    agentBinarySha256: env.MRC_AGENT_BINARY_SHA256?.trim().toLowerCase() ?? "",
+    agentBinaryPath: env.MRC_AGENT_BINARY_PATH?.trim() ?? "",
     tlsCertPath: env.MRC_TLS_CERT?.trim() ?? "",
     tlsKeyPath: env.MRC_TLS_KEY?.trim() ?? "",
     logLevel,

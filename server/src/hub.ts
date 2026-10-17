@@ -117,6 +117,8 @@ export interface HubOptions {
   maxJobsPerAgent: number;
   /** Max accepted jobs per agent in a rolling 60s window (rate_limited above). */
   maxJobsPerMinute: number;
+  /** Auto-update: newest published agent build (announced in `welcome`). */
+  update?: { latestVersion?: string; binaryUrl?: string; binarySha256?: string };
 }
 
 export class Hub {
@@ -322,6 +324,9 @@ export class Hub {
       agentId: record.agentId,
       serverTime: Date.now(),
       heartbeatIntervalMs: this.opts.heartbeatIntervalMs,
+      ...(this.opts.update?.latestVersion ? { latestAgentVersion: this.opts.update.latestVersion } : {}),
+      ...(this.opts.update?.binaryUrl ? { agentBinaryUrl: this.opts.update.binaryUrl } : {}),
+      ...(this.opts.update?.binarySha256 ? { agentBinarySha256: this.opts.update.binarySha256 } : {}),
     });
     this.opts.registry.touch(record.agentId, {
       name: hello.name,
