@@ -21,7 +21,7 @@ import { handleAutoUpdate } from "./auto-update.ts";
 import { loadSettings } from "./settings.ts";
 import { TrayIntegration } from "./tray.ts";
 
-const VERSION = "0.5.3";
+const VERSION = "0.6.0";
 
 const args = parseArgv(process.argv.slice(2));
 setLogLevel((argString(args, "log-level") ?? process.env.MRC_LOG_LEVEL ?? "info") as LogLevel);
