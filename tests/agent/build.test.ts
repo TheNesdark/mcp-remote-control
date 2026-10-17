@@ -3,14 +3,30 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-/** Full cross-compile acceptance: real PE out of `bun build --compile`. */
+/**
+ * Full cross-compile acceptance: real PE out of `bun build --compile`, and the
+ * values passed with --server/--name/--token are actually baked into the binary
+ * (they must reach `bun build --define`, not just be validated).
+ */
 test(
-  "build.ts cross-compiles a valid Windows PE",
+  "build.ts cross-compiles a valid Windows PE with baked defaults",
   async () => {
     const dir = mkdtempSync(join(tmpdir(), "mrc-build-"));
     const out = join(dir, "rc-agent.exe");
     const proc = Bun.spawn({
-      cmd: ["bun", "run", join(import.meta.dir, "../../agent/build.ts"), "--out", out],
+      cmd: [
+        "bun",
+        "run",
+        join(import.meta.dir, "../../agent/build.ts"),
+        "--out",
+        out,
+        "--server",
+        "ws://bake.test:8787",
+        "--name",
+        "BAKE-01",
+        "--token",
+        "bake-token-xyz",
+      ],
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -30,6 +46,13 @@ test(
       "PE\0\0",
     );
     expect(bytes.length).toBeGreaterThan(50 * 1024 * 1024);
+
+    // The baked defaults must be embedded (regression: build.ts computed the
+    // --define list but never passed it to `bun build`).
+    const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    expect(buf.indexOf("ws://bake.test:8787")).toBeGreaterThanOrEqual(0);
+    expect(buf.indexOf("BAKE-01")).toBeGreaterThanOrEqual(0);
+    expect(buf.indexOf("bake-token-xyz")).toBeGreaterThanOrEqual(0);
   },
   180_000,
 );

@@ -109,6 +109,7 @@ const build = Bun.spawn({
     "--target=bun-windows-x64",
     "--windows-hide-console",
     ...windowsMeta,
+    ...defines,
     "--outfile",
     out,
     ENTRY,
