@@ -11,6 +11,7 @@ import {
   InfoParams as InfoSchema,
   PsKillParams as PsKillSchema,
   PsListParams as PsListSchema,
+  RestartParams as RestartSchema,
   ScreenshotParams as ScreenshotSchema,
   type AgentMsg,
   type JobCancelMsg,
@@ -20,6 +21,7 @@ import { runExec, type RunningExec } from "./exec.ts";
 import { fsHash, fsList, fsRead, fsWrite } from "./fs.ts";
 import type { ShortJobResult } from "./job-result.ts";
 import { killProcesses, listProcesses } from "./ps.ts";
+import { restartAgent } from "./restart.ts";
 import { takeScreenshot } from "./screenshot.ts";
 import { collectInfo, type AgentInfoContext } from "./sysinfo.ts";
 
@@ -65,6 +67,7 @@ const SHORT_JOBS: Record<string, ShortJobHandler> = {
   "ps.list": (params) => listProcesses(parseOrThrow(PsListSchema, "ps.list", params)),
   "ps.kill": (params) => killProcesses(parseOrThrow(PsKillSchema, "ps.kill", params)),
   screenshot: (params) => takeScreenshot(parseOrThrow(ScreenshotSchema, "screenshot", params)),
+  restart: (params) => restartAgent(parseOrThrow(RestartSchema, "restart", params)),
 };
 
 /** Job types handled by a single async function. */

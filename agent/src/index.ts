@@ -66,7 +66,7 @@ let connection: AgentConnection | null = null;
 let trayWanted = argFlag(args, "tray") || (process.platform === "win32" && !argFlag(args, "no-tray"));
 if (argFlag(args, "no-tray")) trayWanted = false;
 
-const CAPS = ["exec", "fs", "info", "ps", "screenshot"];
+const CAPS = ["exec", "fs", "info", "ps", "screenshot", "restart"];
 
 const agentContext = () => ({
   name,

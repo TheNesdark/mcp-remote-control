@@ -131,6 +131,9 @@ export async function collectInfo(_params: InfoParams, ctx: AgentInfoContext): P
     },
     user: safeUser(),
     uptimeSec: Math.round(os.uptime()),
+    /** Running executable (standalone exe) or the bun interpreter (dev). */
+    execPath: process.execPath,
+    standalone: Bun.isStandaloneExecutable,
     cpu: {
       model: cpus[0]?.model ?? null,
       cores: cpus.length,

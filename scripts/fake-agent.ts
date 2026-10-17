@@ -80,7 +80,7 @@ export class FakeAgent {
           os: this.opts.os ?? "Linux (fake agent)",
           version: this.opts.version ?? "0.0.0",
           tags: this.opts.tags ?? [],
-          caps: this.opts.caps ?? ["exec", "fs", "ps", "screenshot", "info"],
+          caps: this.opts.caps ?? ["exec", "fs", "ps", "screenshot", "info", "restart"],
           paused: this.opts.paused ?? false,
         });
       });

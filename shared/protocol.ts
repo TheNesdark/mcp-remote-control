@@ -27,6 +27,7 @@ export const JOB_TYPES = [
   "ps.list",
   "ps.kill",
   "screenshot",
+  "restart",
 ] as const;
 export const JobType = z.enum(JOB_TYPES);
 export type JobType = z.infer<typeof JobType>;
@@ -123,6 +124,14 @@ export const ScreenshotParams = z.object({
   quality: z.number().int().min(1).max(100).default(80),
 });
 export type ScreenshotParams = z.infer<typeof ScreenshotParams>;
+
+export const RestartParams = z.object({
+  /** Staged new binary (uploaded via agent_fs_upload) to swap in before relaunch. */
+  updatePath: z.string().min(1).optional(),
+  /** Args for the relaunched process (defaults to the agent's own argv). */
+  args: z.array(z.string().max(4096)).max(64).optional(),
+});
+export type RestartParams = z.infer<typeof RestartParams>;
 
 // ---------------------------------------------------------------------------
 // Agent -> Server

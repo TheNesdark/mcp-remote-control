@@ -10,6 +10,7 @@ import { registerAgentFsWrite } from "./agent-fs-write.ts";
 import { registerAgentInfo } from "./agent-info.ts";
 import { registerAgentPsKill } from "./agent-ps-kill.ts";
 import { registerAgentPsList } from "./agent-ps-list.ts";
+import { registerAgentRestart } from "./agent-restart.ts";
 import { registerAgentScreenshot } from "./agent-screenshot.ts";
 import { registerAgentsList } from "./agents-list.ts";
 
@@ -33,5 +34,6 @@ export function registerTools(server: McpServer, hub: Hub, options: ToolsOptions
   registerAgentInfo(server, hub, audit);
   registerAgentPsList(server, hub, audit);
   registerAgentPsKill(server, hub, audit);
+  registerAgentRestart(server, hub, audit);
   registerAgentScreenshot(server, hub, screenshotDir, audit);
 }
