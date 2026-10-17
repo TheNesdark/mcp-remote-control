@@ -22,9 +22,9 @@ const DEV_TOKEN = "dev-token";
  * dev (`bun run agent`) these just read the (usually unset) environment.
  * Precedence: CLI flags > environment > config file > built-in > hardcoded.
  */
-const BUILT_IN_SERVER = process.env.MRC_BUILT_IN_SERVER || "";
-const BUILT_IN_NAME = process.env.MRC_BUILT_IN_NAME || "";
-const BUILT_IN_TOKEN = process.env.MRC_BUILT_IN_TOKEN || "";
+const BUILT_IN_SERVER = process.env.MRC_BUILT_IN_SERVER || undefined;
+const BUILT_IN_NAME = process.env.MRC_BUILT_IN_NAME || undefined;
+const BUILT_IN_TOKEN = process.env.MRC_BUILT_IN_TOKEN || undefined;
 
 interface ConfigFile {
   name?: string;
@@ -112,8 +112,11 @@ export async function loadSettings(input: SettingsInput = {}, deps: SettingsDeps
   const configPath = input.configPath ?? join(dataDir, "agent.json");
   const file = readConfig(configPath);
 
-  let name = input.name ?? file.name ?? process.env.MRC_NAME ?? BUILT_IN_NAME;
-  let server = input.server ?? file.server ?? process.env.MRC_SERVER ?? BUILT_IN_SERVER ?? DEFAULT_SERVER;
+  // Precedence: CLI flags > environment > baked-in (compile-time) > config file > hardcoded.
+  // Baked-in values come BEFORE the config file so a stale agent.json (e.g. from an
+  // older tunnel URL) cannot override the URL/token the binary was built with.
+  let name = input.name ?? process.env.MRC_NAME ?? BUILT_IN_NAME ?? file.name;
+  let server = input.server ?? process.env.MRC_SERVER ?? BUILT_IN_SERVER ?? file.server ?? DEFAULT_SERVER;
   let token = input.token ?? process.env.MRC_TOKEN ?? BUILT_IN_TOKEN ?? "";
   const tags = parseTags(input.tags ?? file.tags);
   const agentId = input.id ?? file.id;
@@ -139,7 +142,7 @@ export async function loadSettings(input: SettingsInput = {}, deps: SettingsDeps
   // the dialog.
   const hasName = Boolean(input.name ?? file.name ?? process.env.MRC_NAME ?? BUILT_IN_NAME);
   const hasServer = Boolean(input.server ?? file.server ?? process.env.MRC_SERVER ?? BUILT_IN_SERVER);
-  const hasToken = Boolean(input.token ?? process.env.MRC_TOKEN ?? file.token ?? file.tokenProtected);
+  const hasToken = Boolean(input.token ?? process.env.MRC_TOKEN ?? BUILT_IN_TOKEN ?? file.token ?? file.tokenProtected);
   const missingBasics = !existsSync(configPath) && (!hasName || !hasServer || !hasToken);
   const wantFirstRun =
     missingBasics && (deps.firstRun !== undefined || (process.platform === "win32" && input.interactive !== false));
