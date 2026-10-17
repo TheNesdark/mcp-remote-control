@@ -97,6 +97,9 @@ export class TrayIntegration {
       detail: this.detail,
       autostart: this.autostart,
       logDir: this.opts.logDir,
+      // Lets the helper terminate the agent directly if the user picks Exit
+      // and the "exit" action line is lost (see tray.ps1).
+      pid: process.pid,
     });
   }
 
@@ -111,7 +114,7 @@ export class TrayIntegration {
     }
     const exited = await Promise.race([
       proc.exited.then(() => true),
-      Bun.sleep(700).then(() => false),
+      Bun.sleep(500).then(() => false),
     ]);
     if (!exited) {
       try {

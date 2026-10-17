@@ -26,7 +26,7 @@ import { TrayIntegration } from "./tray.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-const VERSION = "0.6.10";
+const VERSION = "0.6.11";
 
 const args = parseArgv(process.argv.slice(2));
 setLogLevel((argString(args, "log-level") ?? process.env.MRC_LOG_LEVEL ?? "info") as LogLevel);
@@ -233,11 +233,25 @@ tray.start();
 tray.setState(currentTrayState());
 connection.start();
 
+let shuttingDown = false;
 function shutdown(signal: string, exitCode = 0): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
   logger.info("shutting down", { signal });
-  jobs.cancelAll();
-  connection?.stop();
-  void tray.stop().then(() => process.exit(exitCode));
+  // The tray helper or the websocket must never keep the process alive: the
+  // user picked Exit and expects it gone, so force the exit as a backstop.
+  const force = setTimeout(() => process.exit(exitCode), 1500);
+  force.unref();
+  try {
+    jobs.cancelAll();
+    connection?.stop();
+  } catch (err) {
+    logger.warn(`shutdown cleanup failed: ${String(err)}`);
+  }
+  void tray
+    .stop()
+    .catch((err) => logger.warn(`tray stop failed: ${String(err)}`))
+    .finally(() => process.exit(exitCode));
 }
 
 process.on("SIGINT", () => shutdown("SIGINT"));

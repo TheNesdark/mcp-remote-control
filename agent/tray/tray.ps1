@@ -4,7 +4,7 @@
 # the local user enable/disable the agent, reconnect, open logs, toggle autostart
 # and exit. It talks JSON-lines with the Bun agent over stdin/stdout:
 #
-#   stdin  <- {"type":"state","state":"connecting|connected|paused|disconnected","label":"PC-01","detail":"ws://...","autostart":true,"logDir":"C:\\...\\logs"}
+#   stdin  <- {"type":"state","state":"...","label":"PC-01","detail":"ws://...","autostart":true,"logDir":"C:\\...\\logs","pid":1234}
 #   stdin  <- {"type":"exit"}
 #   stdout -> {"type":"action","action":"toggle|reconnect|open_logs|autostart|exit|already_running","enabled":true}
 #
@@ -41,10 +41,15 @@ $script:state = $InitialState
 $script:label = $Label
 $script:detail = ""
 $script:logDir = ""
+$script:agentPid = 0
 
 function Emit {
   param($Object)
-  $Object | ConvertTo-Json -Compress | Write-Output
+  # Write straight to stdout and flush: when the agent runs this helper its
+  # stdout is a pipe (not a console), and buffered output would mean action
+  # lines never arrive -- the menu would look dead (Exit would not close, etc.).
+  [Console]::Out.WriteLine(($Object | ConvertTo-Json -Compress))
+  [Console]::Out.Flush()
 }
 
 # ---------------------------------------------------------------------------
@@ -144,10 +149,27 @@ $autostartItem.Add_Click({
   Emit @{ type = "action"; action = "autostart"; enabled = [bool]$autostartItem.Checked }
 })
 
+# Exit: ask the agent to shut down gracefully, then make sure nothing is left
+# behind. If the agent does not act on the action line (lost/racy), kill it by
+# PID after a short grace period. Only the agent-supplied PID is used, so
+# running the helper standalone (e.g. -Demo) never kills an unrelated process.
 $exitItem.Add_Click({
   Emit @{ type = "action"; action = "exit" }
+  [Console]::Out.Flush()
   $notify.Visible = $false
-  [System.Windows.Forms.Application]::Exit()
+
+  if ($script:agentPid -gt 0) {
+    $script:exitTimer = New-Object System.Windows.Forms.Timer
+    $script:exitTimer.Interval = 1200
+    $script:exitTimer.Add_Tick({
+      $script:exitTimer.Stop()
+      Stop-Process -Id $script:agentPid -Force -ErrorAction SilentlyContinue
+      [System.Environment]::Exit(0)
+    })
+    $script:exitTimer.Start()
+  } else {
+    [System.Environment]::Exit(0)
+  }
 })
 
 $notify.Add_MouseDoubleClick({
@@ -186,6 +208,7 @@ $stdinTimer.Add_Tick({
       if ($msg.label) { $script:label = $msg.label }
       $script:detail = if ($msg.detail) { $msg.detail } else { "" }
       if ($msg.logDir) { $script:logDir = $msg.logDir }
+      if ($null -ne $msg.pid) { $script:agentPid = [int]$msg.pid }
       if ($null -ne $msg.autostart) { $autostartItem.Checked = [bool]$msg.autostart }
       Update-Status
     }
@@ -217,5 +240,7 @@ if ($Demo) {
 [System.Windows.Forms.Application]::Run()
 $notify.Visible = $false
 $notify.Dispose()
-$mutex.ReleaseMutex()
-exit 0
+try { $mutex.ReleaseMutex() } catch { }
+# Hard exit: a lingering WinForms/NotifyIcon handle must not keep the process
+# (and the tray icon) alive after the user chose Exit.
+[System.Environment]::Exit(0)

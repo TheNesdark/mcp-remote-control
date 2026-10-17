@@ -77,11 +77,50 @@ test("tray integration exchanges state and actions with the helper", async () =>
     expect(connectedState!.label).toBe("PC-01");
     expect(connectedState!.detail).toBe("ws://127.0.0.1:8787");
     expect(connectedState!.logDir).toBe(join(dir, "logs"));
+    // The agent advertises its PID so the helper can force-close it on Exit.
+    expect(connectedState!.pid).toBe(process.pid);
 
     await tray.stop();
     expect(tray.isRunning).toBe(false);
   } finally {
     delete process.env.FAKE_TRAY_OUT;
+  }
+});
+
+test("tray integration routes the exit action to onExit", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mrc-tray-exit-"));
+  const helperPath = join(dir, "fake-exit.js");
+  // Emits the Exit action once, then stays alive so we can assert the wiring.
+  await Bun.write(
+    helperPath,
+    String.raw`
+    process.stdout.write(JSON.stringify({ type: "action", action: "exit" }) + "\n");
+    setInterval(() => {}, 1000);
+    `,
+  );
+
+  let exits = 0;
+  const tray = new TrayIntegration({
+    enabled: true,
+    label: "PC-01",
+    detail: "",
+    logDir: "",
+    autostart: false,
+    helperCommand: ["bun", helperPath],
+    onExit: () => {
+      exits += 1;
+    },
+    log: () => {},
+  });
+
+  try {
+    tray.start();
+    await waitFor(() => exits >= 1);
+    expect(exits).toBe(1);
+    await tray.stop();
+    expect(tray.isRunning).toBe(false);
+  } finally {
+    // nothing to clean up
   }
 });
 
