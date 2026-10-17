@@ -35,6 +35,11 @@ export interface FakeAgentOptions {
   agentId?: string;
   /** Do not send heartbeats (used to test the server-side liveness sweeper). */
   silent?: boolean;
+  /**
+   * Canned answer for a job, replacing the default echo. Used by the server
+   * tests to simulate what a real agent (e.g. a PowerShell helper) would print.
+   */
+  respond?: (msg: JobRequestMsg) => FakeResponse | undefined;
   onLog?: (line: string) => void;
 }
 
@@ -42,6 +47,18 @@ export interface FakeJobParams {
   echo?: string;
   sleepMs?: number;
   fail?: boolean;
+}
+
+/** Payload a `respond` hook can return for one job. */
+export interface FakeResponse {
+  stdout?: string;
+  stderr?: string;
+  ok?: boolean;
+  exitCode?: number;
+  error?: string;
+  meta?: Record<string, unknown>;
+  /** Delay the result to keep the job observable while it runs. */
+  sleepMs?: number;
 }
 
 export class FakeAgent {
@@ -177,25 +194,43 @@ export class FakeAgent {
   private handleJob(msg: JobRequestMsg): void {
     this.jobsSeen.push(msg.jobId);
     const params = (msg.params ?? {}) as FakeJobParams;
+    const custom = this.opts.respond?.(msg);
     const startedAt = Date.now();
     this.log(`job ${msg.jobId} (${msg.jobType}) received`);
 
-    this.send({ type: "job.output", jobId: msg.jobId, stream: "stdout", seq: 1, data: `${params.echo ?? ""}\n` });
+    const outputs = custom
+      ? [
+          ...(custom.stdout !== undefined ? [{ stream: "stdout" as const, data: custom.stdout }] : []),
+          ...(custom.stderr !== undefined ? [{ stream: "stderr" as const, data: custom.stderr }] : []),
+        ]
+      : [{ stream: "stdout" as const, data: `${params.echo ?? ""}\n` }];
+    outputs.forEach((output, index) => {
+      this.send({ type: "job.output", jobId: msg.jobId, stream: output.stream, seq: index + 1, data: output.data });
+    });
+
+    const failed = params.fail === true;
+    // A canned answer that only reports a non-zero exit code is a failure, like
+    // the real agent's exec handler (ok === exitCode === 0).
+    const ok = custom ? custom.ok ?? ((custom.exitCode ?? 0) === 0) : !failed;
+    const exitCode = custom ? custom.exitCode ?? (ok ? 0 : 1) : failed ? 1 : 0;
+    const error = custom ? custom.error : failed ? "requested failure" : undefined;
 
     const finish = (): void => {
       this.jobTimers.delete(msg.jobId);
       this.send({
         type: "job.result",
         jobId: msg.jobId,
-        ok: !params.fail,
-        exitCode: params.fail ? 1 : 0,
+        ok,
+        exitCode,
         durationMs: Date.now() - startedAt,
-        ...(params.fail ? { error: "requested failure" } : {}),
+        ...(error ? { error } : {}),
+        ...(custom?.meta ? { meta: custom.meta } : {}),
       });
     };
 
-    if (params.sleepMs && params.sleepMs > 0) {
-      this.jobTimers.set(msg.jobId, setTimeout(finish, params.sleepMs));
+    const sleepMs = custom?.sleepMs ?? params.sleepMs;
+    if (sleepMs && sleepMs > 0) {
+      this.jobTimers.set(msg.jobId, setTimeout(finish, sleepMs));
     } else {
       finish();
     }

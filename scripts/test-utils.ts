@@ -10,7 +10,8 @@ import type { ServerConfig } from "../server/src/config.ts";
 const MRC_ENV_KEYS = [
   "MRC_TOKEN", "MRC_HOST", "MRC_PORT", "MRC_MCP_HTTP_PORT", "MRC_LOG_LEVEL", "MRC_DATA_DIR",
   "MRC_DB_PATH", "MRC_AUDIT_PATH", "MRC_SCREENSHOT_DIR", "MRC_REQUIRE_DB_TOKENS", "MRC_JOB_TIMEOUT_MS",
-  "MRC_MAX_JOBS_PER_AGENT", "MRC_MAX_JOBS_PER_MIN", "MRC_TLS_CERT", "MRC_TLS_KEY", "MRC_SERVER",
+  "MRC_MAX_JOBS_PER_AGENT", "MRC_MAX_JOBS_PER_MIN", "MRC_JOB_HISTORY_MAX", "MRC_JOB_HISTORY_TTL_MS",
+  "MRC_TLS_CERT", "MRC_TLS_KEY", "MRC_SERVER",
   "MRC_NAME", "MRC_TAGS", "MRC_AUTO_UPDATE", "MRC_AGENT_LATEST_VERSION", "MRC_AGENT_BINARY_URL",
   "MRC_AGENT_BINARY_SHA256", "MRC_AGENT_BINARY_PATH",
 ];
@@ -71,6 +72,8 @@ export function testServerConfig(token: string, overrides: Partial<ServerConfig>
     requireDbTokens: false,
     maxJobsPerAgent: 8,
     maxJobsPerMinute: 120,
+    maxRetainedJobs: 100,
+    retainedJobTtlMs: 1_800_000,
     mcpHttpPort: 0,
     publicUrl: "",
     agentLatestVersion: "",

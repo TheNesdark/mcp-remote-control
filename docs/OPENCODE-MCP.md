@@ -56,6 +56,8 @@ Environment variables (all optional except the token in production):
 | `MRC_JOB_TIMEOUT_MS` | `30000` | Default job timeout. |
 | `MRC_MAX_JOBS_PER_AGENT` | `8` | Max in-flight jobs per agent (`agent_busy` above). |
 | `MRC_MAX_JOBS_PER_MIN` | `120` | Max tool-call jobs per agent per rolling 60 s (`rate_limited` above). |
+| `MRC_JOB_HISTORY_MAX` | `100` | Finished `agent_exec_async` jobs kept in memory for `agent_job_status` / `agent_job_list`. |
+| `MRC_JOB_HISTORY_TTL_MS` | `1800000` | How long a finished async job stays queryable (30 min). |
 | `MRC_SCREENSHOT_DIR` | `server/data/screenshots` | Where `agent_screenshot` saves pulled images. |
 | `MRC_MCP_HTTP_PORT` | _(unset)_ | Serve MCP over Streamable HTTP at `/mcp` on this port (LAN clients, `Authorization: Bearer <MRC_TOKEN>`). Used with `--no-mcp-stdio` under systemd. |
 | `MRC_PUBLIC_URL` | _(derived)_ | Base URL clients use to fetch screenshots (e.g. `http://192.168.1.192:8788`). When set, `agent_screenshot` returns a ready-to-use `downloadUrl`; otherwise only `downloadPath`. |
@@ -156,10 +158,86 @@ To keep the agent from using the tools without asking, restrict them by name:
    - `agent_screenshot` captures **only the primary monitor**. The agent never
      writes the image to the remote disk: it streams it inside the job and the
      server verifies size + SHA-256, saves its local copy (`localPath`) and, by
-     default, embeds it in the tool result (`embed=false` for path-only). On
+     default, embeds it in the tool result (`embed=false` for path-only). Over
+     the HTTP face (MRC_PUBLIC_URL set) embedding defaults to false because a
+     multi-MB base64 blob in the SSE response is slow and times out on clients:
+     fetch the image through downloadUrl instead. On
      Windows the agent must run in an interactive desktop session: session 0
      (service) or a locked desktop fails with `no interactive session`.
      Screenshots above 8 MB are not embedded (use the `localPath` or JPEG).
+8. Windows operations (the server only builds a PowerShell script from the
+   validated arguments; the agent returns one JSON envelope):
+
+   ```
+   agent_services(agent="PC-01", filter="spooler", state="running")
+   agent_service_control(agent="PC-01", name="Spooler", action="restart", waitSeconds=30)
+   agent_eventlog(agent="PC-01", log="System", level="error", hours=48, max=50)
+   agent_net_ports(agent="PC-01", state="listen", filter="445")
+   agent_net_test(agent="PC-01", host="srv-01", port=445)
+   agent_fs_hash(agent="PC-01", path="C:\\temp\\rc-agent.exe")
+   ```
+
+   - `agent_services` lists name / displayName / status / startType, filtered by
+     a case-insensitive substring and/or state. `agent_service_control` starts,
+     stops, restarts or inspects one service and reports its resulting state
+     (`force=true` also affects dependents; many services need an elevated
+     agent, otherwise you get `Access is denied`).
+   - `agent_eventlog` reads Windows event logs (System / Application /
+     Security), newest first, filtered by severity, provider and look-back
+     hours. Messages are truncated to `messageChars`.
+   - `agent_net_ports` lists TCP/UDP endpoints with the owning pid **and**
+     process name (needs Windows 8 / Server 2012 or newer); `agent_net_test`
+     resolves, pings and TCP-connects from the remote machine's point of view,
+     which is what tells you whether a backup target or database is reachable
+     from that host.
+   - `agent_fs_hash` returns the SHA-256 and size of a remote file without
+     transferring it (useful to verify an installer or OTA build).
+   - These tools need **Windows**; on a POSIX agent they fail fast with
+     `needs Windows` (use `agent_exec` there).
+9. Files and power:
+
+   ```
+   agent_fs_search(agent="PC-01", path="C:\\Logs", pattern="*.log", recursive=true, olderThanDays=7)
+   agent_fs_mkdir(agent="PC-01", path="C:\\Temp\\2026")
+   agent_fs_move(agent="PC-01", source="C:\\a.txt", destination="C:\\b.txt")
+   agent_fs_copy(agent="PC-01", source="C:\\a.txt", destination="D:\\backup", overwrite=true)
+   agent_fs_delete(agent="PC-01", path="C:\\Temp\\old", recursive=true, confirm=true)
+   agent_power(agent="PC-01", action="restart", delaySeconds=30, message="Mantenimiento", confirm=true)
+   agent_message(agent="PC-01", text="Cierre las aplicaciones, hay mantenimiento", style="warning")
+   ```
+
+   - `agent_fs_search` lists files under a directory (newest first) with size /
+     age filters; `agent_fs_mkdir`, `agent_fs_move` and `agent_fs_copy` work
+     entirely on the remote machine (no bytes cross the server) and refuse to
+     replace an existing destination unless `overwrite=true`.
+   - `agent_fs_delete` is permanent (no recycle bin) and therefore needs
+     `confirm=true`; drive roots are rejected and the path is used literally
+     (no wildcards). Non-empty directories need `recursive=true`.
+   - `agent_power` actions: `shutdown`, `restart`, `logoff`, `lock`, `sleep`,
+     `hibernate` and `abort` (cancels a pending shutdown). Everything except
+     `lock`/`abort` needs `confirm=true`. `delaySeconds` defaults to 5 so the
+     call returns before the machine goes down; the agent connection dropping
+     after a restart/shutdown is the action succeeding.
+   - `agent_message` pops a Windows message box on the remote desktop, shown by
+     a detached process: it returns as soon as the box is on screen and the
+     user's answer is not reported.
+10. Async jobs (long work without blocking the session):
+
+   ```
+   agent_exec_async(agent="PC-01", command="backup.cmd", timeoutMs=3600000)
+   agent_job_status(jobId="0f4c...")
+   agent_job_list(agent="PC-01", state="running")
+   agent_job_cancel(jobId="0f4c...")
+   ```
+
+   `agent_exec_async` returns a `jobId` as soon as the command is running (same
+   arguments as `agent_exec`). `agent_job_status` reports the state
+   (`running` | `ok` | `failed`), exit code, duration, stdout/stderr and
+   metadata; output of a finished job is capped and the history is bounded by
+   `MRC_JOB_HISTORY_MAX` / `MRC_JOB_HISTORY_TTL_MS`. `agent_job_list` also shows
+   running synchronous jobs, and `agent_job_cancel` kills the whole remote
+   process tree (the agent confirms; the server gives up after a couple of
+   seconds and marks the job failed).
 
 ### Saving a screenshot on the client's machine
 

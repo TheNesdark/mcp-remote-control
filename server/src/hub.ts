@@ -25,6 +25,12 @@ import type { TokenRegistry } from "./registry.ts";
 
 /** Grace period between `job.cancel` and giving up on a job. */
 export const JOB_CANCEL_GRACE_MS = 2_000;
+/** Finished async jobs kept in memory (agent_job_status/list) before eviction. */
+export const DEFAULT_MAX_RETAINED_JOBS = 100;
+/** How long a finished async job stays queryable. */
+export const DEFAULT_RETAINED_JOB_TTL_MS = 30 * 60_000;
+/** Output kept per stream for a finished async job, so retention stays bounded. */
+const RETAINED_OUTPUT_MAX_BYTES = 256 * 1024;
 
 export interface WsData {
   agentId: string | null;
@@ -77,6 +83,46 @@ export interface JobOutcome {
 /** JobOutcome before the hub stamps it with the jobId. */
 type OutcomeData = Omit<JobOutcome, "jobId">;
 
+export type AsyncJobState = "running" | "ok" | "failed";
+
+/** Snapshot of an async (or still running) job, as reported by jobStatus(). */
+export interface JobStatusPayload {
+  jobId: string;
+  agentId: string;
+  agentName: string;
+  jobType: JobType;
+  state: AsyncJobState;
+  startedAt: string;
+  finishedAt: string | null;
+  durationMs: number;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+  error?: string;
+  meta?: Record<string, unknown>;
+}
+
+/** Result of requestAsync(): enough to poll the job later. */
+export interface AsyncJobHandle {
+  jobId: string;
+  agentId: string;
+  agentName: string;
+  jobType: JobType;
+  startedAt: string;
+}
+
+/** A finished (or in-flight) async job kept for agent_job_status/list. */
+interface RetainedJob {
+  jobId: string;
+  agentId: string;
+  agentName: string;
+  jobType: JobType;
+  startedAt: number;
+  finishedAt: number | null;
+  outcome: JobOutcome | null;
+}
+
 interface OutputStream {
   chunks: string[];
   bytes: number;
@@ -85,6 +131,7 @@ interface OutputStream {
 interface PendingJob {
   agentId: string;
   agentName: string;
+  jobType: JobType;
   timeoutMs: number;
   resolve: (outcome: JobOutcome) => void;
   timeoutTimer: Timer;
@@ -121,12 +168,17 @@ export interface HubOptions {
   maxJobsPerMinute: number;
   /** Auto-update: newest published agent build (announced in `welcome`). */
   update?: { latestVersion?: string; binaryUrl?: string; binarySha256?: string };
+  /** Finished async jobs kept for agent_job_status/list (default 100). */
+  maxRetainedJobs?: number;
+  /** How long a finished async job stays queryable (default 30 min). */
+  retainedJobTtlMs?: number;
 }
 
 export class Hub {
   private readonly agents = new Map<string, AgentRecord>();
   private readonly bySocket = new Map<AgentSocket, AgentRecord>();
   private readonly pending = new Map<string, PendingJob>();
+  private readonly retained = new Map<string, RetainedJob>();
   private readonly limiter: JobLimiter;
   private sweeper: Timer | null = null;
 
@@ -407,6 +459,63 @@ export class Hub {
     auditMeta?: ToolAuditMeta,
     overrides?: { maxOutputBytes?: number },
   ): Promise<JobOutcome> {
+    return this.enqueue(agentIdOrName, jobType, params, timeoutMs, auditMeta, overrides).promise;
+  }
+
+  /**
+   * Send a job and return as soon as it is dispatched: the "start a long task
+   * and poll it" flow behind agent_exec_async / agent_job_*. The outcome of an
+   * async job stays queryable for `maxRetainedJobs`/`retainedJobTtlMs` through
+   * jobStatus() and jobList(), and jobCancel() stops it early.
+   */
+  requestAsync(
+    agentIdOrName: string,
+    jobType: JobType,
+    params: unknown,
+    timeoutMs?: number,
+    auditMeta?: ToolAuditMeta,
+    overrides?: { maxOutputBytes?: number },
+  ): AsyncJobHandle {
+    const handle = this.enqueue(agentIdOrName, jobType, params, timeoutMs, auditMeta, overrides);
+    this.retained.set(handle.jobId, {
+      jobId: handle.jobId,
+      agentId: handle.agentId,
+      agentName: handle.agentName,
+      jobType,
+      startedAt: handle.startedAt,
+      finishedAt: null,
+      outcome: null,
+    });
+    this.trimRetained();
+    void handle.promise.then((outcome) => {
+      const current = this.retained.get(handle.jobId);
+      if (!current) return;
+      current.outcome = clampOutcome(outcome);
+      current.finishedAt = Date.now();
+      this.trimRetained();
+    });
+    return {
+      jobId: handle.jobId,
+      agentId: handle.agentId,
+      agentName: handle.agentName,
+      jobType,
+      startedAt: new Date(handle.startedAt).toISOString(),
+    };
+  }
+
+  /**
+   * Shared admission + dispatch for request()/requestAsync(). Routing and limit
+   * problems throw HubError (audited as a rejection); remote failures settle the
+   * promise with `ok:false`.
+   */
+  private enqueue(
+    agentIdOrName: string,
+    jobType: JobType,
+    params: unknown,
+    timeoutMs?: number,
+    auditMeta?: ToolAuditMeta,
+    overrides?: { maxOutputBytes?: number },
+  ): { jobId: string; agentId: string; agentName: string; startedAt: number; promise: Promise<JobOutcome> } {
     const startedAt = Date.now();
     const internal = auditMeta?.internal === true;
 
@@ -438,6 +547,7 @@ export class Hub {
     const job: PendingJob = {
       agentId: record.agentId,
       agentName: record.name,
+      jobType,
       timeoutMs: effectiveTimeout,
       resolve: resolveFn,
       timeoutTimer: setTimeout(() => this.onJobTimeout(jobId), effectiveTimeout),
@@ -451,15 +561,26 @@ export class Hub {
 
     this.send(record.ws!, { type: "job.request", jobId, jobType, params, timeoutMs: effectiveTimeout });
     logger.debug("job sent", { agentId: record.agentId, jobId, jobType, timeoutMs: effectiveTimeout });
-    return promise;
+    return { jobId, agentId: record.agentId, agentName: record.name, startedAt, promise };
   }
 
   private onJobTimeout(jobId: string): void {
     const job = this.pending.get(jobId);
     if (!job) return;
-    const record = this.agents.get(job.agentId);
     logger.warn("job timed out, sending cancel", { jobId, agentId: job.agentId, timeoutMs: job.timeoutMs });
+    this.cancelPending(jobId, `job timed out after ${job.timeoutMs}ms (cancel sent, agent did not confirm)`);
+  }
+
+  /**
+   * Ask the agent to stop a running job, then give it a grace period before
+   * settling the job as failed. Returns false when the job already finished.
+   */
+  private cancelPending(jobId: string, finalError: string): boolean {
+    const job = this.pending.get(jobId);
+    if (!job) return false;
+    const record = this.agents.get(job.agentId);
     if (record?.ws) this.send(record.ws, { type: "job.cancel", jobId });
+    if (job.graceTimer) clearTimeout(job.graceTimer);
     job.graceTimer = setTimeout(() => {
       const still = this.pending.get(jobId);
       if (!still) return;
@@ -467,9 +588,10 @@ export class Hub {
         ...this.collectOutput(still),
         ok: false,
         durationMs: Date.now() - still.startedAt,
-        error: `job timed out after ${still.timeoutMs}ms (cancel sent, agent did not confirm)`,
+        error: finalError,
       });
     }, JOB_CANCEL_GRACE_MS);
+    return true;
   }
 
   private handleJobOutput(msg: JobOutputMsg): void {
@@ -522,6 +644,124 @@ export class Hub {
       stderr: job.streams.stderr.chunks.join(""),
       truncated: job.truncated,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Async job inspection (agent_job_status / agent_job_list / agent_job_cancel)
+  // -------------------------------------------------------------------------
+
+  /** Snapshot of one job, or null when the id is unknown (never queued or evicted). */
+  jobStatus(jobId: string): JobStatusPayload | null {
+    const retained = this.retained.get(jobId);
+    const live = this.pending.get(jobId);
+    if (!retained && !live) return null;
+    return this.buildStatus(jobId, retained, live);
+  }
+
+  /**
+   * Jobs, newest first. Running jobs of any kind are included (a synchronous
+   * agent_exec shows up while it runs); finished jobs are the retained async ones.
+   */
+  jobList(filter: { agent?: string; state?: AsyncJobState; limit?: number } = {}): JobStatusPayload[] {
+    const limit = Math.min(filter.limit ?? 50, 500);
+    const wanted = filter.agent?.toLowerCase();
+    const statuses: JobStatusPayload[] = [];
+    const seen = new Set<string>();
+    for (const [jobId, retained] of this.retained) {
+      statuses.push(this.buildStatus(jobId, retained, this.pending.get(jobId)));
+      seen.add(jobId);
+    }
+    for (const [jobId, live] of this.pending) {
+      if (seen.has(jobId)) continue;
+      statuses.push(this.buildStatus(jobId, undefined, live));
+    }
+    return statuses
+      .filter(
+        (status) => !wanted || status.agentId.toLowerCase() === wanted || status.agentName.toLowerCase() === wanted,
+      )
+      .filter((status) => !filter.state || status.state === filter.state)
+      .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))
+      .slice(0, limit);
+  }
+
+  /** Ask the agent to stop a job; `cancelRequested` is false when it already finished. */
+  jobCancel(jobId: string): { ok: boolean; jobId: string; cancelRequested: boolean; status: JobStatusPayload | null } {
+    if (!this.retained.has(jobId) && !this.pending.has(jobId)) {
+      throw new HubError("unknown_job", `Unknown job '${jobId}'.`);
+    }
+    const cancelRequested = this.cancelPending(
+      jobId,
+      `job cancelled by request (agent did not confirm within ${JOB_CANCEL_GRACE_MS}ms)`,
+    );
+    return { ok: true, jobId, cancelRequested, status: this.jobStatus(jobId) };
+  }
+
+  private buildStatus(jobId: string, retained: RetainedJob | undefined, live: PendingJob | undefined): JobStatusPayload {
+    const outcome = retained?.outcome ?? null;
+    const base: Pick<JobStatusPayload, "jobId" | "agentId" | "agentName" | "jobType" | "startedAt"> = retained
+      ? {
+          jobId,
+          agentId: retained.agentId,
+          agentName: retained.agentName,
+          jobType: retained.jobType,
+          startedAt: new Date(retained.startedAt).toISOString(),
+        }
+      : {
+          jobId,
+          agentId: live!.agentId,
+          agentName: live!.agentName,
+          jobType: live!.jobType,
+          startedAt: new Date(live!.startedAt).toISOString(),
+        };
+
+    if (retained && outcome) {
+      return {
+        ...base,
+        state: outcome.ok ? "ok" : "failed",
+        finishedAt: retained.finishedAt ? new Date(retained.finishedAt).toISOString() : null,
+        durationMs: outcome.durationMs,
+        exitCode: outcome.exitCode ?? null,
+        stdout: outcome.stdout,
+        stderr: outcome.stderr,
+        truncated: outcome.truncated,
+        ...(outcome.error ? { error: outcome.error } : {}),
+        ...(outcome.meta ? { meta: outcome.meta } : {}),
+      };
+    }
+
+    const output = live ? this.collectOutput(live) : { stdout: "", stderr: "", truncated: false };
+    return {
+      ...base,
+      state: "running",
+      finishedAt: null,
+      durationMs: Date.now() - (retained?.startedAt ?? live!.startedAt),
+      exitCode: null,
+      ...output,
+    };
+  }
+
+  /** Drop expired/oldest retained jobs; running ones are only dropped as a last resort. */
+  private trimRetained(): void {
+    const max = this.opts.maxRetainedJobs ?? DEFAULT_MAX_RETAINED_JOBS;
+    const cutoff = Date.now() - (this.opts.retainedJobTtlMs ?? DEFAULT_RETAINED_JOB_TTL_MS);
+    for (const [jobId, record] of this.retained) {
+      if (record.finishedAt !== null && record.finishedAt < cutoff) this.retained.delete(jobId);
+    }
+    while (this.retained.size > max) {
+      let victim: string | null = null;
+      for (const [jobId, record] of this.retained) {
+        if (record.finishedAt !== null) {
+          victim = jobId;
+          break;
+        }
+      }
+      if (victim === null) {
+        const oldest = this.retained.keys().next();
+        if (oldest.done) break;
+        victim = oldest.value;
+      }
+      this.retained.delete(victim);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -580,4 +820,17 @@ export class Hub {
       logger.error("websocket send failed", { error: String(err) });
     }
   }
+}
+
+/** Bound the output kept for a finished async job (the live buffer is already capped). */
+function clampOutcome(outcome: JobOutcome): JobOutcome {
+  const stdout = clampText(outcome.stdout);
+  const stderr = clampText(outcome.stderr);
+  if (stdout === outcome.stdout && stderr === outcome.stderr) return outcome;
+  return { ...outcome, stdout, stderr, truncated: true };
+}
+
+function clampText(text: string): string {
+  if (text.length <= RETAINED_OUTPUT_MAX_BYTES) return text;
+  return `${text.slice(0, RETAINED_OUTPUT_MAX_BYTES)}\n...(output truncated by the job history)`;
 }

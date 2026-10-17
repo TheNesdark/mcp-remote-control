@@ -187,6 +187,31 @@ rechaza versiones incompatibles con mensaje explícito.
 | `agent_ps_kill` | `agent`, `pid`\|`name` (exactamente uno), `force?` (def true), `tree?` (def true) | outcomes por pid, `killedCount`; nunca mata al propio agente ni a pid 1 |
 | `agent_screenshot` | `agent`, `format` (`png`\|`jpeg`, def png), `quality?` (def 80, solo jpeg), `embed?` (def true) | imagen MCP (base64) + `localPath` en el host central, bytes, sha256, width/height · **solo monitor primario** |
 | `agent_restart` | `agent`, `updatePath?` (binario nuevo ya subido), `args?` | reinicio detached del agente; con `updatePath` reemplaza el exe antes de relanzar (self-update OTA) |
+| `agent_exec_async` | `agent`, `command`, `shell?`, `cwd?`, `env?`, `stdin?`, `timeoutMs?` (hasta 24 h) | `jobId`, `state: running` — no espera; el trabajo sigue en el agente |
+| `agent_job_status` | `jobId` | estado (`running`\|`ok`\|`failed`), exitCode, duración, stdout/stderr, meta |
+| `agent_job_list` | `agent?`, `state?`, `limit?` | jobs vivos (cualquier tipo) + historial retenido de los async |
+| `agent_job_cancel` | `jobId` | `cancelRequested`, estado; mata el árbol de procesos remoto |
+| `agent_fs_hash` | `agent`, `path` | sha256, size (sin transferir el archivo) |
+| `agent_fs_search` | `agent`, `path`, `pattern?`, `recursive?`, `maxDepth?`, `minBytes?`, `maxBytes?`, `newerThanDays?`, `olderThanDays?`, `top?` | archivos con ruta completa, tamaño y mtime (más nuevos primero) |
+| `agent_fs_mkdir` | `agent`, `path`, `parents?` | ruta absoluta resuelta, `created` |
+| `agent_fs_move` / `agent_fs_copy` | `agent`, `source`, `destination`, `overwrite?` | ruta destino, tipo, `overwritten`; se ejecuta en la máquina remota |
+| `agent_fs_delete` | `agent`, `path`, `recursive?`, **`confirm`** (obligatorio) | qué se borró; se rechazan raíces de unidad, sin papelera |
+| `agent_services` | `agent`, `filter?`, `state?`, `top?` | servicios Windows (name, displayName, status, startType) |
+| `agent_service_control` | `agent`, `name`, `action` (`start`\|`stop`\|`restart`\|`status`), `force?`, `waitSeconds?` | estado resultante del servicio |
+| `agent_eventlog` | `agent`, `log?`, `level?`, `source?`, `hours?`, `max?`, `messageChars?` | eventos (time, level, id, provider, message truncado) |
+| `agent_net_ports` | `agent`, `protocol?`, `state?`, `filter?`, `top?` | endpoints TCP/UDP con pid y nombre de proceso |
+| `agent_net_test` | `agent`, `host`, `port?`, `count?`, `dns?`, `ping?` | direcciones resueltas, pings y resultado del connect TCP desde la máquina remota |
+| `agent_power` | `agent`, `action` (`shutdown`\|`restart`\|`logoff`\|`lock`\|`sleep`\|`hibernate`\|`abort`), `delaySeconds?`, `message?`, `force?`, **`confirm`** (salvo lock/abort) | acción programada; la caída del agente tras reiniciar es el éxito |
+| `agent_message` | `agent`, `text`, `title?`, `style?`, `buttons?` | muestra un message box en el escritorio remoto (detached, sin respuesta del usuario) |
+
+Los wrappers de Windows (`agent_services`, `agent_service_control`, `agent_eventlog`,
+`agent_net_ports`, `agent_net_test`, `agent_power`, `agent_message`, `agent_fs_search`,
+`agent_fs_mkdir`, `agent_fs_move`, `agent_fs_copy`, `agent_fs_delete`) **no requieren
+recompilar el agente**: el servidor compone un script PowerShell fijo a partir de los
+argumentos validados y el agente devuelve un único sobre JSON (`{ok, data}` /
+`{ok, error}`), con salida no-ASCII en UTF-8 sin BOM. Fallan rápido con `needs Windows`
+si el agente es POSIX. Las operaciones destructivas (`agent_fs_delete`, `agent_power`)
+exigen `confirm=true` y se auditan igual que el resto.
 
 Convenciones para el LLM: nombres estables `agent_*`, ids cortos legibles, errores
 accionables (`agent offline`, `agent paused locally`, `token revoked`, `no interactive
@@ -270,6 +295,7 @@ mcp-remote-control/
 - ⏳ **F5 pendiente de VM/Windows real**: instalador de cero en Windows limpia (< 10 min), exe con icono + metadatos compilado en Windows, opencode remoto contra `:8788`, checklist `docs/INSTALL-WINDOWS.md`.
 - **Actualización 2026-10-17 (primera máquina Windows real conectada — DESKTOP-S7PG32F)**: validado en vivo por túnel: `agent_exec` (cmd + powershell), `agent_info`, `agent_ps_list`, transferencias y screenshot (por fallback manual). Hallazgos corregidos ya: AMSI bloqueaba el script PowerShell del screenshot → **fallback `csc.exe`** (Plan B del plan) implementado y testeado; MCP-HTTP tenía sesión única (el 2º cliente/reconexión recibía 400) → **multi-sesión**; `cwd` UNC heredado del share rompía `cmd.exe` → default a `SystemRoot`. F6 adelantado: **TLS nativo** (`MRC_TLS_CERT/KEY` + `--tls-insecure` en el agente), **self-update OTA** (`agent_restart` + `updatePath`, swap de exe + relanzamiento detached) y **CI** (workflow con job `windows-latest`) + script de named tunnel para URLs estables. Pendiente en esa máquina: reiniciar el agente con el exe nuevo (v0.5.3 en el share) para screenshot automático.
 - Siguiente: **F6** restante (modo servicio, firma de código, servicios Windows, UI automation, multi-monitor).
+- ✅ **Actualización 2026-10-17 (F6 adelantado, 3 lotes de tools, solo servidor — sin recompilar el agente)**: (1) *Windows ops* `agent_services`, `agent_service_control`, `agent_eventlog`, `agent_net_ports`, `agent_net_test`, `agent_fs_hash`; (2) *energía y ficheros* `agent_power`, `agent_message`, `agent_fs_search/mkdir/move/copy/delete`; (3) *jobs asíncronos* `agent_exec_async`, `agent_job_status/list/cancel` con registro retenido en el hub (`MRC_JOB_HISTORY_MAX`, `MRC_JOB_HISTORY_TTL_MS`, salida acotada) y cancelación del árbol remoto. **179 tests + e2e en verde**, typecheck limpio. Todo el texto nuevo (descripciones, errores, docs) en inglés salvo esta bitácora.
 
 ---
 

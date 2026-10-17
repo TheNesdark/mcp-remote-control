@@ -5,6 +5,7 @@ import {
   MAX_JOB_OUTPUT_BYTES,
 } from "@mrc/shared";
 import { join } from "node:path";
+import { DEFAULT_MAX_RETAINED_JOBS, DEFAULT_RETAINED_JOB_TTL_MS } from "./hub.ts";
 import type { LogLevel } from "./log.ts";
 
 export interface ServerConfig {
@@ -31,6 +32,10 @@ export interface ServerConfig {
   maxJobsPerAgent: number;
   /** Max accepted jobs per agent in a rolling 60s window (MRC_MAX_JOBS_PER_MIN, default 120). */
   maxJobsPerMinute: number;
+  /** Finished async jobs kept for agent_job_status/list (MRC_JOB_HISTORY_MAX, default 100). */
+  maxRetainedJobs: number;
+  /** How long a finished async job stays queryable (MRC_JOB_HISTORY_TTL_MS, default 30 min). */
+  retainedJobTtlMs: number;
   /** Serve MCP over Streamable HTTP on the hub port (MRC_MCP_HTTP_PORT, 0 = disabled). */
   mcpHttpPort: number;
   /** Public base URL of the MCP HTTP face (MRC_PUBLIC_URL), e.g. http://192.168.1.192:8788. */
@@ -98,6 +103,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     requireDbTokens: ["1", "true", "yes"].includes((env.MRC_REQUIRE_DB_TOKENS ?? "").trim().toLowerCase()),
     maxJobsPerAgent: positiveInt(env.MRC_MAX_JOBS_PER_AGENT, "MRC_MAX_JOBS_PER_AGENT", 8),
     maxJobsPerMinute: positiveInt(env.MRC_MAX_JOBS_PER_MIN, "MRC_MAX_JOBS_PER_MIN", 120),
+    maxRetainedJobs: positiveInt(env.MRC_JOB_HISTORY_MAX, "MRC_JOB_HISTORY_MAX", DEFAULT_MAX_RETAINED_JOBS),
+    retainedJobTtlMs: positiveInt(env.MRC_JOB_HISTORY_TTL_MS, "MRC_JOB_HISTORY_TTL_MS", DEFAULT_RETAINED_JOB_TTL_MS),
     mcpHttpPort: portOrZero(env.MRC_MCP_HTTP_PORT, "MRC_MCP_HTTP_PORT", 0),
     publicUrl: (env.MRC_PUBLIC_URL?.trim() ?? "").replace(/\/+$/, ""),
     agentLatestVersion: env.MRC_AGENT_LATEST_VERSION?.trim() ?? "",

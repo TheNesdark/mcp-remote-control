@@ -47,6 +47,11 @@ export function registerAgentScreenshot(
   audit: AuditLog,
   screenshotBaseUrl = "",
 ): void {
+  // Remote clients (MRC_PUBLIC_URL set) fetch the image via downloadUrl instead
+  // of receiving it inline: embedding a multi-MB base64 blob in the MCP
+  // HTTP/SSE response is slow and frequently times out on the client side.
+  const remoteMode = screenshotBaseUrl.length > 0;
+
   server.registerTool(
     "agent_screenshot",
     {
@@ -54,7 +59,9 @@ export function registerAgentScreenshot(
       description:
         "Capture the primary monitor of a remote machine and save it under the server's screenshot directory. " +
         "The agent streams the image straight from the capture (nothing is stored on the remote disk). " +
-        "Returns the local path plus size/dimensions, and by default embeds the image so it can be inspected visually. " +
+        "Returns the local path plus size/dimensions. Over stdio (local server) the image is embedded by default so it " +
+        "can be inspected visually; over the HTTP face (MRC_PUBLIC_URL set) embedding defaults to false because a " +
+        "multi-MB base64 blob in the SSE response is slow and times out on clients - fetch it via downloadUrl instead. " +
         "Only the primary monitor is captured. On Windows the agent must run in an interactive desktop session " +
         "(it fails with a clear error when running as a service/session 0 or when the desktop is locked). " +
         "The result carries a downloadPath (and downloadUrl when MRC_PUBLIC_URL is set) so a client on another " +
@@ -63,7 +70,7 @@ export function registerAgentScreenshot(
         agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
         format: z.enum(SCREENSHOT_FORMATS).optional().describe("png (lossless, default) or jpeg (smaller)."),
         quality: z.number().int().min(1).max(100).optional().describe("JPEG quality 1-100 (default 80; ignored for png)."),
-        embed: z.boolean().optional().describe("Include the image in the tool result (default true)."),
+        embed: z.boolean().optional().describe("Include the image in the tool result (default true over stdio, false over the HTTP face)."),
         timeoutMs: z.number().int().positive().optional().describe("Job timeout in milliseconds."),
       },
     },
@@ -76,13 +83,13 @@ export function registerAgentScreenshot(
       try {
         const format = args.format ?? "png";
         const quality = args.quality ?? 80;
-        const embed = args.embed ?? true;
+        const embed = args.embed ?? !remoteMode;
 
         const outcome = await hub.request(
           args.agent,
           "screenshot",
           { format, quality },
-          args.timeoutMs,
+          args.timeoutMs ?? 60_000,
           undefined,
           { maxOutputBytes: MAX_SCREENSHOT_BASE64_BYTES },
         );

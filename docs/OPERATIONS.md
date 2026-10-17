@@ -72,6 +72,8 @@ logged per chunk — the enclosing tool call is the single audited entry.
 | In-flight jobs per agent | 8 | `MRC_MAX_JOBS_PER_AGENT` | New jobs rejected with `agent_busy` |
 | Jobs per agent per rolling 60 s | 120 | `MRC_MAX_JOBS_PER_MIN` | Rejected with `rate_limited` (tool calls; internal transfer chunks don't count) |
 | Job output accumulation | 1 MB | — | `truncated: true`, caller should redirect to a file |
+| Async job history | 100 entries | `MRC_JOB_HISTORY_MAX` | Finished `agent_exec_async` jobs kept for `agent_job_status` / `agent_job_list` |
+| Async job TTL | 30 min | `MRC_JOB_HISTORY_TTL_MS` | How long a finished async job stays queryable |
 | Chunk size | 256 KiB (max 512 KiB) | — | Transfers stay under the WS frame limit |
 | Transfer size | 1 GiB | — | `agent_fs_upload` / `agent_fs_download` |
 | Screenshot embed | 8 MB | — | Larger images return `localPath` only |

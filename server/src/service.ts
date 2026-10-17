@@ -57,6 +57,8 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
     maxJobOutputBytes: config.maxJobOutputBytes,
     maxJobsPerAgent: config.maxJobsPerAgent,
     maxJobsPerMinute: config.maxJobsPerMinute,
+    maxRetainedJobs: config.maxRetainedJobs,
+    retainedJobTtlMs: config.retainedJobTtlMs,
     ...(config.agentLatestVersion
       ? {
           update: {

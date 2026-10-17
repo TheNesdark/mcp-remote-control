@@ -1,0 +1,330 @@
+import { afterEach, expect, test } from "bun:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { JobRequestMsg } from "@mrc/shared";
+import { FakeAgent, type FakeResponse } from "../../scripts/fake-agent.ts";
+import { testServerConfig } from "../../scripts/test-utils.ts";
+import { createMcpHttpHandler } from "../../server/src/mcp-http.ts";
+import { createService, type Service } from "../../server/src/service.ts";
+
+const TOKEN = "test-token";
+const WINDOWS_OS = "Windows_NT 10.0.19045";
+const POSIX_OS = "Linux 6.1.0";
+
+interface Harness {
+  service: Service;
+  agent: FakeAgent;
+  client: Client;
+  /** Every PowerShell script the helpers sent, in order. */
+  commands: string[];
+}
+
+interface ToolCall {
+  isError: boolean;
+  data: any;
+  text: string;
+}
+
+const SERVICE = { name: "Spooler", displayName: "Print Spooler", status: "Running", startType: "Automatic" };
+const EVENT = { time: "2026-10-17T18:00:00.0000000Z", level: "Error", id: 7000, provider: "Service Control Manager", message: "boom" };
+const CONNECTION = { protocol: "tcp", localAddress: "0.0.0.0", localPort: 3389, remoteAddress: "0.0.0.0", remotePort: 0, state: "Listen", pid: 1234, process: "svchost" };
+const FILE_ENTRY = { fullName: "C:\\Logs\\old.log", name: "old.log", size: 2048, mtime: "2026-10-01T10:00:00.0000000Z" };
+
+let harness: Harness | null = null;
+let httpServer: Bun.Server<unknown> | null = null;
+
+afterEach(async () => {
+  if (harness) {
+    try {
+      await harness.client.close();
+    } catch {
+      // already closed
+    }
+    harness.agent.stop();
+    harness.service.close();
+    harness = null;
+  }
+  if (httpServer) {
+    await httpServer.stop(true);
+    httpServer = null;
+  }
+});
+
+/** What a Windows agent would print: one JSON envelope, keyed by the script's marker. */
+function defaultResponse(msg: JobRequestMsg, command: string): FakeResponse {
+  if (msg.jobType === "fs.hash") return { meta: { sha256: "a".repeat(64), size: 4096 } };
+  if (command.includes("Get-WinEvent")) return { stdout: json({ log: "System", count: 1, events: [EVENT] }) };
+  if (command.includes("Get-NetTCPConnection")) return { stdout: json({ total: 1, connections: [CONNECTION] }) };
+  if (command.includes("Test-NetConnection")) {
+    return {
+      stdout: json({
+        host: "srv-01",
+        addresses: ["10.0.0.5"],
+        pings: [{ address: "10.0.0.5", responseTimeMs: 3, status: "Success" }],
+        tcp: { port: 445, open: true },
+      }),
+    };
+  }
+  if (command.includes("WaitForStatus")) {
+    return { stdout: json({ ...SERVICE, action: "restart" }) };
+  }
+  if (command.includes("$__all = foreach")) return { stdout: json({ total: 3, matched: 1, services: [SERVICE] }) };
+  if (command.includes("shutdown.exe")) return { stdout: json({ action: "restart", delaySeconds: 5, scheduled: true }) };
+  if (command.includes("shown = $true")) {
+    return { stdout: json({ shown: true, title: "Remote control", style: "warning", buttons: "ok" }) };
+  }
+  // Most specific marker first: the delete/search scripts also run Get-ChildItem.
+  if (command.includes("Remove-Item")) return { stdout: json({ path: "C:\\tmp\\a.txt", type: "file", deleted: true }) };
+  if (command.includes("Move-Item")) {
+    return { stdout: json({ source: "C:\\a.txt", destination: "C:\\b.txt", type: "file", overwritten: false }) };
+  }
+  if (command.includes("Copy-Item")) {
+    return { stdout: json({ source: "C:\\a.txt", destination: "C:\\b.txt", type: "file", overwritten: true }) };
+  }
+  if (command.includes("New-Item -ItemType Directory")) return { stdout: json({ path: "C:\\Logs", created: true }) };
+  if (command.includes("Get-ChildItem")) {
+    return { stdout: json({ path: "C:\\Logs", pattern: "*.log", matched: 2, returned: 1, truncated: true, entries: [FILE_ENTRY] }) };
+  }
+  return { stdout: json({}) };
+}
+
+function json(data: unknown): string {
+  return `${JSON.stringify({ ok: true, data })}\n`;
+}
+
+async function startWindows(
+  options: { os?: string; respond?: (msg: JobRequestMsg, command: string) => FakeResponse | undefined } = {},
+): Promise<Harness> {
+  const service = createService(testServerConfig(TOKEN));
+  const commands: string[] = [];
+  const agent = new FakeAgent({
+    url: `ws://127.0.0.1:${service.port}`,
+    token: TOKEN,
+    name: "W-01",
+    os: options.os ?? WINDOWS_OS,
+    onLog: () => {},
+    respond: (msg) => {
+      const command = String((msg.params as { command?: string }).command ?? "");
+      commands.push(command);
+      return options.respond?.(msg, command) ?? defaultResponse(msg, command);
+    },
+  });
+  await agent.start();
+
+  const handler = createMcpHttpHandler(service.hub, {
+    version: "test",
+    screenshotDir: "/tmp/mrc-test-screenshots",
+    audit: service.audit,
+    bearerToken: TOKEN,
+  });
+  httpServer = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+  const client = new Client({ name: "windows-tools-test", version: "0.0.0" });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${httpServer.port}/mcp`), {
+      requestInit: { headers: { authorization: `Bearer ${TOKEN}` } },
+    }),
+  );
+  harness = { service, agent, client, commands };
+  return harness;
+}
+
+async function call(name: string, args: Record<string, unknown>): Promise<ToolCall> {
+  if (!harness) throw new Error("harness not started");
+  const result = await harness.client.callTool({ name, arguments: args });
+  const text = (result.content as Array<{ type: string; text?: string }>).find((item) => item.type === "text")?.text ?? "";
+  let data: unknown = null;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    // plain-text transport error (HubError): keep `text` only
+  }
+  return { isError: result.isError === true, data, text };
+}
+
+test("the Windows helpers and job-history tools are registered", async () => {
+  const started = await startWindows();
+  const tools = (await started.client.listTools()).tools.map((tool) => tool.name);
+  for (const name of [
+    "agent_services",
+    "agent_service_control",
+    "agent_eventlog",
+    "agent_net_ports",
+    "agent_net_test",
+    "agent_fs_hash",
+    "agent_fs_search",
+    "agent_fs_mkdir",
+    "agent_fs_move",
+    "agent_fs_copy",
+    "agent_fs_delete",
+    "agent_power",
+    "agent_message",
+    "agent_exec_async",
+    "agent_job_status",
+    "agent_job_list",
+    "agent_job_cancel",
+  ]) {
+    expect(tools).toContain(name);
+  }
+});
+
+test("agent_services returns the parsed service list", async () => {
+  const started = await startWindows();
+  const result = await call("agent_services", { agent: "W-01", filter: "spool", state: "running" });
+  expect(result.isError).toBe(false);
+  expect(result.data).toMatchObject({ total: 3, matched: 1 });
+  expect(result.data.services[0]).toMatchObject({ name: "Spooler", startType: "Automatic" });
+
+  const script = started.commands[0]!;
+  expect(script).toContain("Get-Service");
+  expect(script).toContain("System.Text.UTF8Encoding");
+  expect(script).toContain("$__state = 'running'");
+  expect(script).toContain("$__filter = 'spool'");
+});
+
+test("agent_service_control reports the resulting state", async () => {
+  const started = await startWindows();
+  const result = await call("agent_service_control", { agent: "W-01", name: "Spooler", action: "restart", waitSeconds: 20 });
+  expect(result.isError).toBe(false);
+  expect(result.data).toMatchObject({ name: "Spooler", status: "Running", action: "restart" });
+  expect(started.commands[0]).toContain("Restart-Service -Name $__name");
+  expect(started.commands[0]).toContain("$__wait = 20");
+});
+
+test("agent_eventlog, agent_net_ports and agent_net_test reach the right cmdlets", async () => {
+  const started = await startWindows();
+
+  const events = await call("agent_eventlog", { agent: "W-01", level: "error", max: 5, hours: 48 });
+  expect(events.data.events[0]).toMatchObject({ id: 7000, provider: "Service Control Manager" });
+  expect(started.commands[0]).toContain("$__level = 2");
+  expect(started.commands[0]).toContain("$__hours = 48");
+
+  const ports = await call("agent_net_ports", { agent: "W-01", state: "established" });
+  expect(ports.data.connections[0]).toMatchObject({ localPort: 3389, process: "svchost" });
+
+  const net = await call("agent_net_test", { agent: "W-01", host: "srv-01", port: 445, count: 2 });
+  expect(net.data).toMatchObject({ host: "srv-01", tcp: { port: 445, open: true } });
+  expect(net.data.pings[0].responseTimeMs).toBe(3);
+  expect(started.commands[2]).toContain("$__port = 445");
+});
+
+test("agent_power needs confirm=true and schedules the action", async () => {
+  const started = await startWindows();
+
+  const refused = await call("agent_power", { agent: "W-01", action: "restart" });
+  expect(refused.isError).toBe(true);
+  expect(refused.data.error).toContain("confirm=true");
+  expect(started.commands.length).toBe(0); // never reached the agent
+
+  const scheduled = await call("agent_power", { agent: "W-01", action: "restart", delaySeconds: 30, confirm: true, message: "maintenance" });
+  expect(scheduled.isError).toBe(false);
+  expect(scheduled.data).toMatchObject({ action: "restart", scheduled: true });
+  const script = started.commands[0]!;
+  expect(script).toContain("$__delay = 30");
+  expect(script).toContain("'/r'");
+  expect(script).toContain("'/t', \"$__delay\"");
+  expect(script).toContain("$__msg = 'maintenance'");
+
+  const locked = await call("agent_power", { agent: "W-01", action: "lock" });
+  expect(locked.isError).toBe(false);
+});
+
+test("agent_message reports that the box was shown", async () => {
+  const started = await startWindows();
+  const result = await call("agent_message", { agent: "W-01", text: "Reboot in 5 minutes", title: "Ops", style: "warning" });
+  expect(result.isError).toBe(false);
+  expect(result.data).toMatchObject({ shown: true, style: "warning" });
+  expect(started.commands[0]).toContain("-EncodedCommand");
+});
+
+test("the filesystem helpers map onto the right cmdlets", async () => {
+  const started = await startWindows();
+
+  const search = await call("agent_fs_search", { agent: "W-01", path: "C:\\Logs", pattern: "*.log", recursive: true, maxDepth: 2, olderThanDays: 7 });
+  expect(search.data).toMatchObject({ matched: 2, returned: 1, truncated: true });
+  expect(started.commands[0]).toContain("-Filter $__pattern -File -Force -Recurse -Depth $__depth");
+
+  const mkdir = await call("agent_fs_mkdir", { agent: "W-01", path: "C:\\Logs\\2026" });
+  expect(mkdir.data).toMatchObject({ created: true });
+
+  const move = await call("agent_fs_move", { agent: "W-01", source: "C:\\a.txt", destination: "C:\\b.txt" });
+  expect(move.data).toMatchObject({ destination: "C:\\b.txt", type: "file" });
+  expect(started.commands[2]).toContain("Move-Item -LiteralPath $__source");
+
+  const copy = await call("agent_fs_copy", { agent: "W-01", source: "C:\\a.txt", destination: "C:\\b.txt", overwrite: true });
+  expect(copy.data).toMatchObject({ overwritten: true });
+  expect(started.commands[3]).toContain("Copy-Item -LiteralPath $__source -Destination $__destination -Recurse -Force");
+
+  const removed = await call("agent_fs_delete", { agent: "W-01", path: "C:\\tmp\\a.txt", confirm: true });
+  expect(removed.data).toMatchObject({ deleted: true, type: "file" });
+});
+
+test("agent_fs_delete requires confirm and never targets a drive root", async () => {
+  const started = await startWindows();
+
+  const noConfirm = await call("agent_fs_delete", { agent: "W-01", path: "C:\\tmp\\a.txt" });
+  expect(noConfirm.isError).toBe(true);
+  expect(noConfirm.data.error).toContain("confirm=true");
+
+  const driveRoot = await call("agent_fs_delete", { agent: "W-01", path: "C:\\", confirm: true });
+  expect(driveRoot.isError).toBe(true);
+  expect(driveRoot.data.error).toContain("drive root");
+  expect(started.commands.length).toBe(0);
+});
+
+test("agent_fs_hash reads the hash out of the job metadata", async () => {
+  await startWindows();
+  const result = await call("agent_fs_hash", { agent: "W-01", path: "C:\\temp\\rc-agent.exe" });
+  expect(result.isError).toBe(false);
+  expect(result.data).toEqual({ ok: true, path: "C:\\temp\\rc-agent.exe", sha256: "a".repeat(64), size: 4096 });
+});
+
+test("a script failure comes back as an error with the PowerShell message", async () => {
+  await startWindows({
+    respond: () => ({
+      stdout: '{"ok":false,"error":"Cannot find any service with service name \'nope\'."}\n',
+      exitCode: 1,
+    }),
+  });
+  const result = await call("agent_service_control", { agent: "W-01", name: "nope", action: "start" });
+  expect(result.isError).toBe(true);
+  expect(result.data).toEqual({ ok: false, error: "Cannot find any service with service name 'nope'." });
+});
+
+test("Windows-only tools refuse a POSIX agent", async () => {
+  const started = await startWindows({ os: POSIX_OS });
+  const result = await call("agent_services", { agent: "W-01" });
+  expect(result.isError).toBe(true);
+  expect(result.data.error).toContain("needs Windows");
+  expect(started.commands.length).toBe(0);
+});
+
+test("agent_exec_async, agent_job_status and agent_job_cancel work over MCP", async () => {
+  const started = await startWindows({
+    respond: (msg) => {
+      if (msg.jobType !== "exec") return undefined;
+      return { stdout: "working...\n", sleepMs: 250 };
+    },
+  });
+
+  const started_ = await call("agent_exec_async", { agent: "W-01", command: "backup.cmd" });
+  expect(started_.isError).toBe(false);
+  const jobId = started_.data.jobId as string;
+  expect(started_.data.state).toBe("running");
+  expect(jobId.length).toBeGreaterThan(0);
+
+  const running = await call("agent_job_status", { jobId });
+  expect(["running", "ok"]).toContain(running.data.state);
+
+  const listed = await call("agent_job_list", { agent: "W-01" });
+  expect(listed.data.jobs.some((job: { jobId: string }) => job.jobId === jobId)).toBe(true);
+
+  const cancelled = await call("agent_job_cancel", { jobId });
+  expect(cancelled.isError).toBe(false);
+  expect(cancelled.data.cancelRequested === true || cancelled.data.status.state === "ok").toBe(true);
+
+  const unknown = await call("agent_job_status", { jobId: "does-not-exist" });
+  expect(unknown.isError).toBe(true);
+  expect(unknown.data.error).toContain("unknown_job");
+
+  expect(started.commands[0]).toBe("backup.cmd");
+});
