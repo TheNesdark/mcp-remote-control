@@ -95,8 +95,19 @@ on the client side. Agent identities and tokens survive restarts (same
 ## LAN deployment (F5, no VPN)
 
 Posture: plain `ws://` (agents) + `http://` (MCP) on the **trusted local
-network**. No Tailscale/VPN, no TLS in v1 — never expose these ports
-beyond the LAN. (`wss://`/TLS is backlog.)
+network**. No Tailscale/VPN — never expose these ports beyond the LAN.
+Optional native TLS (`wss://`/`https://`) covers the whole path without a
+VPN; see "TLS" below. If you need to reach the server through the public
+internet instead of a LAN, use a named Cloudflare tunnel ("Stable URLs").
+
+### TLS (optional, native)
+
+Set `MRC_TLS_CERT`/`MRC_TLS_KEY` (PEM) and both faces serve `wss://` +
+`https://`; generate a self-signed LAN cert with the one-liner in
+`server/env.example`. Agents accept a self-signed cert via `--tls-insecure`
+(or `MRC_TLS_INSECURE=1`), or trust your CA via `NODE_EXTRA_CA_CERTS`.
+The MCP HTTP face is plain HTTPS for opencode (add your CA to the client,
+or use a real certificate for the hostname).
 
 ### 1. Server host (always-on Linux box, static LAN IP)
 
@@ -159,3 +170,33 @@ same `MRC_DB_PATH` the service uses), then install with
 ```powershell
 .\install.ps1 -Server ws://192.168.1.50:8787 -Token mrc_xxxx -Name OFICINA-01
 ```
+
+## Stable URLs (named Cloudflare tunnel)
+
+`cloudflared tunnel --url` (quick tunnels) mint a **random**
+`trycloudflare.com` hostname per process; agents must then be reconfigured
+after every server restart. For a permanent free URL, use a named tunnel on
+a domain hosted in Cloudflare (free plan): `scripts/hermes-tunnel.sh` wraps
+`cloudflared tunnel create/route dns/run` with an ingress for the two faces
+(`MRC_WS_HOSTNAME` → hub `:8787`, optional `MRC_MCP_HOSTNAME` → MCP `:8788`)
+and documents a systemd unit for the connector. Agents then always connect
+to `wss://<your-host>/agent`, no matter how often the server restarts.
+
+## Self-update (OTA)
+
+`agent_restart` (MCP tool) relaunches the agent detached. With
+`updatePath` — the staged new binary, typically uploaded with
+`agent_fs_upload` into the same directory as the running exe (see the
+`execPath` field in `agent_info`) — it swaps the exe first (rename-self →
+move-new-in) and relaunches, then cleans the `.old` file. Typical flow:
+
+```
+agent_info            -> read execPath (e.g. C:\rc-agent\rc-agent.exe)
+agent_fs_upload       -> local new exe -> C:\rc-agent\rc-agent.new.exe
+agent_restart         -> updatePath=C:\rc-agent\rc-agent.new.exe
+agents_list           -> back online in seconds, new version
+```
+
+The swap+relaunch runs as a detached `cmd` script, so it works even while
+the old process is still running; it also works with the antivirus/AMSI
+posture (plain `cmd`, no PowerShell).

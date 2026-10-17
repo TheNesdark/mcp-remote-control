@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    name: typecheck + tests + e2e (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3 # keep in sync with the spike-validated agent build
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      - run: bun run e2e
+
+  build-exe:
+    name: cross-compile rc-agent.exe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - run: bun install --frozen-lockfile
+      - run: bun run build:exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rc-agent-windows-x64
+          path: dist/rc-agent.exe
+
+  windows:
+    name: real-windows tests + branded exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      # bun:test against a real Windows host: cmd/powershell shells, taskkill
+      # /T /F, C:\ paths, Get-Process ps.list, the csc.exe screenshot fallback.
+      - name: run the full suite on Windows
+        shell: bash
+        run: |
+          # no display on CI runners: the screenshot tool's headless error
+          # path is what gets exercised here.
+          bun test
+      - name: branded exe (icon + version metadata apply only on Windows)
+        run: bun run build:exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rc-agent-windows-x64-branded
+          path: dist/rc-agent.exe
