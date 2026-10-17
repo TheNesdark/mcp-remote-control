@@ -4,6 +4,7 @@ import {
   HEARTBEAT_TIMEOUT_MS,
   MAX_JOB_OUTPUT_BYTES,
 } from "@mrc/shared";
+import { statSync } from "node:fs";
 import { join } from "node:path";
 import { VERSION } from "@mrc/shared/version";
 import { DEFAULT_MAX_RETAINED_JOBS, DEFAULT_RETAINED_JOB_TTL_MS } from "./hub.ts";
@@ -77,6 +78,19 @@ function portOrZero(raw: string | undefined, name: string, fallback: number): nu
   return value;
 }
 
+/**
+ * Where the Docker image puts the agent build; absent in dev checkouts, where
+ * OTA stays off unless MRC_AGENT_BINARY_PATH points at a binary.
+ */
+function defaultAgentBinaryPath(dataDir: string): string {
+  const candidate = join(dataDir, "..", "..", "agent", "rc-agent.exe");
+  try {
+    return statSync(candidate).isFile() ? candidate : "";
+  } catch {
+    return "";
+  }
+}
+
 export function loadConfig(env: Record<string, string | undefined> = process.env): ServerConfig {
   const token = env.MRC_TOKEN?.trim() || DEV_TOKEN;
   const port = Number(env.MRC_PORT ?? DEFAULT_WS_PORT);
@@ -97,7 +111,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     heartbeatTimeoutMs: HEARTBEAT_TIMEOUT_MS,
     defaultJobTimeoutMs: positiveInt(env.MRC_JOB_TIMEOUT_MS, "MRC_JOB_TIMEOUT_MS", 30_000),
     maxJobOutputBytes: MAX_JOB_OUTPUT_BYTES,
-    screenshotDir: env.MRC_SCREENSHOT_DIR?.trim() || join(import.meta.dir, "..", "data", "screenshots"),
+    screenshotDir: env.MRC_SCREENSHOT_DIR?.trim() || join(dataDir, "screenshots"),
     dataDir,
     dbPath: env.MRC_DB_PATH?.trim() || join(dataDir, "mcp.db"),
     auditPath: env.MRC_AUDIT_PATH?.trim() || join(dataDir, "audit.jsonl"),
@@ -108,10 +122,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     retainedJobTtlMs: positiveInt(env.MRC_JOB_HISTORY_TTL_MS, "MRC_JOB_HISTORY_TTL_MS", DEFAULT_RETAINED_JOB_TTL_MS),
     mcpHttpPort: portOrZero(env.MRC_MCP_HTTP_PORT, "MRC_MCP_HTTP_PORT", 0),
     publicUrl: (env.MRC_PUBLIC_URL?.trim() ?? "").replace(/\/+$/, ""),
-    agentLatestVersion: env.MRC_AGENT_LATEST_VERSION?.trim() || VERSION,
+    agentLatestVersion: VERSION,
     agentBinaryUrl: env.MRC_AGENT_BINARY_URL?.trim() ?? "",
     agentBinarySha256: env.MRC_AGENT_BINARY_SHA256?.trim().toLowerCase() ?? "",
-    agentBinaryPath: env.MRC_AGENT_BINARY_PATH?.trim() ?? "",
+    // Default to the build shipped in the image (see Dockerfile), so a deploy
+    // publishes the agent automatically without any environment variable.
+    agentBinaryPath: env.MRC_AGENT_BINARY_PATH?.trim() || defaultAgentBinaryPath(dataDir),
     tlsCertPath: env.MRC_TLS_CERT?.trim() ?? "",
     tlsKeyPath: env.MRC_TLS_KEY?.trim() ?? "",
     logLevel,

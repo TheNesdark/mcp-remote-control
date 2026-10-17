@@ -88,14 +88,18 @@ on the client side. Agent identities and tokens survive restarts (same
 
 ## Data layout
 
-`MRC_DATA_DIR` (default `server/data/`):
+Everything lives under one directory, `MRC_DATA_DIR` (default `server/data/`,
+`/app/server/data` in the image), so a single mount/backup covers it:
 
-- `mcp.db` — enrolled agents, token hashes, first/last seen (`MRC_DB_PATH`)
-- `audit.jsonl` — audit trail (`MRC_AUDIT_PATH`)
+- `mcp.db` — enrolled agents, token hashes, first/last seen
+- `audit.jsonl` — audit trail
 - `screenshots/` — images received by `agent_screenshot` (streamed by the agent
-  and saved on this host; `MRC_SCREENSHOT_DIR`). Served read-only to MCP clients
-  at `GET /screenshots/<file>` on the MCP HTTP port (Bearer `MRC_TOKEN` or
+  and saved on this host). Served read-only to MCP clients at
+  `GET /screenshots/<file>` on the MCP HTTP port (Bearer `MRC_TOKEN` or
   `?token=`), so a client on another machine can `curl` them.
+
+`MRC_DB_PATH`, `MRC_AUDIT_PATH` and `MRC_SCREENSHOT_DIR` can override each path
+individually, but they are unnecessary: moving `MRC_DATA_DIR` moves all three.
 
 ## LAN deployment (F5, no VPN)
 

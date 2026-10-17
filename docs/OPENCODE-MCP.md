@@ -42,29 +42,55 @@ Add `--global` to make it available in every project.
 }
 ```
 
-Environment variables (all optional except the token in production):
+### Only three variables matter in production
+
+`server/env.example` is deliberately short. A LAN deployment needs:
+
+```sh
+MRC_TOKEN=<long random secret>     # required in production
+MRC_MCP_HTTP_PORT=8788             # only if opencode connects over HTTP
+MRC_REQUIRE_DB_TOKENS=1            # only once per-agent tokens are enrolled
+```
+
+Everything else has a default that works: paths derive from `MRC_DATA_DIR`
+(itself defaulting to `server/data`), the OTA version comes from the build and
+the agent binary is discovered on its own.
+
+### All variables (every one is optional except `MRC_TOKEN`)
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `MRC_HOST` | `127.0.0.1` | Bind address for the websocket hub. Use `0.0.0.0` (or the LAN IP) so machines on the LAN can connect. |
 | `MRC_PORT` | `8787` | Websocket port. |
 | `MRC_TOKEN` | `dev-token` | Shared enrollment token (dev convenience). In production, enroll per-agent tokens (`bun run admin -- agent add --name PC-01`) and set `MRC_REQUIRE_DB_TOKENS=1`. |
-| `MRC_REQUIRE_DB_TOKENS` | _(unset)_ | Set to `1` to reject the shared token; only enrolled per-agent tokens work. |
-| `MRC_DATA_DIR` | `server/data` | Directory for `mcp.db`, `audit.jsonl` and screenshots. |
-| `MRC_DB_PATH` | `<data>/mcp.db` | SQLite registry (agents, token hashes, first/last seen). |
-| `MRC_AUDIT_PATH` | `<data>/audit.jsonl` | Append-only audit trail (tool calls, hub events, admin actions). |
+| `MRC_REQUIRE_DB_TOKENS` | _(off)_ | Set to `1` to reject the shared token; only enrolled per-agent tokens work. |
+| `MRC_DATA_DIR` | `server/data` | Single root for data: `mcp.db`, `audit.jsonl` and `screenshots/` all live inside it. |
+| `MRC_MCP_HTTP_PORT` | _(off)_ | Serve MCP over Streamable HTTP at `/mcp` on this port (LAN clients, `Authorization: Bearer <MRC_TOKEN>`). Used with `--no-mcp-stdio`. |
+| `MRC_PUBLIC_URL` | _(derived)_ | Base URL clients use to fetch screenshots (e.g. `http://192.168.1.192:8788`). When set, `agent_screenshot` returns a ready-to-use `downloadUrl` and stops embedding the image by default (SSE is slow). |
+| `MRC_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` (goes to stderr). |
+
+Tuning knobs (leave unset unless you have a reason):
+
+| Variable | Default | Meaning |
+|---|---|---|
 | `MRC_JOB_TIMEOUT_MS` | `30000` | Default job timeout. |
 | `MRC_MAX_JOBS_PER_AGENT` | `8` | Max in-flight jobs per agent (`agent_busy` above). |
 | `MRC_MAX_JOBS_PER_MIN` | `120` | Max tool-call jobs per agent per rolling 60 s (`rate_limited` above). |
 | `MRC_JOB_HISTORY_MAX` | `100` | Finished `agent_exec_async` jobs kept in memory for `agent_job_status` / `agent_job_list`. |
 | `MRC_JOB_HISTORY_TTL_MS` | `1800000` | How long a finished async job stays queryable (30 min). |
-| `MRC_SCREENSHOT_DIR` | `server/data/screenshots` | Where `agent_screenshot` saves pulled images. |
-| `MRC_MCP_HTTP_PORT` | _(unset)_ | Serve MCP over Streamable HTTP at `/mcp` on this port (LAN clients, `Authorization: Bearer <MRC_TOKEN>`). Used with `--no-mcp-stdio` under systemd. |
-| `MRC_PUBLIC_URL` | _(derived)_ | Base URL clients use to fetch screenshots (e.g. `http://192.168.1.192:8788`). When set, `agent_screenshot` returns a ready-to-use `downloadUrl` and stops embedding the image by default (SSE is slow). |
-| `MRC_AGENT_LATEST_VERSION` | `shared/version.ts` | Version announced to agents in `welcome` (OTA). Defaults to the build's own version, so a redeploy publishes it automatically. |
-| `MRC_AGENT_BINARY_PATH` | `/app/agent/rc-agent.exe` (image) | Local agent build served at `/agent/latest.exe`. |
-| `MRC_AGENT_BINARY_SHA256` | _(computed)_ | Expected fingerprint of that build; when unset the server hashes the file at boot. |
-| `MRC_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` (goes to stderr). |
+| `MRC_DB_PATH` | `<data>/mcp.db` | Override the SQLite registry path. |
+| `MRC_AUDIT_PATH` | `<data>/audit.jsonl` | Override the audit trail path. |
+| `MRC_SCREENSHOT_DIR` | `<data>/screenshots` | Override where `agent_screenshot` saves images. |
+| `MRC_TLS_CERT` / `MRC_TLS_KEY` | _(off)_ | PEM pair: both faces serve `wss://` + `https://`. |
+
+Auto-update (OTA) — no variable needed when the image ships the build:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MRC_AGENT_LATEST_VERSION` | `shared/version.ts` | Fixed to the build's own version on purpose: the only way to publish a new agent is bumping `shared/version.ts`, so server and agent never drift. |
+| `MRC_AGENT_BINARY_PATH` | `<repo>/agent/rc-agent.exe` if it exists | Local agent build served at `/agent/latest.exe`. The Docker image sets this and ships the binary. |
+| `MRC_AGENT_BINARY_SHA256` | _(computed at boot)_ | Expected fingerprint of that build; verified by the agent before swapping. |
+| `MRC_AGENT_BINARY_URL` | _(hub)_ | Point agents at a CDN instead of the hub. |
 
 ## Remote client (persistent LAN server)
 
