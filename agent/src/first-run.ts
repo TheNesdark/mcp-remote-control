@@ -24,8 +24,6 @@ export async function runFirstRunDialog(defaults: FirstRunResult): Promise<First
       "-NoProfile",
       "-NonInteractive",
       "-Sta",
-      "-WindowStyle",
-      "Hidden",
       "-ExecutionPolicy",
       "Bypass",
       "-File",

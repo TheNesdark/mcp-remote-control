@@ -40,6 +40,7 @@ $form = New-Object System.Windows.Forms.Form
 $form.Text = "mcp-remote-control - first run"
 $form.Size = New-Object System.Drawing.Size(430, $formHeight)
 $form.StartPosition = "CenterScreen"
+$form.TopMost = $true
 $form.FormBorderStyle = "FixedDialog"
 $form.MaximizeBox = $false
 $form.MinimizeBox = $false
