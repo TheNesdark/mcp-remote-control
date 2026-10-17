@@ -1,0 +1,58 @@
+# docker-compose.yml — deploy del servidor central (Dokploy / Docker local).
+#
+# Dokploy: crea un servicio "Compose", apunta al repositorio y pega este
+# archivo. Usa las variables del panel "Environment" (equivalen a .env).
+#
+# Local:
+#   docker compose up -d --build
+
+services:
+  mrc-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mrc-server:latest
+    container_name: mrc-server
+    restart: unless-stopped
+
+    ports:
+      # 8787: agentes (rc-agent.exe, WebSocket) · 8788: opencode (MCP HTTP)
+      - "${MRC_PORT:-8787}:8787"
+      - "${MRC_MCP_HTTP_PORT:-8788}:8788"
+
+    environment:
+      MRC_HOST: 0.0.0.0
+      MRC_PORT: 8787
+      MRC_MCP_HTTP_PORT: 8788
+      MRC_LOG_LEVEL: ${MRC_LOG_LEVEL:-info}
+      # OBLIGATORIO en producción (si falta se usa el token inseguro "dev-token")
+      MRC_TOKEN: ${MRC_TOKEN:?set MRC_TOKEN in the environment}
+      # Auto-update de agentes (opcional): publica la versión servida en /agent/latest.exe
+      MRC_AGENT_LATEST_VERSION: ${MRC_AGENT_LATEST_VERSION:-}
+      MRC_AGENT_BINARY_PATH: ${MRC_AGENT_BINARY_PATH:-}
+      MRC_AGENT_BINARY_SHA256: ${MRC_AGENT_BINARY_SHA256:-}
+      # TLS nativo (opcional): monta los PEM y apunta las rutas
+      MRC_TLS_CERT: ${MRC_TLS_CERT:-}
+      MRC_TLS_KEY: ${MRC_TLS_KEY:-}
+
+    volumes:
+      # SQLite de tokens, auditoría JSONL y screenshots: sin volumen se pierden.
+      - mrc-data:/app/server/data
+      # Opcional: sirve aquí el rc-agent.exe para el auto-update
+      # - ./dist:/app/dist:ro
+
+    healthcheck:
+      test:
+        - CMD
+        - bun
+        - -e
+        - "const p=process.env.MRC_PORT||8787; const r=await fetch('http://127.0.0.1:'+p+'/'); if(!r.ok) process.exit(1); const j=await r.json(); if(!j.ok) process.exit(1);"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    stop_grace_period: 15s
+
+volumes:
+  mrc-data:

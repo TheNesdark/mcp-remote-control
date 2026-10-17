@@ -1,0 +1,33 @@
+# Contexto de build del servidor central.
+# El Dockerfile solo necesita: manifests de los 3 workspaces, shared/, server/
+# y node_modules instalados dentro de la imagen.
+
+# VCS / CI / docs
+.git
+.github
+docs
+*.md
+
+# Artefactos y entorno local
+node_modules
+**/node_modules
+dist
+run
+.env
+.env.*
+
+# Datos locales del servidor (el contenedor usa un volumen)
+server/data
+
+# Tests y utilidades de desarrollo (el runtime no los importa)
+tests
+scripts
+bunfig.toml
+
+# El agente es un .exe que se compila aparte: el servidor solo necesita su
+# manifest para resolver los workspaces (NO excluir agent/package.json).
+agent/src
+agent/tray
+agent/assets
+agent/build.ts
+agent/install.ps1
