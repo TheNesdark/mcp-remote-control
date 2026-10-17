@@ -253,7 +253,7 @@ type Runner = NonNullable<ScreenshotDeps["runCommand"]>;
 
 async function captureWindows(path: string, params: ScreenshotParams, run: Runner, findCscFn: () => string | null): Promise<void> {
   const ps = await run(
-    ["powershell.exe", "-NoProfile", "-NonInteractive", "-Sta", "-ExecutionPolicy", "Bypass", "-Command", WINDOWS_SCRIPT],
+    ["powershell.exe", "-NoProfile", "-NonInteractive", "-Sta", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-Command", WINDOWS_SCRIPT],
     {
       timeoutMs: 30_000,
       env: {

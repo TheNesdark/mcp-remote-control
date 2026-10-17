@@ -67,7 +67,6 @@ export class TrayIntegration {
         stdout: "pipe",
         stderr: "pipe",
         env: snapshotEnv(),
-        windowsHide: true,
       });
       this.proc = proc;
       this.log("info", "tray helper started", { command: command[0] });
@@ -221,6 +220,8 @@ export function defaultTrayCommand(label: string): string[] | null {
     "-NoProfile",
     "-NonInteractive",
     "-Sta",
+    "-WindowStyle",
+    "Hidden",
     "-ExecutionPolicy",
     "Bypass",
     "-File",

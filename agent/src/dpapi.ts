@@ -21,7 +21,7 @@ async function runDpapi(mode: "protect" | "unprotect", inputB64: string): Promis
     throw new Error("DPAPI is only available on Windows");
   }
   const res = await runCommand(
-    ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", SCRIPT],
+    ["powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-Command", SCRIPT],
     { timeoutMs: 20_000, env: { MRC_DPAPI_MODE: mode, MRC_DPAPI_IN: inputB64 } },
   );
   if (res.code !== 0 || !res.stdout.trim()) {

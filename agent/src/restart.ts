@@ -17,7 +17,6 @@
  * validated and logged but does not actually kill anything: restarting a dev
  * agent managed by a shell loop is the operator's business.
  */
-import { spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { ShortJobResult } from "./job-result.ts";
@@ -87,8 +86,19 @@ function defaultSpawnDetached(scriptPath: string): void {
   // wmic spawns the cmd fully detached from this process' job; when wmic is
   // absent (future Windows), fall back to a `start` from cmd which detaches
   // from the agent process but not fully from its console session.
-  const wmic = spawnSync("wmic", ["process", "call", "create", scriptPath], { windowsHide: true, timeout: 10_000 });
-  if (wmic.error || !wmic.stdout?.toString().includes("ReturnValue = 0")) {
-    spawnSync("cmd.exe", ["/c", "start", "", "/min", scriptPath], { windowsHide: true, shell: true, timeout: 10_000 });
+  let wmicOk = false;
+  try {
+    const wmic = Bun.spawnSync(["wmic", "process", "call", "create", scriptPath], { timeout: 10_000 });
+    wmicOk = (wmic.exitCode ?? 1) === 0 && String(wmic.stdout ?? "").includes("ReturnValue = 0");
+  } catch {
+    // wmic.exe was removed in Windows 11 21H2+; fall through to cmd /c start.
+  }
+  if (!wmicOk) {
+    try {
+      Bun.spawnSync(["cmd.exe", "/c", "start", "", "/min", scriptPath], { timeout: 10_000 });
+    } catch {
+      // Best-effort: the detached script may not survive the agent exit, but
+      // the swap still happened and the user can relaunch manually.
+    }
   }
 }

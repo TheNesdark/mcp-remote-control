@@ -53,6 +53,7 @@ test("parseImageSize returns null for unknown data", () => {
 });
 
 test("takeScreenshot fails with a clear error when headless", async () => {
+  if (process.platform === "win32") return; // covered on the Windows VM (CI runners are headless)
   if (process.env.DISPLAY || process.env.WAYLAND_DISPLAY) return; // graphical dev host: skip
   await expect(takeScreenshot({ format: "png", quality: 80 })).rejects.toThrow(
     /no interactive session|no capture tool/,

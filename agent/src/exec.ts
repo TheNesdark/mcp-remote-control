@@ -96,7 +96,6 @@ export async function runExec(req: ExecRequest, hooks: ExecHooks): Promise<ExecR
       stderr: "pipe",
       // Own process group on POSIX so the whole tree can be killed.
       detached: !isWindows,
-      windowsHide: true,
     }) as SpawnedProcess;
   } catch (err) {
     return { ok: false, durationMs: Date.now() - startedAt, error: `failed to start command: ${String(err)}` };
