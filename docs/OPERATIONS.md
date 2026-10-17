@@ -208,14 +208,23 @@ posture (plain `cmd`, no PowerShell).
 
 ## Auto-update (pull on connect)
 
+The server and the agent now share **one version** (`shared/version.ts`,
+currently `0.7.0`). On every redeploy the Docker build cross-compiles a fresh
+`rc-agent.exe` (version baked in at build time) and places it at
+`/app/agent/rc-agent.exe` inside the image, with `MRC_AGENT_BINARY_PATH`
+pointing at it. The SHA256 is **computed at runtime** from that file, so no
+manual hash is needed.
+
 Redesplegar the server does **not** touch the agent binaries on the Windows
 machines, so agents pull updates themselves when they reconnect:
 
 ```
-server env                      agent behaviour
-MRC_AGENT_LATEST_VERSION=0.6.0  -> welcome announces the version
-MRC_AGENT_BINARY_PATH=/opt/.../rc-agent.exe   -> served at /agent/latest.exe
-MRC_AGENT_BINARY_SHA256=<sha256>              -> verified before swapping
+server env                              agent behaviour
+MRC_AGENT_LATEST_VERSION (default =     -> welcome announces the version
+  shared VERSION, e.g. 0.7.0)
+MRC_AGENT_BINARY_PATH=/app/agent/...     -> served at /agent/latest.exe
+MRC_AGENT_BINARY_SHA256 (auto-computed  -> verified before swapping
+  from the file if unset)
 ```
 
 On every `welcome` the agent compares `latestAgentVersion` with its own
@@ -228,6 +237,17 @@ backoff up to 60 s), so a server-side push at boot would find an empty
 roster. Asking on connect covers every case — server restart, PC reboot,
 network blip.
 
+### What is the SHA256 for?
+
+`MRC_AGENT_BINARY_SHA256` is the **expected fingerprint** of the agent binary.
+When an agent downloads the update it computes the SHA256 of the bytes it
+received and compares it to this value. If they differ the swap is aborted, so
+a tampered or corrupted download (man-in-the-middle, partial transfer, disk
+error) can never replace the running agent. SHA256 is a one-way cryptographic
+hash: any change to the binary, even a single bit, produces a completely
+different 64-hex-char digest, and it is computationally infeasible to craft a
+different file with the same digest.
+
 Safety:
 - never downgrades (strictly newer only) and never swaps an unverified file;
 - `--no-auto-update` / `MRC_AUTO_UPDATE=0` disables it per machine;
@@ -235,14 +255,15 @@ Safety:
 - `MRC_AGENT_BINARY_URL` can point at a CDN instead of the hub (the 92 MB
   binary then never travels through the server).
 
-Publishing a release:
+Publishing a new agent version:
 
 ```sh
-bun run build:exe                                   # dist/rc-agent.exe
-sha256sum dist/rc-agent.exe                         # -> env
-cp dist/rc-agent.exe /opt/mcp-remote-control/dist/  # -> MRC_AGENT_BINARY_PATH
-# set MRC_AGENT_LATEST_VERSION=<new> (+ SHA256) and restart the server
+# 1. bump shared/version.ts  (e.g. 0.7.0 -> 0.7.1)
+# 2. commit + push  -> Dokploy rebuilds the image, cross-compiles a fresh exe
+#    and serves it at /agent/latest.exe with its sha256 computed at boot.
+# 3. agents pick it up on their next reconnect (no env vars to touch).
 ```
 
 Agents still running an older build pick it up on their next reconnect; new
-ones get it at first start. With Dokploy: redeploy after bumping the env vars.
+ones get it at first start. With Dokploy: redeploy after bumping the version
+in `shared/version.ts`.

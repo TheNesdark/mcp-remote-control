@@ -5,6 +5,7 @@ import {
   MAX_JOB_OUTPUT_BYTES,
 } from "@mrc/shared";
 import { join } from "node:path";
+import { VERSION } from "@mrc/shared/version";
 import { DEFAULT_MAX_RETAINED_JOBS, DEFAULT_RETAINED_JOB_TTL_MS } from "./hub.ts";
 import type { LogLevel } from "./log.ts";
 
@@ -107,7 +108,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     retainedJobTtlMs: positiveInt(env.MRC_JOB_HISTORY_TTL_MS, "MRC_JOB_HISTORY_TTL_MS", DEFAULT_RETAINED_JOB_TTL_MS),
     mcpHttpPort: portOrZero(env.MRC_MCP_HTTP_PORT, "MRC_MCP_HTTP_PORT", 0),
     publicUrl: (env.MRC_PUBLIC_URL?.trim() ?? "").replace(/\/+$/, ""),
-    agentLatestVersion: env.MRC_AGENT_LATEST_VERSION?.trim() ?? "",
+    agentLatestVersion: env.MRC_AGENT_LATEST_VERSION?.trim() || VERSION,
     agentBinaryUrl: env.MRC_AGENT_BINARY_URL?.trim() ?? "",
     agentBinarySha256: env.MRC_AGENT_BINARY_SHA256?.trim().toLowerCase() ?? "",
     agentBinaryPath: env.MRC_AGENT_BINARY_PATH?.trim() ?? "",

@@ -8,6 +8,7 @@
     "./args": "./args.ts",
     "./env": "./env.ts",
     "./log": "./log.ts",
-    "./secret": "./secret.ts"
+    "./secret": "./secret.ts",
+    "./version": "./version.ts"
   }
 }

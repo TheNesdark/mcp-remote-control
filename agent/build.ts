@@ -21,6 +21,7 @@ import { basename, dirname, join } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
 const ENTRY = join(ROOT, "agent", "src", "index.ts");
+const VERSION_FILE = join(ROOT, "shared", "version.ts");
 const ICON = join(ROOT, "agent", "assets", "icon.ico");
 
 const NAME_PATTERN = /^[A-Za-z0-9._-]{1,32}$/;
@@ -31,9 +32,9 @@ function flagValue(name: string): string | undefined {
 }
 
 async function readVersion(): Promise<string> {
-  const text = await Bun.file(ENTRY).text();
-  const match = /const VERSION = "([^"]+)"/.exec(text);
-  if (!match) throw new Error("could not find VERSION in agent/src/index.ts");
+  const text = await Bun.file(VERSION_FILE).text();
+  const match = /export const VERSION = "([^"]+)"/.exec(text);
+  if (!match) throw new Error("could not find VERSION in shared/version.ts");
   return match[1]!;
 }
 

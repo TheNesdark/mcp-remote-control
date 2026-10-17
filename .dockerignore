@@ -11,7 +11,6 @@ docs
 # Artefactos y entorno local
 node_modules
 **/node_modules
-dist
 run
 .env
 .env.*
@@ -24,10 +23,7 @@ tests
 scripts
 bunfig.toml
 
-# El agente es un .exe que se compila aparte: el servidor solo necesita su
-# manifest para resolver los workspaces (NO excluir agent/package.json).
-agent/src
+# El agente se compila en una stage separada del Dockerfile; se excluyen del
+# runtime pero deben estar disponibles en el build context.
 agent/tray
-agent/assets
-agent/build.ts
 agent/install.ps1

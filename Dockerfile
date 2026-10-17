@@ -27,6 +27,21 @@ COPY agent/package.json ./agent/
 RUN bun install --frozen-lockfile --production
 
 # ---------------------------------------------------------------------------
+# 1b) agente Windows: cross-compile a .exe en la misma build (version unica)
+# ---------------------------------------------------------------------------
+FROM oven/bun:1.4.3 AS agent-build
+WORKDIR /app
+COPY package.json bun.lock ./
+COPY shared/package.json ./shared/
+COPY agent/package.json ./agent/
+RUN bun install --frozen-lockfile --production
+COPY shared ./shared
+COPY agent/src ./agent/src
+COPY agent/assets ./agent/assets
+COPY agent/build.ts ./agent/build.ts
+RUN bun run build:exe --out /app/agent/rc-agent.exe
+
+# ---------------------------------------------------------------------------
 # 2) runtime: solo lo necesario para servir (sin sources del agente ni tests)
 # ---------------------------------------------------------------------------
 FROM oven/bun:1.4.3 AS runtime
@@ -42,17 +57,21 @@ ENV NODE_ENV=production \
     MRC_PORT=8787 \
     MRC_MCP_HTTP_PORT=8788 \
     MRC_DATA_DIR=/app/server/data \
-    MRC_LOG_LEVEL=info
+    MRC_LOG_LEVEL=info \
+    MRC_AGENT_BINARY_PATH=/app/agent/rc-agent.exe
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json tsconfig.json ./
 COPY shared ./shared
 COPY server ./server
 
+# Binario del agente (compilado en agent-build) para auto-update OTA.
+COPY --from=agent-build /app/agent/rc-agent.exe /app/agent/rc-agent.exe
+
 # Usuario sin privilegios; el directorio de datos es el único escribible.
 RUN useradd --system --uid 10001 --home /app mrc \
- && mkdir -p /app/server/data/screenshots \
- && chown -R mrc:mrc /app/server/data
+ && mkdir -p /app/server/data/screenshots /app/agent \
+ && chown -R mrc:mrc /app/server/data /app/agent
 USER mrc
 
 VOLUME ["/app/server/data"]

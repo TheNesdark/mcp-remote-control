@@ -36,7 +36,7 @@ import { logger, setLogLevel } from "./log.ts";
 import { createService } from "./service.ts";
 import { registerTools } from "./tools/index.ts";
 
-const VERSION = "0.5.2";
+import { VERSION } from "@mrc/shared/version";
 
 const args = parseArgv(process.argv.slice(2));
 const httpPortFlag = argString(args, "mcp-http-port");

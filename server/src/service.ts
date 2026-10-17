@@ -1,4 +1,6 @@
 import type { Server } from "bun";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { AGENT_PATH, MAX_FRAME_BYTES } from "@mrc/shared";
 import { AuditLog } from "./audit.ts";
@@ -48,6 +50,21 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
     allowLegacy: !config.requireDbTokens,
   });
   const audit = new AuditLog(config.auditPath);
+
+  // Auto-update: if a binary path is given but no sha256, compute it from the
+  // file so agents can still verify the download (useful when the binary is
+  // rebuilt on every deploy and the hash is not known ahead of time).
+  let agentBinarySha256 = config.agentBinarySha256;
+  if (config.agentBinaryPath && !agentBinarySha256) {
+    try {
+      const buf = readFileSync(config.agentBinaryPath);
+      agentBinarySha256 = createHash("sha256").update(buf).digest("hex");
+      logger.info("computed agent binary sha256 from file", { path: config.agentBinaryPath, sha256: agentBinarySha256 });
+    } catch (err) {
+      logger.warn("could not read agent binary for sha256", { path: config.agentBinaryPath, error: String(err) });
+    }
+  }
+
   const hub = new Hub({
     registry,
     audit,
@@ -66,7 +83,7 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
             ...(config.agentBinaryUrl || config.agentBinaryPath
               ? { binaryUrl: config.agentBinaryUrl || "/agent/latest.exe" }
               : {}),
-            ...(config.agentBinarySha256 ? { binarySha256: config.agentBinarySha256 } : {}),
+            ...(agentBinarySha256 ? { binarySha256: agentBinarySha256 } : {}),
           },
         }
       : {}),
