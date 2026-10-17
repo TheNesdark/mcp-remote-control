@@ -137,6 +137,19 @@ test("output larger than the cap is truncated", async () => {
   expect(outcome.stdout.length).toBeLessThanOrEqual(33);
 });
 
+test("a per-request output cap overrides the hub default", async () => {
+  const svc = makeService({ maxJobOutputBytes: 32 });
+  const agent = makeAgent({ name: "T-07b" });
+  await agent.start();
+
+  const payload = "y".repeat(200);
+  const outcome = await svc.hub.request("T-07b", "exec", { echo: payload }, undefined, undefined, {
+    maxOutputBytes: 1024,
+  });
+  expect(outcome.truncated).toBe(false);
+  expect(outcome.stdout.trim()).toBe(payload);
+});
+
 test("heartbeat sweeper drops silent agents", async () => {
   const svc = makeService({ heartbeatIntervalMs: 200, heartbeatTimeoutMs: 700 });
   const agent = makeAgent({ name: "T-08", silent: true });

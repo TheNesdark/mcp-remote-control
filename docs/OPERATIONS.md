@@ -90,7 +90,8 @@ on the client side. Agent identities and tokens survive restarts (same
 
 - `mcp.db` — enrolled agents, token hashes, first/last seen (`MRC_DB_PATH`)
 - `audit.jsonl` — audit trail (`MRC_AUDIT_PATH`)
-- `screenshots/` — images pulled by `agent_screenshot` (`MRC_SCREENSHOT_DIR`)
+- `screenshots/` — images received by `agent_screenshot` (streamed by the agent
+  and saved on this host; `MRC_SCREENSHOT_DIR`)
 
 ## LAN deployment (F5, no VPN)
 

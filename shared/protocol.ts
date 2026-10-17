@@ -118,6 +118,14 @@ export const PsKillParams = z
 export type PsKillParams = z.infer<typeof PsKillParams>;
 
 export const SCREENSHOT_FORMATS = ["png", "jpeg"] as const;
+/** Hard cap for a single screenshot payload, in bytes (agent capture + transfer). */
+export const MAX_SCREENSHOT_BYTES = 20 * 1024 * 1024;
+/**
+ * Worst-case size of a base64-encoded screenshot plus JSON framing slack.
+ * The agent streams the image in `job.output` chunks, so the server has to
+ * allow more buffered output than a regular job (which is text-oriented).
+ */
+export const MAX_SCREENSHOT_BASE64_BYTES = Math.ceil((MAX_SCREENSHOT_BYTES * 4) / 3) + 16 * 1024;
 export const ScreenshotParams = z.object({
   format: z.enum(SCREENSHOT_FORMATS).default("png"),
   /** JPEG quality (1-100); ignored for png. */

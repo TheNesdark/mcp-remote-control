@@ -16,24 +16,53 @@
  * The image is written to a temp file on the agent host; the job meta carries
  * its path so the server can pull it down with the chunked fs.read loop.
  */
+import { createHash } from "node:crypto";
 import os from "node:os";
 import { existsSync } from "node:fs";
 import { unlink } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import type { ScreenshotParams } from "@mrc/shared";
-import { sha256File } from "./fs.ts";
-import type { ShortJobResult } from "./job-result.ts";
+import { join } from "node:path";
+import { MAX_SCREENSHOT_BYTES, type ScreenshotParams } from "@mrc/shared";
+import type { JobOutputChunk, ShortJobResult } from "./job-result.ts";
 import { runCommand, type CommandResult } from "./run-command.ts";
 
-export const MAX_SCREENSHOT_BYTES = 20 * 1024 * 1024;
+export { MAX_SCREENSHOT_BYTES };
+
+/** Base64 chunk size: stays well under the 1 MiB websocket frame limit. */
+const SCREENSHOT_CHUNK_CHARS = 256 * 1024;
 
 export interface ScreenshotMeta {
-  path: string;
   format: ScreenshotParams["format"];
   bytes: number;
   sha256: string;
   width: number | null;
   height: number | null;
+}
+
+/** Splits a base64 payload into `job.output` chunks (server concatenates them). */
+export function base64Chunks(base64: string): JobOutputChunk[] {
+  const chunks: JobOutputChunk[] = [];
+  for (let offset = 0; offset < base64.length; offset += SCREENSHOT_CHUNK_CHARS) {
+    chunks.push({ stream: "stdout", data: base64.slice(offset, offset + SCREENSHOT_CHUNK_CHARS), encoding: "base64" });
+  }
+  return chunks;
+}
+
+/**
+ * Decodes the base64 a capture backend wrote to stdout. Returns null when the
+ * output is empty or is not valid base64 (e.g. a PowerShell error message).
+ */
+export function decodeBase64Output(stdout: string): Uint8Array | null {
+  const clean = stdout.replace(/\s+/g, "");
+  if (clean.length === 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(clean)) return null;
+  const buffer = Buffer.from(clean, "base64");
+  return buffer.length > 0 ? new Uint8Array(buffer) : null;
+}
+
+/** PNG signature or JPEG SOI: guards against decoding a non-image payload. */
+export function looksLikeImage(bytes: Uint8Array): boolean {
+  const png = bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+  const jpeg = bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8;
+  return png || jpeg;
 }
 
 const WINDOWS_SCRIPT = String.raw`
@@ -50,28 +79,38 @@ try {
   try {
     $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
   } finally { $graphics.Dispose() }
-  if ($env:MRC_SHOT_FORMAT -eq "jpeg") {
-    $encoder = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq "image/jpeg" }
-    $params = New-Object System.Drawing.Imaging.EncoderParameters 1
-    $params.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter ([System.Drawing.Imaging.Encoder]::Quality, [long][int]$env:MRC_SHOT_QUALITY)
-    $bitmap.Save($env:MRC_SHOT_PATH, $encoder, $params)
-  } else {
-    $bitmap.Save($env:MRC_SHOT_PATH, [System.Drawing.Imaging.ImageFormat]::Png)
-  }
+  $stream = New-Object System.IO.MemoryStream
+  try {
+    if ($env:MRC_SHOT_FORMAT -eq "jpeg") {
+      $encoder = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq "image/jpeg" }
+      $params = New-Object System.Drawing.Imaging.EncoderParameters 1
+      $params.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter ([System.Drawing.Imaging.Encoder]::Quality, [long][int]$env:MRC_SHOT_QUALITY)
+      $bitmap.Save($stream, $encoder, $params)
+    } else {
+      $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+    }
+    # The screenshot is never written to disk on this machine: it goes straight
+    # to stdout as base64 and the agent relays it to the server inside the job.
+    [Console]::Out.Write([Convert]::ToBase64String($stream.ToArray()))
+    [Console]::Out.Flush()
+  } finally { $stream.Dispose() }
 } finally { $bitmap.Dispose() }
-Write-Output ("OK {0}x{1}" -f $bounds.Width, $bounds.Height)
+# Success marker on stderr, so stdout carries nothing but the base64 payload.
+[Console]::Error.WriteLine("OK {0}x{1}" -f $bounds.Width, $bounds.Height)
 `;
 
 /**
  * Native C# capturer for the PowerShell fallback (the plan's "Plan B").
  * Compiled with the csc.exe that ships with .NET Framework; args:
- *   mrc-shot.exe <outPath> <png|jpeg> <quality 1-100>
- * Captures the primary monitor work area; prints "OK <w>x<h>" on success.
+ *   mrc-shot.exe <png|jpeg> <quality 1-100>
+ * Captures the primary monitor work area and writes the image to stdout as
+ * base64 (nothing touches the disk); prints "OK <w>x<h>" on stderr.
  */
 export const WINDOWS_CSHARP = `
 using System;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.IO;
 using System.Runtime.InteropServices;
 
 class MrcShot
@@ -86,11 +125,9 @@ class MrcShot
 
     static int Main(string[] argv)
     {
-        if (argv.Length < 1) { Console.Error.WriteLine("usage: mrc-shot.exe <out> [png|jpeg] [quality]"); return 2; }
-        string outPath = argv[0];
-        string format = argv.Length > 1 ? argv[1] : "png";
+        string format = argv.Length > 0 ? argv[0] : "png";
         long quality = 80;
-        if (argv.Length > 2) long.TryParse(argv[2], out quality);
+        if (argv.Length > 1) long.TryParse(argv[1], out quality);
 
         Rect area = new Rect();
         if (!SystemParametersInfo(SPI_GETWORKAREA, 0, ref area, 0) || area.Right <= area.Left || area.Bottom <= area.Top)
@@ -113,24 +150,30 @@ class MrcShot
                 Console.Error.WriteLine("copyfromscreen-failed " + e.GetType().Name + ": " + e.Message);
                 return 4;
             }
-            if (format == "jpeg")
+            using (MemoryStream ms = new MemoryStream())
             {
-                ImageCodecInfo codec = null;
-                foreach (ImageCodecInfo c in ImageCodecInfo.GetImageEncoders())
-                    if (c.MimeType == "image/jpeg") { codec = c; break; }
-                if (codec == null) { Console.Error.WriteLine("no jpeg encoder"); return 5; }
-                using (EncoderParameters ep = new EncoderParameters(1))
+                if (format == "jpeg")
                 {
-                    ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
-                    bmp.Save(outPath, codec, ep);
+                    ImageCodecInfo codec = null;
+                    foreach (ImageCodecInfo c in ImageCodecInfo.GetImageEncoders())
+                        if (c.MimeType == "image/jpeg") { codec = c; break; }
+                    if (codec == null) { Console.Error.WriteLine("no jpeg encoder"); return 5; }
+                    using (EncoderParameters ep = new EncoderParameters(1))
+                    {
+                        ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
+                        bmp.Save(ms, codec, ep);
+                    }
                 }
-            }
-            else
-            {
-                bmp.Save(outPath, ImageFormat.Png);
+                else
+                {
+                    bmp.Save(ms, ImageFormat.Png);
+                }
+                // Nothing is written to disk; the image is streamed as base64.
+                Console.Write(Convert.ToBase64String(ms.ToArray()));
+                Console.Out.Flush();
             }
         }
-        Console.WriteLine("OK " + width + "x" + height);
+        Console.Error.WriteLine("OK " + width + "x" + height);
         return 0;
     }
 }
@@ -148,37 +191,28 @@ export async function takeScreenshot(params: ScreenshotParams, deps: ScreenshotD
   const platform = deps.platform ?? process.platform;
   const run = deps.runCommand ?? runCommand;
   const resolveCsc = deps.findCsc ?? (() => findCsc());
-  const extension = params.format === "jpeg" ? "jpg" : "png";
-  const path = join(os.tmpdir(), `mrc-screenshot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${extension}`);
 
-  if (platform === "win32") {
-    await captureWindows(path, params, run, resolveCsc);
-  } else {
-    await capturePosix(path);
+  const bytes =
+    platform === "win32"
+      ? await captureWindows(params, run, resolveCsc)
+      : await capturePosix(params);
+
+  if (bytes.length === 0) throw new Error("screenshot failed: the capture produced no data");
+  if (bytes.length > MAX_SCREENSHOT_BYTES) {
+    throw new Error(`screenshot too large (${bytes.length} bytes, max ${MAX_SCREENSHOT_BYTES})`);
   }
 
-  const file = Bun.file(path);
-  if (!(await file.exists())) {
-    throw new Error("screenshot failed: the capture command did not produce a file");
-  }
-  const bytes = file.size;
-  if (bytes === 0) throw new Error("screenshot failed: the captured file is empty");
-  if (bytes > MAX_SCREENSHOT_BYTES) {
-    throw new Error(`screenshot too large (${bytes} bytes, max ${MAX_SCREENSHOT_BYTES})`);
-  }
-
-  const sha256 = await sha256File(path);
-  const dimensions = parseImageSize(new Uint8Array(await file.arrayBuffer()));
-
+  const dimensions = parseImageSize(bytes);
   const meta: ScreenshotMeta = {
-    path,
     format: params.format,
-    bytes,
-    sha256,
+    bytes: bytes.length,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
     width: dimensions?.width ?? null,
     height: dimensions?.height ?? null,
   };
-  return { meta: meta as unknown as Record<string, unknown> };
+  // The image travels to the server inside this job (base64 chunks): it is
+  // never written to disk on the remote machine and needs no pull round-trip.
+  return { outputs: base64Chunks(Buffer.from(bytes).toString("base64")), meta: meta as unknown as Record<string, unknown> };
 }
 
 /** Well-known .NET Framework compilers, newest first. */
@@ -251,19 +285,21 @@ export function windowsCaptureError(ps: CommandResult, fallback: CommandResult |
 
 type Runner = NonNullable<ScreenshotDeps["runCommand"]>;
 
-async function captureWindows(path: string, params: ScreenshotParams, run: Runner, findCscFn: () => string | null): Promise<void> {
+async function captureWindows(params: ScreenshotParams, run: Runner, findCscFn: () => string | null): Promise<Uint8Array> {
   const ps = await run(
     ["powershell.exe", "-NoProfile", "-NonInteractive", "-Sta", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-Command", WINDOWS_SCRIPT],
     {
       timeoutMs: 30_000,
       env: {
-        MRC_SHOT_PATH: path,
         MRC_SHOT_FORMAT: params.format,
         MRC_SHOT_QUALITY: String(params.quality),
       },
     },
   );
-  if (ps.code === 0 && parseShotDims(ps.stdout)) return;
+  if (ps.code === 0) {
+    const bytes = decodeBase64Output(ps.stdout);
+    if (bytes && looksLikeImage(bytes)) return bytes;
+  }
 
   // PowerShell refused (typically AMSI/antivirus): try the native C# capturer.
   const csc = findCscFn();
@@ -274,7 +310,7 @@ async function captureWindows(path: string, params: ScreenshotParams, run: Runne
     throw windowsCaptureError(ps, null, false);
   }
 
-  const base = join(dirname(path), `mrc-shot-${Date.now()}`);
+  const base = join(os.tmpdir(), `mrc-shot-${Date.now()}`);
   const csPath = `${base}.cs`;
   const exePath = `${base}.exe`;
   try {
@@ -285,8 +321,11 @@ async function captureWindows(path: string, params: ScreenshotParams, run: Runne
     );
     if (compiled.code !== 0) throw windowsCaptureError(ps, compiled, false);
 
-    const shot = await run([exePath, path, params.format, String(params.quality)], { timeoutMs: 30_000 });
-    if (shot.code === 0 && parseShotDims(shot.stdout)) return;
+    const shot = await run([exePath, params.format, String(params.quality)], { timeoutMs: 30_000 });
+    if (shot.code === 0) {
+      const bytes = decodeBase64Output(shot.stdout);
+      if (bytes && looksLikeImage(bytes)) return bytes;
+    }
     throw windowsCaptureError(ps, shot, false);
   } finally {
     await unlink(csPath).catch(() => {});
@@ -294,12 +333,20 @@ async function captureWindows(path: string, params: ScreenshotParams, run: Runne
   }
 }
 
-async function capturePosix(path: string): Promise<void> {
+/**
+ * POSIX is development-only. The capture tools need a file path, so the image
+ * is written to a temp file, read into memory and deleted right away: nothing
+ * is left behind and it travels to the server inside the job.
+ */
+async function capturePosix(params: ScreenshotParams): Promise<Uint8Array> {
   const wayland = Boolean(process.env.WAYLAND_DISPLAY);
   const x11 = Boolean(process.env.DISPLAY);
   if (!wayland && !x11) {
     throw new Error("no interactive session: no graphical display detected on this host");
   }
+
+  const extension = params.format === "jpeg" ? "jpg" : "png";
+  const path = join(os.tmpdir(), `mrc-screenshot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${extension}`);
 
   const attempts: Array<{ cmd: string; args: string[] }> = [];
   if (wayland) attempts.push({ cmd: "grim", args: [path] });
@@ -309,15 +356,29 @@ async function capturePosix(path: string): Promise<void> {
   }
 
   const errors: string[] = [];
+  let captured = false;
   for (const attempt of attempts) {
     if (!Bun.which(attempt.cmd)) continue;
     const res = await runCommand([attempt.cmd, ...attempt.args], { timeoutMs: 20_000 });
-    if (res.code === 0) return;
+    if (res.code === 0) {
+      captured = true;
+      break;
+    }
     errors.push(`${attempt.cmd}: ${res.stderr.trim() || `exit ${res.code}`}`);
   }
 
-  if (errors.length > 0) throw new Error(`screenshot failed: ${errors.join("; ")}`);
-  throw new Error("screenshot failed: no capture tool found (install grim, scrot or ImageMagick)");
+  if (!captured) {
+    if (errors.length > 0) throw new Error(`screenshot failed: ${errors.join("; ")}`);
+    throw new Error("screenshot failed: no capture tool found (install grim, scrot or ImageMagick)");
+  }
+
+  try {
+    const file = Bun.file(path);
+    if (!(await file.exists())) throw new Error("screenshot failed: the capture command did not produce a file");
+    return new Uint8Array(await file.arrayBuffer());
+  } finally {
+    await unlink(path).catch(() => {});
+  }
 }
 
 /** PNG IHDR or JPEG SOF dimensions; null when the format is not recognized. */

@@ -129,9 +129,10 @@ PowerShell: `tray.exe` en C# compilado con `csc.exe` (presente en Windows).
   con `taskkill /PID <pid> /T /F`; en Linux/dev lee `/proc` directamente (sin procps) y
   en el resto de POSIX usa `ps`; el kill en árbol recorre el mapa de ppid.
 - `screenshot.ts` — captura del **monitor primario** con `System.Windows.Forms` +
-  `System.Drawing` vía PowerShell a un archivo temporal; PNG/JPEG; si no hay sesión
-  interactiva (sesión 0, escritorio bloqueado) devuelve un error claro. El servidor la
-  descarga chunked con el mismo mecanismo que `fs.read`.
+  `System.Drawing` vía PowerShell; PNG/JPEG; si no hay sesión interactiva (sesión 0,
+  escritorio bloqueado) devuelve un error claro. La imagen **no se guarda en el equipo
+  remoto**: el agente la envía dentro del propio job (base64 en `job.output`) y el
+  servidor la verifica (tamaño + SHA-256) y guarda su copia local.
 
 > ⚠️ **Sesión 0 vs sesión interactiva**: si el `.exe` corre como *servicio Windows* no hay
 > escritorio → **screenshot no funciona**. Instalación recomendada v1: **Tarea Programada /

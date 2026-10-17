@@ -152,10 +152,11 @@ To keep the agent from using the tools without asking, restrict them by name:
    - `agent_ps_list` sorts by `cpu` (default), `mem`, `pid` or `name` and can
      filter by process name / command line substring. `force=false` and
      `tree=false` request a graceful single-process kill instead.
-   - `agent_screenshot` captures **only the primary monitor** and saves the
-     image on the server host (path in `localPath`) while embedding it in the
-     tool result (`embed=false` for path-only). On Windows the agent must run in
-     an interactive desktop session: session 0 (service) or a locked desktop
-     fails with `no interactive session`. Screenshots above 8 MB are not
-     embedded (use the `localPath` or JPEG).
+   - `agent_screenshot` captures **only the primary monitor**. The agent never
+     writes the image to the remote disk: it streams it inside the job and the
+     server verifies size + SHA-256, saves its local copy (`localPath`) and, by
+     default, embeds it in the tool result (`embed=false` for path-only). On
+     Windows the agent must run in an interactive desktop session: session 0
+     (service) or a locked desktop fails with `no interactive session`.
+     Screenshots above 8 MB are not embedded (use the `localPath` or JPEG).
    - `agent_ps_kill` refuses to kill the agent process itself.

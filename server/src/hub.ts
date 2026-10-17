@@ -90,6 +90,8 @@ interface PendingJob {
   timeoutTimer: Timer;
   graceTimer?: Timer;
   streams: { stdout: OutputStream; stderr: OutputStream };
+  /** Per-job output cap (screenshots need more than the text-oriented default). */
+  maxOutputBytes: number;
   truncated: boolean;
   startedAt: number;
   audit?: ToolAuditMeta;
@@ -403,6 +405,7 @@ export class Hub {
     params: unknown,
     timeoutMs?: number,
     auditMeta?: ToolAuditMeta,
+    overrides?: { maxOutputBytes?: number },
   ): Promise<JobOutcome> {
     const startedAt = Date.now();
     const internal = auditMeta?.internal === true;
@@ -439,6 +442,7 @@ export class Hub {
       resolve: resolveFn,
       timeoutTimer: setTimeout(() => this.onJobTimeout(jobId), effectiveTimeout),
       streams: { stdout: { chunks: [], bytes: 0 }, stderr: { chunks: [], bytes: 0 } },
+      maxOutputBytes: overrides?.maxOutputBytes ?? this.opts.maxJobOutputBytes,
       truncated: false,
       startedAt,
       audit: auditMeta,
@@ -472,7 +476,7 @@ export class Hub {
     const job = this.pending.get(msg.jobId);
     if (!job) return; // late output after result/timeout: drop
     const stream = job.streams[msg.stream];
-    if (stream.bytes + msg.data.length > this.opts.maxJobOutputBytes) {
+    if (stream.bytes + msg.data.length > job.maxOutputBytes) {
       job.truncated = true;
       return;
     }

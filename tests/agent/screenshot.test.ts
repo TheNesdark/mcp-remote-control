@@ -3,8 +3,11 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  base64Chunks,
+  decodeBase64Output,
   findCsc,
   isAmsiBlocked,
+  looksLikeImage,
   parseImageSize,
   parseShotDims,
   takeScreenshot,
@@ -60,15 +63,14 @@ test("takeScreenshot fails with a clear error when headless", async () => {
   );
 });
 
-test("takeScreenshot writes a temp file when a backend is available", async () => {
+test("takeScreenshot streams the image inline (no temp file left behind)", async () => {
   if (process.platform === "win32") return; // covered on the Windows VM
   if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return;
   const outcome = await takeScreenshot({ format: "png", quality: 80 });
-  const meta = outcome.meta as { path: string; bytes: number; sha256: string };
+  const meta = outcome.meta as { bytes: number; sha256: string };
   expect(meta.bytes).toBeGreaterThan(0);
   expect(meta.sha256.length).toBe(64);
-  expect(await Bun.file(meta.path).exists()).toBe(true);
-  expect((await Bun.file(meta.path).arrayBuffer()).byteLength).toBe(meta.bytes);
+  expect(decodeOutputs(outcome).length).toBe(meta.bytes);
 });
 
 // ---------------------------------------------------------------------------
@@ -87,12 +89,20 @@ const MINI_PNG = Uint8Array.from(
   atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="),
   (c) => c.charCodeAt(0),
 );
+const MINI_PNG_BASE64 = Buffer.from(MINI_PNG).toString("base64");
 
-const okResult = (): CommandResult => ({ code: 0, stdout: "OK 1366x768", stderr: "" });
+/** What a real capture backend writes to stdout: the image as base64. */
+const okResult = (): CommandResult => ({ code: 0, stdout: MINI_PNG_BASE64, stderr: "OK 1x1" });
 const amsiResult = (): CommandResult => ({ code: 1, stdout: "", stderr: AMSI_STDERR });
 
+/** Concatenates the job's base64 output chunks back into the raw image. */
+function decodeOutputs(result: { outputs?: Array<{ data: string }> }): Uint8Array {
+  const base64 = (result.outputs ?? []).map((chunk) => chunk.data).join("");
+  return new Uint8Array(Buffer.from(base64, "base64"));
+}
+
 interface CaptureRun {
-  outcome?: { meta: { bytes: number; width: number | null } };
+  outcome?: { meta: { bytes: number; width: number | null }; outputs?: Array<{ data: string }> };
   error?: Error;
   calls: Array<{ cmd: string; argv: string[] }>;
   csPath: string | null;
@@ -110,21 +120,15 @@ async function captureAsWindows(respond: (cmd: string[]) => CommandResult, findC
   const deps: ScreenshotDeps = {
     platform: "win32",
     findCsc,
-    runCommand: async (cmd, opts) => {
+    runCommand: async (cmd) => {
       calls.push({ cmd: cmd[0]!, argv: cmd });
       const lower = cmd[0]!.toLowerCase();
-      if (lower === "powershell.exe") {
-        // pretend PowerShell captured the screen: drop a PNG at MRC_SHOT_PATH
-        await Bun.write(opts?.env?.MRC_SHOT_PATH ?? join(dir, "unrelated.png"), MINI_PNG);
-        return respond(cmd);
-      }
       if (lower.endsWith("csc.exe")) {
         exePath = /\/out:(.+)/.exec(cmd.find((a) => a.startsWith("/out:")) ?? "")?.[1] ?? null;
         csPath = cmd.at(-1)!;
-        return respond(cmd);
       }
-      // the compiled capturer exe: fake a successful capture
-      await Bun.write(cmd[1]!, MINI_PNG);
+      // Capture backends stream the image as base64 on stdout; nothing is
+      // written to disk on the remote machine.
       return respond(cmd);
     },
   };
@@ -177,29 +181,43 @@ test("windows: PowerShell success never touches the csc fallback", async () => {
   expect(run.error).toBeUndefined();
   expect(run.calls.map((c) => c.cmd)).toEqual(["powershell.exe"]);
   expect(run.outcome?.meta.bytes).toBe(MINI_PNG.length);
+  const decoded = decodeOutputs(run.outcome!);
+  expect(decoded).toEqual(MINI_PNG);
 });
 
 test("windows: AMSI block falls back to the compiled C# capturer", async () => {
   const run = await captureAsWindows((cmd) => {
     if (cmd[0] === "powershell.exe") return amsiResult();
     if ((cmd[0] ?? "").toLowerCase().endsWith("csc.exe")) return { code: 0, stdout: "", stderr: "" };
-    return { code: 0, stdout: "OK 1x1", stderr: "" };
+    return okResult();
   }, () => "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe");
 
   expect(run.error).toBeUndefined();
   expect(run.calls.length).toBe(3);
   expect(run.calls[0]!.cmd).toBe("powershell.exe");
   expect(run.calls[1]!.cmd.toLowerCase().endsWith("csc.exe")).toBe(true);
-  expect(run.calls[2]!.argv.at(-2)).toBe("png"); // exe <out> png <quality>
+  expect(run.calls[2]!.cmd).toBe(run.exePath!); // the compiled capturer exe
+  expect(run.calls[2]!.argv.at(-2)).toBe("png"); // exe <png|jpeg> <quality>
   expect(run.calls[2]!.argv.at(-1)).toBe("80");
   expect(run.outcome?.meta.width).toBe(1);
+  expect(decodeOutputs(run.outcome!)).toEqual(MINI_PNG);
 
-  // .cs source and .exe are compiled from and written next to the temp png,
-  // then cleaned up after the job.
+  // .cs source and .exe are compiled to a temp dir and cleaned up after the job.
   expect(run.csPath?.endsWith(".cs")).toBe(true);
   expect(run.exePath?.endsWith(".exe")).toBe(true);
   expect(existsSync(run.csPath!)).toBe(false);
   expect(existsSync(run.exePath!)).toBe(false);
+});
+
+test("windows: a non-image stdout falls back instead of trusting garbage", async () => {
+  const run = await captureAsWindows((cmd) => {
+    if (cmd[0] === "powershell.exe") return { code: 0, stdout: "no soy base64!", stderr: "" };
+    if ((cmd[0] ?? "").toLowerCase().endsWith("csc.exe")) return { code: 0, stdout: "", stderr: "" };
+    return okResult();
+  }, () => "C:\\csc.exe");
+  expect(run.error).toBeUndefined();
+  expect(run.calls.length).toBe(3); // fell through to the C# capturer
+  expect(run.outcome?.meta.bytes).toBe(MINI_PNG.length);
 });
 
 test("windows: no csc.exe yields an actionable AMSI error", async () => {
@@ -214,7 +232,7 @@ test("windows: csc compile failure surfaces both failures", async () => {
   const run = await captureAsWindows((cmd) => {
     if (cmd[0] === "powershell.exe") return amsiResult();
     if ((cmd[0] ?? "").toLowerCase().endsWith("csc.exe")) return { code: 1, stdout: "", stderr: "error CS1002: ; expected" };
-    return { code: 0, stdout: "OK 1x1", stderr: "" };
+    return okResult();
   }, () => "C:\\csc.exe");
   expect(run.outcome).toBeUndefined();
   expect(run.error?.message).toContain("blocked by antivirus/AMSI");
@@ -231,4 +249,32 @@ test("embedded C# capturer has the expected shape", () => {
   expect(WINDOWS_CSHARP).toContain("SystemParametersInfo");
   expect(WINDOWS_CSHARP).toContain("SPI_GETWORKAREA");
   expect(WINDOWS_CSHARP).toContain("no interactive session");
+  expect(WINDOWS_CSHARP).toContain("Console.Write(Convert.ToBase64String");
+});
+
+test("decodeBase64Output rejects empty and non-base64 output", () => {
+  expect(decodeBase64Output("")).toBeNull();
+  expect(decodeBase64Output("   \r\n")).toBeNull();
+  expect(decodeBase64Output("no soy base64!")).toBeNull();
+  expect(decodeBase64Output("@@@@@")).toBeNull();
+  expect(decodeBase64Output(MINI_PNG_BASE64)).toEqual(MINI_PNG);
+  // whitespace/newlines around a valid payload are tolerated
+  expect(decodeBase64Output(`\r\n${MINI_PNG_BASE64}\r\n`)).toEqual(MINI_PNG);
+});
+
+test("looksLikeImage only accepts PNG/JPEG payloads", () => {
+  expect(looksLikeImage(MINI_PNG)).toBe(true);
+  expect(looksLikeImage(jpegHeader(2, 2))).toBe(true);
+  expect(looksLikeImage(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9]))).toBe(false);
+  expect(looksLikeImage(new Uint8Array(0))).toBe(false);
+});
+
+test("base64Chunks splits a payload into reassemblable job output chunks", () => {
+  const image = new Uint8Array((256 * 1024 * 3) / 4 * 3); // ~230 KiB -> base64 3+ chunks
+  const base64 = Buffer.from(image).toString("base64");
+  const chunks = base64Chunks(base64);
+  expect(chunks.length).toBeGreaterThan(1);
+  expect(chunks.every((chunk) => chunk.encoding === "base64" && chunk.stream === "stdout")).toBe(true);
+  expect(chunks.map((chunk) => chunk.data).join("")).toBe(base64);
+  expect(Buffer.from(chunks.map((chunk) => chunk.data).join(""), "base64").length).toBe(image.length);
 });
