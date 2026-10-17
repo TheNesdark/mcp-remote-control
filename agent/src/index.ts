@@ -18,8 +18,14 @@ import { logger, setLogFile, setLogLevel, type LogLevel } from "@mrc/shared/log"
 import { AgentConnection, type ConnectionState } from "./connection.ts";
 import { JobManager } from "./jobs.ts";
 import { handleAutoUpdate } from "./auto-update.ts";
-import { loadSettings } from "./settings.ts";
+import { loadSettings, readConfig } from "./settings.ts";
+import { protectString } from "./dpapi.ts";
+import { resolveHelperScript } from "./helper-scripts.ts";
+import { runCommand } from "./run-command.ts";
+import { restartAgent } from "./restart.ts";
 import { TrayIntegration } from "./tray.ts";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 const VERSION = "0.6.0";
 
@@ -50,9 +56,9 @@ const settings = await loadSettings({
   interactive: process.platform === "win32",
 });
 
-const serverUrl = settings.server;
-const token = settings.token;
-const name = settings.name;
+let serverUrl = settings.server;
+let token = settings.token;
+let name = settings.name;
 const tags = settings.tags;
 
 // File logging (so the tray "Open logs" menu has something to open).
@@ -106,11 +112,90 @@ const tray = new TrayIntegration({
   },
   onReconnect: () => connection?.reconnectNow(),
   onOpenLogs: () => settings.openLogs(),
+  onSettings: () => {
+    void runSettingsDialog().catch((err) => logger.warn(`settings dialog failed: ${String(err)}`));
+  },
   onAutostart: (enabled) => {
     void settings.setAutostart(enabled).catch((err) => logger.warn(`autostart change failed: ${String(err)}`));
   },
   onExit: () => void shutdown("tray exit"),
 });
+
+/** Open the settings dialog and apply changes (restart the agent if needed). */
+async function runSettingsDialog(): Promise<void> {
+  const script = resolveHelperScript("first-run.ps1");
+  if (!script) {
+    logger.warn("settings dialog unavailable: first-run.ps1 not found");
+    return;
+  }
+  const res = await runCommand(
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Sta",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      script,
+      "-DefaultName",
+      name,
+      "-DefaultServer",
+      serverUrl,
+      "-DefaultToken",
+      token,
+    ],
+    { timeoutMs: 5 * 60_000 },
+  );
+  const line = res.stdout.split("\n").map((l) => l.trim()).filter(Boolean).pop() ?? "";
+  let parsed: { name?: string; server?: string; token?: string; cancelled?: boolean; error?: string } = {};
+  try {
+    parsed = JSON.parse(line) as typeof parsed;
+  } catch {
+    logger.warn("settings dialog returned no JSON");
+    return;
+  }
+  if (parsed.cancelled) return;
+  if (parsed.error) {
+    logger.warn(`settings dialog error: ${parsed.error}`);
+    return;
+  }
+
+  const newName = parsed.name?.trim() || name;
+  const newServer = parsed.server?.trim() || serverUrl;
+  const newToken = parsed.token?.trim() || token;
+  const changed = newName !== name || newServer !== serverUrl || newToken !== token;
+
+  // Persist to agent.json (DPAPI on Windows).
+  try {
+    const previous = readConfig(settings.configPath);
+    const toWrite: Record<string, unknown> = { ...previous, name: newName, server: newServer, tags };
+    if (settings.agentId) toWrite.id = settings.agentId;
+    if (process.platform === "win32") {
+      try {
+        toWrite.tokenProtected = await protectString(newToken);
+      } catch {
+        toWrite.token = newToken;
+      }
+    } else {
+      toWrite.token = newToken;
+    }
+    mkdirSync(dirname(settings.configPath), { recursive: true });
+    writeFileSync(settings.configPath, `${JSON.stringify(toWrite, null, 2)}\n`, "utf8");
+  } catch (err) {
+    logger.warn(`could not persist settings: ${String(err)}`);
+  }
+
+  if (changed) {
+    logger.info("settings changed; restarting agent to apply");
+    tray.setState("connecting", newServer);
+    try {
+      await restartAgent({}, { platform: process.platform, execPath: process.execPath });
+    } catch (err) {
+      logger.warn(`restart failed: ${String(err)}; apply changes on next launch`);
+    }
+  }
+}
 
 function currentTrayState(): ConnectionState {
   if (!connection) return "connecting";

@@ -24,6 +24,7 @@ const DEV_TOKEN = "dev-token";
  */
 const BUILT_IN_SERVER = process.env.MRC_BUILT_IN_SERVER || "";
 const BUILT_IN_NAME = process.env.MRC_BUILT_IN_NAME || "";
+const BUILT_IN_TOKEN = process.env.MRC_BUILT_IN_TOKEN || "";
 
 interface ConfigFile {
   name?: string;
@@ -97,7 +98,7 @@ export function parseTags(raw: string | string[] | undefined): string[] {
     .slice(0, 16);
 }
 
-function readConfig(path: string): ConfigFile {
+export function readConfig(path: string): ConfigFile {
   if (!existsSync(path)) return {};
   try {
     return JSON.parse(readFileSync(path, "utf8")) as ConfigFile;
@@ -113,7 +114,7 @@ export async function loadSettings(input: SettingsInput = {}, deps: SettingsDeps
 
   let name = input.name ?? file.name ?? process.env.MRC_NAME ?? BUILT_IN_NAME;
   let server = input.server ?? file.server ?? process.env.MRC_SERVER ?? BUILT_IN_SERVER ?? DEFAULT_SERVER;
-  let token = input.token ?? process.env.MRC_TOKEN ?? "";
+  let token = input.token ?? process.env.MRC_TOKEN ?? BUILT_IN_TOKEN ?? "";
   const tags = parseTags(input.tags ?? file.tags);
   const agentId = input.id ?? file.id;
   const paused = input.paused ?? file.paused ?? false;

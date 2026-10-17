@@ -15,7 +15,7 @@ import { snapshotEnv } from "@mrc/shared/env";
 
 export interface TrayActionMessage {
   type: "action";
-  action: "toggle" | "reconnect" | "open_logs" | "autostart" | "exit" | "already_running";
+  action: "toggle" | "reconnect" | "open_logs" | "settings" | "autostart" | "exit" | "already_running";
   enabled?: boolean;
 }
 
@@ -28,6 +28,7 @@ export interface TrayOptions {
   onToggle?: () => void;
   onReconnect?: () => void;
   onOpenLogs?: () => void;
+  onSettings?: () => void;
   onAutostart?: (enabled: boolean) => void;
   onExit?: () => void;
   /** Test/advanced override: command that speaks the JSON-lines protocol. */
@@ -66,6 +67,7 @@ export class TrayIntegration {
         stdout: "pipe",
         stderr: "pipe",
         env: snapshotEnv(),
+        windowsHide: true,
       });
       this.proc = proc;
       this.log("info", "tray helper started", { command: command[0] });
@@ -171,6 +173,9 @@ export class TrayIntegration {
         return;
       case "open_logs":
         this.opts.onOpenLogs?.();
+        return;
+      case "settings":
+        this.opts.onSettings?.();
         return;
       case "autostart": {
         const enabled = Boolean(msg.enabled);

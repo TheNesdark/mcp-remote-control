@@ -100,6 +100,10 @@ $logsItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $logsItem.Text = "Open logs"
 [void]$menu.Items.Add($logsItem)
 
+$settingsItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$settingsItem.Text = "Settings..."
+[void]$menu.Items.Add($settingsItem)
+
 $autostartItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $autostartItem.Text = "Start with Windows"
 $autostartItem.CheckOnClick = $true
@@ -132,6 +136,7 @@ function Update-Status {
 $toggleItem.Add_Click({ Emit @{ type = "action"; action = "toggle" } })
 $reconnectItem.Add_Click({ Emit @{ type = "action"; action = "reconnect" } })
 $logsItem.Add_Click({ Emit @{ type = "action"; action = "open_logs" } })
+$settingsItem.Add_Click({ Emit @{ type = "action"; action = "settings" } })
 
 # The agent owns the registry: just report the desired value and wait for the
 # next state line to confirm (it echoes autostart back).
