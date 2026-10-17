@@ -22,7 +22,8 @@ Full design and roadmap: [`PLAN.md`](./PLAN.md).
 - [x] `server/mcp-remote-control.service` + `server/env.example`; LAN deployment
       docs (`docs/OPERATIONS.md`): static IP, ufw firewall, remote opencode client
 - [x] LAN-only posture (no Tailscale/VPN): plain `ws://` + `http://` on the
-      trusted LAN; TLS stays in the F6 backlog
+      trusted LAN; optional native TLS (`MRC_TLS_CERT/KEY`, agent
+      `--tls-insecure`) now covers wss/https without a VPN
 - [ ] Windows validation (VM): clean-machine install < 10 min, branded exe built
       on Windows, remote opencode against `:8788` — F1–F5 close-out
 - [ ] `rc-agent.exe` code signing — F6 backlog
@@ -43,11 +44,22 @@ Full design and roadmap: [`PLAN.md`](./PLAN.md).
 - [x] Ops docs (`docs/OPERATIONS.md`); `bun run admin` CLI
 - [x] Unit + integration tests (store/registry, audit, auth, limits, CLI, restart)
       + e2e with a concurrent phase across 2 agents
+
+### F6 highlights (already delivered)
+
+- [x] Windows real-host validation (first real machine): exec/info/ps/fs/screenshot
+      over the tunnel; found+fixed AMSI-blocked screenshot (csc.exe fallback),
+      single-session MCP HTTP (now one session per client), UNC-inherited cwd
+      for cmd.exe spawns
+- [x] F6 pulled forward: native TLS on both faces (`MRC_TLS_CERT/KEY`, agent
+      `--tls-insecure`), OTA self-update (`agent_restart` + `updatePath` exe
+      swap), GitHub Actions CI incl. a real `windows-latest` job, named
+      Cloudflare tunnel script for stable URLs (`scripts/hermes-tunnel.sh`)
+- [ ] Restart the real Windows agent on the new exe (share has v0.5.3) so the
+      screenshot fallback goes live there
 - [ ] Windows validation (VM): tray states/menu, DPAPI config + first-run,
-      `cmd.exe`/`powershell.exe` shells, `taskkill /T /F`, `C:\` paths,
-      screenshot with an interactive session and the session-0 error — F1–F4
-      close-out
-- [ ] `rc-agent.exe` packaging + installer (`install.ps1`) — F5
+      branded exe built on Windows — F1–F5 close-out
+- [ ] `rc-agent.exe` code signing — F6 backlog
 
 ### Earlier phases (F0–F4)
 

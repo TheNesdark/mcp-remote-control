@@ -185,6 +185,7 @@ rechaza versiones incompatibles con mensaje explícito.
 | `agent_ps_list` | `agent`, `filter?` (substring nombre/cmdline), `top?` (def 100, máx 5000), `sort?` (`cpu`\|`mem`\|`pid`\|`name`) | pid, ppid, nombre, cpuPercent, memBytes, usuario, command |
 | `agent_ps_kill` | `agent`, `pid`\|`name` (exactamente uno), `force?` (def true), `tree?` (def true) | outcomes por pid, `killedCount`; nunca mata al propio agente ni a pid 1 |
 | `agent_screenshot` | `agent`, `format` (`png`\|`jpeg`, def png), `quality?` (def 80, solo jpeg), `embed?` (def true) | imagen MCP (base64) + `localPath` en el host central, bytes, sha256, width/height · **solo monitor primario** |
+| `agent_restart` | `agent`, `updatePath?` (binario nuevo ya subido), `args?` | reinicio detached del agente; con `updatePath` reemplaza el exe antes de relanzar (self-update OTA) |
 
 Convenciones para el LLM: nombres estables `agent_*`, ids cortos legibles, errores
 accionables (`agent offline`, `agent paused locally`, `token revoked`, `no interactive
@@ -266,7 +267,8 @@ mcp-remote-control/
 - ⏳ **F4 pendiente de VM**: nada específico (todo validable en Linux); el cierre F1–F3 en VM sigue pendiente para cuando haya una Windows disponible.
 - ✅ **F5 completado en su parte Linux**: `bun run build:exe` cross-compila `dist/rc-agent.exe` (PE válido verificado: MZ + firma PE, ~92 MB, `--windows-hide-console`; metadatos icono/versión solo al compilar en Windows, limitación de Bun); `agent/assets/icon.ico` multi-tamaño (16/32/48/256) generado en repo con test de determinismo; `agent/install.ps1` (sin admin, DPAPI, autostart HKCU, uninstall/purge, idempotente); MCP por Streamable HTTP en `/mcp` con Bearer (`MRC_MCP_HTTP_PORT`, `--no-mcp-stdio`) con tests (401 + handshake + tools); unit systemd + `server/env.example`; docs LAN en `docs/OPERATIONS.md` (IP estática, ufw, opencode remoto, agentes); **88 tests + e2e (25 checks) en verde**, typecheck limpio.
 - ⏳ **F5 pendiente de VM/Windows real**: instalador de cero en Windows limpia (< 10 min), exe con icono + metadatos compilado en Windows, opencode remoto contra `:8788`, checklist `docs/INSTALL-WINDOWS.md`.
-- Siguiente: **F6** (backlog: modo servicio, `wss://`/TLS en LAN, firma de código, etc.).
+- **Actualización 2026-10-17 (primera máquina Windows real conectada — DESKTOP-S7PG32F)**: validado en vivo por túnel: `agent_exec` (cmd + powershell), `agent_info`, `agent_ps_list`, transferencias y screenshot (por fallback manual). Hallazgos corregidos ya: AMSI bloqueaba el script PowerShell del screenshot → **fallback `csc.exe`** (Plan B del plan) implementado y testeado; MCP-HTTP tenía sesión única (el 2º cliente/reconexión recibía 400) → **multi-sesión**; `cwd` UNC heredado del share rompía `cmd.exe` → default a `SystemRoot`. F6 adelantado: **TLS nativo** (`MRC_TLS_CERT/KEY` + `--tls-insecure` en el agente), **self-update OTA** (`agent_restart` + `updatePath`, swap de exe + relanzamiento detached) y **CI** (workflow con job `windows-latest`) + script de named tunnel para URLs estables. Pendiente en esa máquina: reiniciar el agente con el exe nuevo (v0.5.3 en el share) para screenshot automático.
+- Siguiente: **F6** restante (modo servicio, firma de código, servicios Windows, UI automation, multi-monitor).
 
 ---
 
