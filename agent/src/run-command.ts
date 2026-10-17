@@ -24,6 +24,7 @@ export async function runCommand(cmd: string[], opts: RunCommandOptions = {}): P
     stdout: "pipe",
     stderr: "pipe",
     env,
+    windowsHide: true,
   });
 
   let timer: Timer | null = null;

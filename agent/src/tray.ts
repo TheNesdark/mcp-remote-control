@@ -67,6 +67,7 @@ export class TrayIntegration {
         stdout: "pipe",
         stderr: "pipe",
         env: snapshotEnv(),
+        windowsHide: true,
       });
       this.proc = proc;
       this.log("info", "tray helper started", { command: command[0] });
