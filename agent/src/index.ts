@@ -27,7 +27,7 @@ import { TrayIntegration } from "./tray.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-const VERSION = "0.6.6";
+const VERSION = "0.6.7";
 
 const args = parseArgv(process.argv.slice(2));
 setLogLevel((argString(args, "log-level") ?? process.env.MRC_LOG_LEVEL ?? "info") as LogLevel);
