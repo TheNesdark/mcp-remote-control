@@ -77,8 +77,10 @@ Full design and roadmap: [`PLAN.md`](./PLAN.md).
 - [x] Agent tray app for Windows: colored state icon, enable/disable without
       disconnecting, reconnect now, open logs, start with Windows, exit
       (PowerShell + WinForms helper)
-- [x] Agent settings: `agent.json` config, first-run dialog on Windows, token
-      encrypted with DPAPI, rotating file logs (`--log-file`)
+- [x] Agent settings: `agent.json` config, first-run dialog on Windows (asks for
+      server IP + name; bare IPs accepted; also reachable from the tray
+      **Settings...** menu), token encrypted with DPAPI, rotating file logs
+      (`--log-file`). The `tray/*.ps1` helpers are embedded in the exe.
 - [x] Linux process listing without procps (reads `/proc`), BSD/macOS via `ps`,
       Windows via PowerShell (`Get-Process`, two-sample CPU%)
 - [x] Unit tests (`bun test`) + black-box e2e (`bun run e2e`), including a

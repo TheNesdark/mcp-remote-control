@@ -13,6 +13,16 @@ export interface CommandResult {
 export interface RunCommandOptions {
   timeoutMs?: number;
   env?: Record<string, string | undefined>;
+  /**
+   * Windows: let the child create a console and show its first GUI window.
+   *
+   * `windowsHide: true` (the default) maps to libuv's
+   * `UV_PROCESS_WINDOWS_HIDE`, which sets `STARTUPINFO.wShowWindow = SW_HIDE`.
+   * That hides the child's FIRST top-level window, which for a PowerShell
+   * WinForms dialog is the form itself: the dialog runs but stays invisible.
+   * Set this for commands that must show a window (first-run/settings dialogs).
+   */
+  showWindow?: boolean;
 }
 
 export async function runCommand(cmd: string[], opts: RunCommandOptions = {}): Promise<CommandResult> {
@@ -24,7 +34,7 @@ export async function runCommand(cmd: string[], opts: RunCommandOptions = {}): P
     stdout: "pipe",
     stderr: "pipe",
     env,
-    windowsHide: true,
+    windowsHide: !opts.showWindow,
   });
 
   let timer: Timer | null = null;

@@ -40,17 +40,25 @@ Useful switches: `-InstallDir`, `-NoAutostart`, `-NoStart`,
 
 ## Manual first run (no installer)
 
-1. Copy `rc-agent.exe` (or the repo for `bun run agent`) to the machine.
+1. Copy `rc-agent.exe` (or the repo for `bun run agent`) to the machine. The
+   `.ps1` helpers are **embedded in the exe**, so no side files are needed.
 2. Run it. On Windows, if there is no config yet and no `--name/--server/--token`
    flags were given, a **first-run dialog** asks for:
    - **Computer name** — how this machine appears in `agents_list`
      (prefilled with `%COMPUTERNAME%`, pattern `^[A-Za-z0-9._-]{1,32}$`).
-   - **Server URL** — e.g. `ws://192.168.1.50:8787`.
-   - **Agent token**.
+   - **Server URL** — the central server's IP. A **bare IP is accepted**:
+     `192.168.1.50` becomes `ws://192.168.1.50:8787`.
+   - **Agent token** — only shown when one is not already available (baked into
+     the exe or present in `agent.json`).
 3. The name/server/token are stored in
    `%APPDATA%\mcp-remote-control\agent.json`; the token is **encrypted with
    DPAPI** (current Windows user) before it is written.
-4. A tray icon appears next to the clock (see below).
+4. A tray icon appears next to the clock (see below). Choose **Settings...** to
+   reopen the same dialog at any time.
+
+> Building a fleet? `bun run build:exe --server ws://<host>:8787` bakes the
+> server URL as the dialog's prefill (still editable). Omit it to ship a fully
+> generic exe that asks for the server on every machine.
 
 CLI flags and environment variables override the config file:
 `--server`, `--token`, `--name`, `--tags a,b`, `--id ag_xxx`, `--paused`,

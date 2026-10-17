@@ -20,14 +20,13 @@ import { JobManager } from "./jobs.ts";
 import { handleAutoUpdate } from "./auto-update.ts";
 import { loadSettings, readConfig } from "./settings.ts";
 import { protectString } from "./dpapi.ts";
-import { resolveHelperScript } from "./helper-scripts.ts";
-import { runCommand } from "./run-command.ts";
+import { runFirstRunDialog } from "./first-run.ts";
 import { restartAgent } from "./restart.ts";
 import { TrayIntegration } from "./tray.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-const VERSION = "0.6.9";
+const VERSION = "0.6.10";
 
 const args = parseArgv(process.argv.slice(2));
 setLogLevel((argString(args, "log-level") ?? process.env.MRC_LOG_LEVEL ?? "info") as LogLevel);
@@ -123,47 +122,18 @@ const tray = new TrayIntegration({
 
 /** Open the settings dialog and apply changes (restart the agent if needed). */
 async function runSettingsDialog(): Promise<void> {
-  const script = resolveHelperScript("first-run.ps1");
-  if (!script) {
-    logger.warn("settings dialog unavailable: first-run.ps1 not found");
-    return;
-  }
-  const res = await runCommand(
-    [
-      "powershell.exe",
-      "-NoProfile",
-      "-NonInteractive",
-      "-Sta",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-File",
-      script,
-      "-DefaultName",
-      name,
-      "-DefaultServer",
-      serverUrl,
-      "-DefaultToken",
-      token,
-    ],
-    { timeoutMs: 5 * 60_000 },
-  );
-  const line = res.stdout.split("\n").map((l) => l.trim()).filter(Boolean).pop() ?? "";
-  let parsed: { name?: string; server?: string; token?: string; cancelled?: boolean; error?: string } = {};
+  let result: Awaited<ReturnType<typeof runFirstRunDialog>>;
   try {
-    parsed = JSON.parse(line) as typeof parsed;
-  } catch {
-    logger.warn("settings dialog returned no JSON");
+    result = await runFirstRunDialog({ name, server: serverUrl, token });
+  } catch (err) {
+    logger.warn(`settings dialog failed: ${String(err)}`);
     return;
   }
-  if (parsed.cancelled) return;
-  if (parsed.error) {
-    logger.warn(`settings dialog error: ${parsed.error}`);
-    return;
-  }
+  if (!result) return; // cancelled
 
-  const newName = parsed.name?.trim() || name;
-  const newServer = parsed.server?.trim() || serverUrl;
-  const newToken = parsed.token?.trim() || token;
+  const newName = result.name.trim() || name;
+  const newServer = result.server.trim() || serverUrl;
+  const newToken = result.token.trim() || token;
   const changed = newName !== name || newServer !== serverUrl || newToken !== token;
 
   // Persist to agent.json (DPAPI on Windows).

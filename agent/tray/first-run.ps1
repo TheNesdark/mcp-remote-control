@@ -1,10 +1,10 @@
-# mcp-remote-control - first-run setup dialog (spike)
+# mcp-remote-control - first-run / settings dialog
 #
-# Asks for the machine name (and server/token if not provided by the installer).
-# Prints ONE JSON line to stdout and exits:
-#   {"name":"PC-01","server":"ws://127.0.0.1:8787","token":"..."}   (exit 0)
-#   {"cancelled":true}                                              (exit 2)
-#   {"error":"invalid_name","name":"..."}                           (exit 3)
+# Asks for the machine name, the central server URL (accepts a bare IP) and the
+# agent token when it is not already configured. Prints ONE JSON line to stdout:
+#   {"name":"PC-01","server":"ws://192.168.1.50:8787","token":"..."}  (exit 0)
+#   {"cancelled":true}                                                (exit 2)
+#   {"error":"invalid_name","name":"..."}                             (exit 3)
 #
 # Run:
 #   powershell -NoProfile -Sta -ExecutionPolicy Bypass -File first-run.ps1
@@ -18,11 +18,9 @@ param(
   [switch]$HideToken
 )
 
-# Auto-detect: if a server/token is provided (baked into the exe), hide
-# those fields so the dialog only asks for the machine name.
-if (-not $HideServer -and -not [string]::IsNullOrWhiteSpace($DefaultServer) -and $DefaultServer -ne "ws://127.0.0.1:8787") {
-  $HideServer = $true
-}
+# Hide only the token when a default is already available (baked into the exe
+# or read from agent.json): it is per-machine and should not be retyped. The
+# server URL is always shown (prefilled) so the operator can set the central IP.
 if (-not $HideToken -and -not [string]::IsNullOrWhiteSpace($DefaultToken)) {
   $HideToken = $true
 }
@@ -33,11 +31,23 @@ if (-not $HideServer) { $fieldCount++ }
 if (-not $HideToken) { $fieldCount++ }
 $formHeight = 100 + ($fieldCount * 38) + 40
 
+# The agent is a GUI-subsystem exe, so this script runs in a freshly allocated
+# console window. Hide it from inside (best effort): hiding it via the spawn's
+# STARTUPINFO (SW_HIDE) would also hide the form, because that applies to this
+# process's first top-level window.
+try {
+  Add-Type -Namespace MRC -Name ConsoleWindow -MemberDefinition @"
+[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
+"@
+  $console = [MRC.ConsoleWindow]::GetConsoleWindow()
+  if ($console -ne [System.IntPtr]::Zero) { [void][MRC.ConsoleWindow]::ShowWindow($console, 0) }
+} catch {
+  # No console to hide (e.g. run from the ISE).
+}
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-
-# Diagnostic: confirm the script is running.
-[System.Windows.Forms.MessageBox]::Show("first-run.ps1 iniciado", "debug") | Out-Null
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "mcp-remote-control - first run"
@@ -81,7 +91,7 @@ if (-not $HideToken) {
 }
 
 $hint = New-Object System.Windows.Forms.Label
-$hint.Text = "The name identifies this machine in agents_list."
+$hint.Text = "Bare IP is fine (192.168.1.50 -> ws://192.168.1.50:8787)."
 $hint.ForeColor = [System.Drawing.Color]::DimGray
 $hint.Location = New-Object System.Drawing.Point(16, $y)
 $hint.Size = New-Object System.Drawing.Size(390, 20)
@@ -115,8 +125,8 @@ if ($name -notmatch '^[A-Za-z0-9._-]{1,32}$') {
   exit 3
 }
 
-$result = @{ name = $name }
-if ($serverBox -ne $null) { $result.server = $serverBox.Text.Trim() }
-if ($tokenBox -ne $null) { $result.token = $tokenBox.Text.Trim() }
-($result | ConvertTo-Json -Compress)
+$payload = @{ name = $name }
+if ($serverBox -ne $null) { $payload.server = $serverBox.Text.Trim() }
+if ($tokenBox -ne $null) { $payload.token = $tokenBox.Text.Trim() }
+($payload | ConvertTo-Json -Compress)
 exit 0
