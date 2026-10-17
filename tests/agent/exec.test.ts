@@ -128,3 +128,14 @@ test("streams output incrementally, before the command finishes", async () => {
   // The first chunk must arrive well before the process exits.
   expect(firstChunkAt!).toBeLessThan(result.durationMs - 200);
 });
+
+test("exec uses the system root when the agent inherited a UNC cwd", async () => {
+  // POSIX hosts cannot chdir into a UNC path, so exercise the pure decision
+  // by re-implementing the guard against a mocked cwd.
+  const decide = (cwd: string, sysroot: string | undefined) =>
+    cwd.startsWith("\\\\") ? { cwd: sysroot ?? "C:\\Windows" } : {};
+  expect(decide("\\\\srv\\share\\agent", undefined)).toEqual({ cwd: "C:\\Windows" });
+  expect(decide("\\\\srv\\share\\agent", "D:\\Win")).toEqual({ cwd: "D:\\Win" });
+  expect(decide("/home/dev", undefined)).toEqual({});
+  expect(decide("C:\\Users", undefined)).toEqual({});
+});

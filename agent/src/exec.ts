@@ -81,9 +81,15 @@ export async function runExec(req: ExecRequest, hooks: ExecHooks): Promise<ExecR
 
   let proc: SpawnedProcess;
   try {
+    // cmd.exe refuses a UNC working directory ("UNC paths are not allowed",
+    // noise on stderr) and the agent can inherit one when launched from a
+    // mapped share (\\host\share\rc-agent.exe). Default such spawns to the
+    // system root unless the caller passed an explicit cwd.
+    const uncCwd = process.cwd().startsWith("\\\\");
+    const defaultCwd = uncCwd ? { cwd: process.env.SystemRoot ?? "C:\\Windows" } : {};
     proc = spawn({
       cmd: buildCommand(req.shell, req.command),
-      ...(req.cwd ? { cwd: req.cwd } : {}),
+      ...(req.cwd ? { cwd: req.cwd } : defaultCwd),
       env: { ...process.env, ...req.env } as Record<string, string>,
       stdin: req.stdin != null ? new TextEncoder().encode(req.stdin) : "ignore",
       stdout: "pipe",
