@@ -58,6 +58,7 @@ Environment variables (all optional except the token in production):
 | `MRC_MAX_JOBS_PER_MIN` | `120` | Max tool-call jobs per agent per rolling 60 s (`rate_limited` above). |
 | `MRC_SCREENSHOT_DIR` | `server/data/screenshots` | Where `agent_screenshot` saves pulled images. |
 | `MRC_MCP_HTTP_PORT` | _(unset)_ | Serve MCP over Streamable HTTP at `/mcp` on this port (LAN clients, `Authorization: Bearer <MRC_TOKEN>`). Used with `--no-mcp-stdio` under systemd. |
+| `MRC_PUBLIC_URL` | _(derived)_ | Base URL clients use to fetch screenshots (e.g. `http://192.168.1.192:8788`). When set, `agent_screenshot` returns a ready-to-use `downloadUrl`; otherwise only `downloadPath`. |
 | `MRC_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` (goes to stderr). |
 
 ## Remote client (persistent LAN server)
@@ -159,4 +160,24 @@ To keep the agent from using the tools without asking, restrict them by name:
      Windows the agent must run in an interactive desktop session: session 0
      (service) or a locked desktop fails with `no interactive session`.
      Screenshots above 8 MB are not embedded (use the `localPath` or JPEG).
+
+### Saving a screenshot on the client's machine
+
+The MCP server cannot write to the client's disk (MCP is request/response). The
+image reaches the client embedded in the tool result, and the server keeps its
+own copy in `MRC_SCREENSHOT_DIR`. To land the file on the machine where opencode
+runs (a different host), use the download link the tool returns:
+
+```bash
+# downloadPath is relative; downloadUrl (prefixed with MRC_PUBLIC_URL) is ready to use
+curl -fL -H "Authorization: Bearer $MRC_TOKEN" \
+     "http://192.168.1.192:8788/screenshots/agent-PC-01-2026-10-17_18-30-00.png" \
+     -o shot.png
+```
+
+`GET /screenshots/<file>` is served on the **MCP HTTP port** and accepts the
+bearer header or `?token=<MRC_TOKEN>`; only files directly inside
+`MRC_SCREENSHOT_DIR` are served. Set `MRC_PUBLIC_URL` (e.g.
+`http://192.168.1.192:8788`) so `agent_screenshot` returns a full `downloadUrl`.
+
    - `agent_ps_kill` refuses to kill the agent process itself.

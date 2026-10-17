@@ -33,6 +33,8 @@ export interface ServerConfig {
   maxJobsPerMinute: number;
   /** Serve MCP over Streamable HTTP on the hub port (MRC_MCP_HTTP_PORT, 0 = disabled). */
   mcpHttpPort: number;
+  /** Public base URL of the MCP HTTP face (MRC_PUBLIC_URL), e.g. http://192.168.1.192:8788. */
+  publicUrl: string;
   /** Auto-update: newest agent build announced in `welcome` (empty = off). */
   agentLatestVersion: string;
   /** Auto-update: binary URL (relative resolves against the hub origin). */
@@ -97,6 +99,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     maxJobsPerAgent: positiveInt(env.MRC_MAX_JOBS_PER_AGENT, "MRC_MAX_JOBS_PER_AGENT", 8),
     maxJobsPerMinute: positiveInt(env.MRC_MAX_JOBS_PER_MIN, "MRC_MAX_JOBS_PER_MIN", 120),
     mcpHttpPort: portOrZero(env.MRC_MCP_HTTP_PORT, "MRC_MCP_HTTP_PORT", 0),
+    publicUrl: (env.MRC_PUBLIC_URL?.trim() ?? "").replace(/\/+$/, ""),
     agentLatestVersion: env.MRC_AGENT_LATEST_VERSION?.trim() ?? "",
     agentBinaryUrl: env.MRC_AGENT_BINARY_URL?.trim() ?? "",
     agentBinarySha256: env.MRC_AGENT_BINARY_SHA256?.trim().toLowerCase() ?? "",
@@ -105,4 +108,18 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     tlsKeyPath: env.MRC_TLS_KEY?.trim() ?? "",
     logLevel,
   };
+}
+
+/**
+ * Base URL a client should use to download screenshots: `MRC_PUBLIC_URL` when
+ * set, otherwise derived from a concrete bind host + MCP HTTP port. Empty when
+ * it cannot be determined (bind address is 0.0.0.0 / ::), so callers fall back
+ * to returning only the relative `/screenshots/<file>` path.
+ */
+export function screenshotBaseUrl(config: ServerConfig): string {
+  if (config.publicUrl) return config.publicUrl;
+  const host = config.host;
+  if (!host || host === "0.0.0.0" || host === "::" || config.mcpHttpPort <= 0) return "";
+  const scheme = config.tlsCertPath && config.tlsKeyPath ? "https" : "http";
+  return `${scheme}://${host}:${config.mcpHttpPort}`;
 }

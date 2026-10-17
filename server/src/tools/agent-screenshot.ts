@@ -1,11 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { MAX_SCREENSHOT_BASE64_BYTES, SCREENSHOT_FORMATS } from "@mrc/shared";
 import { z } from "zod";
 import { auditToolCall, type AuditLog } from "../audit.ts";
 import type { Hub, JobOutcome } from "../hub.ts";
+import { SCREENSHOT_HTTP_PREFIX } from "../screenshots-http.ts";
 import { downloadFile } from "../transfers.ts";
 import { toolError } from "./util.ts";
 
@@ -39,7 +40,13 @@ export function decodeScreenshotOutcome(outcome: JobOutcome): { bytes: Buffer } 
   return { bytes };
 }
 
-export function registerAgentScreenshot(server: McpServer, hub: Hub, screenshotDir: string, audit: AuditLog): void {
+export function registerAgentScreenshot(
+  server: McpServer,
+  hub: Hub,
+  screenshotDir: string,
+  audit: AuditLog,
+  screenshotBaseUrl = "",
+): void {
   server.registerTool(
     "agent_screenshot",
     {
@@ -49,7 +56,9 @@ export function registerAgentScreenshot(server: McpServer, hub: Hub, screenshotD
         "The agent streams the image straight from the capture (nothing is stored on the remote disk). " +
         "Returns the local path plus size/dimensions, and by default embeds the image so it can be inspected visually. " +
         "Only the primary monitor is captured. On Windows the agent must run in an interactive desktop session " +
-        "(it fails with a clear error when running as a service/session 0 or when the desktop is locked).",
+        "(it fails with a clear error when running as a service/session 0 or when the desktop is locked). " +
+        "The result carries a downloadPath (and downloadUrl when MRC_PUBLIC_URL is set) so a client on another " +
+        "machine can fetch the PNG with the shared token.",
       inputSchema: {
         agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
         format: z.enum(SCREENSHOT_FORMATS).optional().describe("png (lossless, default) or jpeg (smaller)."),
@@ -102,6 +111,7 @@ export function registerAgentScreenshot(server: McpServer, hub: Hub, screenshotD
         }
 
         const sha256 = createHash("sha256").update(bytes).digest("hex");
+        const downloadPath = `${SCREENSHOT_HTTP_PREFIX}${basename(localPath)}`;
         const payload = {
           ok: true,
           agent: args.agent,
@@ -112,6 +122,8 @@ export function registerAgentScreenshot(server: McpServer, hub: Hub, screenshotD
           width: meta.width ?? null,
           height: meta.height ?? null,
           embedded: false,
+          downloadPath,
+          ...(screenshotBaseUrl ? { downloadUrl: `${screenshotBaseUrl}${downloadPath}` } : {}),
         };
 
         const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];

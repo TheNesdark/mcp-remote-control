@@ -72,6 +72,7 @@ export function testServerConfig(token: string, overrides: Partial<ServerConfig>
     maxJobsPerAgent: 8,
     maxJobsPerMinute: 120,
     mcpHttpPort: 0,
+    publicUrl: "",
     agentLatestVersion: "",
     agentBinaryUrl: "",
     agentBinarySha256: "",

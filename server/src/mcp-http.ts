@@ -27,6 +27,8 @@ const SESSION_HEADER = "mcp-session-id";
 export interface McpHttpOptions {
   version: string;
   screenshotDir: string;
+  /** Base URL clients use to fetch saved screenshots (empty = relative only). */
+  screenshotBaseUrl?: string;
   audit: AuditLog;
   bearerToken: string;
 }
@@ -67,7 +69,7 @@ export function createMcpHttpHandler(hub: Hub, opts: McpHttpOptions): McpHttpHan
     }
 
     const mcp = new McpServer({ name: "mcp-remote-control", version: opts.version });
-    registerTools(mcp, hub, { screenshotDir: opts.screenshotDir, audit: opts.audit });
+    registerTools(mcp, hub, { screenshotDir: opts.screenshotDir, screenshotBaseUrl: opts.screenshotBaseUrl, audit: opts.audit });
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
       onsessioninitialized: (id) => {

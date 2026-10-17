@@ -91,7 +91,9 @@ on the client side. Agent identities and tokens survive restarts (same
 - `mcp.db` — enrolled agents, token hashes, first/last seen (`MRC_DB_PATH`)
 - `audit.jsonl` — audit trail (`MRC_AUDIT_PATH`)
 - `screenshots/` — images received by `agent_screenshot` (streamed by the agent
-  and saved on this host; `MRC_SCREENSHOT_DIR`)
+  and saved on this host; `MRC_SCREENSHOT_DIR`). Served read-only to MCP clients
+  at `GET /screenshots/<file>` on the MCP HTTP port (Bearer `MRC_TOKEN` or
+  `?token=`), so a client on another machine can `curl` them.
 
 ## LAN deployment (F5, no VPN)
 

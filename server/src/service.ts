@@ -2,11 +2,12 @@ import type { Server } from "bun";
 import { basename } from "node:path";
 import { AGENT_PATH, MAX_FRAME_BYTES } from "@mrc/shared";
 import { AuditLog } from "./audit.ts";
-import type { ServerConfig } from "./config.ts";
+import { screenshotBaseUrl, type ServerConfig } from "./config.ts";
 import { Hub, type WsData } from "./hub.ts";
 import { logger, setLogLevel } from "./log.ts";
 import { createMcpHttpHandler, MCP_HTTP_PATH } from "./mcp-http.ts";
 import { createRegistry, type TokenRegistry } from "./registry.ts";
+import { handleScreenshotRequest, SCREENSHOT_HTTP_PREFIX } from "./screenshots-http.ts";
 import { AgentStore } from "./store.ts";
 
 /** TLS material for Bun.serve; undefined keeps the plain ws://+http:// faces. */
@@ -141,6 +142,7 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
     const handleMcp = createMcpHttpHandler(hub, {
       version,
       screenshotDir: config.screenshotDir,
+      screenshotBaseUrl: screenshotBaseUrl(config),
       audit,
       bearerToken: config.token,
     });
@@ -151,6 +153,10 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
       tls: tlsOptions(config),
       fetch(req) {
         const url = new URL(req.url);
+        // Screenshot downloads for clients on other machines (token-protected).
+        if (url.pathname.startsWith(SCREENSHOT_HTTP_PREFIX)) {
+          return handleScreenshotRequest(req, config.screenshotDir, config.token);
+        }
         if (
           url.pathname === MCP_HTTP_PATH &&
           (req.method === "POST" || req.method === "GET" || req.method === "DELETE")

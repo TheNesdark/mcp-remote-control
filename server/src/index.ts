@@ -19,6 +19,8 @@
  *   MRC_MAX_JOBS_PER_AGENT in-flight cap     (default 8)
  *   MRC_MAX_JOBS_PER_MIN rate limit          (default 120)
  *   MRC_MCP_HTTP_PORT  MCP over HTTP port    (default 0 = disabled)
+ *   MRC_PUBLIC_URL   base URL clients use for the HTTP face, announced in
+ *                  agent_screenshot links (e.g. http://192.168.1.192:8788)
  *   MRC_TLS_CERT / MRC_TLS_KEY  PEM files; when set both faces serve
  *                  wss://+https:// (self-signed is fine on a trusted LAN;
  *                  agents need the CA or MRC_TLS_INSECURE=1)
@@ -29,12 +31,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { argFlag, argString, parseArgv } from "@mrc/shared/args";
-import { loadConfig } from "./config.ts";
+import { loadConfig, screenshotBaseUrl } from "./config.ts";
 import { logger, setLogLevel } from "./log.ts";
 import { createService } from "./service.ts";
 import { registerTools } from "./tools/index.ts";
 
-const VERSION = "0.5.1";
+const VERSION = "0.5.2";
 
 const args = parseArgv(process.argv.slice(2));
 const httpPortFlag = argString(args, "mcp-http-port");
@@ -53,7 +55,11 @@ const service = createService(config, VERSION);
 let transport: StdioServerTransport | null = null;
 if (!noStdio) {
   const mcp = new McpServer({ name: "mcp-remote-control", version: VERSION });
-  registerTools(mcp, service.hub, { screenshotDir: config.screenshotDir, audit: service.audit });
+  registerTools(mcp, service.hub, {
+    screenshotDir: config.screenshotDir,
+    screenshotBaseUrl: screenshotBaseUrl(config),
+    audit: service.audit,
+  });
 
   transport = new StdioServerTransport();
   await mcp.connect(transport);
