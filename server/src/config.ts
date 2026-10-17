@@ -33,6 +33,9 @@ export interface ServerConfig {
   maxJobsPerMinute: number;
   /** Serve MCP over Streamable HTTP on the hub port (MRC_MCP_HTTP_PORT, 0 = disabled). */
   mcpHttpPort: number;
+  /** TLS material for both faces (MRC_TLS_CERT/MRC_TLS_KEY); ws://+http:// when unset. */
+  tlsCertPath: string;
+  tlsKeyPath: string;
   logLevel: LogLevel;
 }
 
@@ -86,6 +89,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     maxJobsPerAgent: positiveInt(env.MRC_MAX_JOBS_PER_AGENT, "MRC_MAX_JOBS_PER_AGENT", 8),
     maxJobsPerMinute: positiveInt(env.MRC_MAX_JOBS_PER_MIN, "MRC_MAX_JOBS_PER_MIN", 120),
     mcpHttpPort: portOrZero(env.MRC_MCP_HTTP_PORT, "MRC_MCP_HTTP_PORT", 0),
+    tlsCertPath: env.MRC_TLS_CERT?.trim() ?? "",
+    tlsKeyPath: env.MRC_TLS_KEY?.trim() ?? "",
     logLevel,
   };
 }

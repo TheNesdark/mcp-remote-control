@@ -8,6 +8,18 @@ import { createMcpHttpHandler, MCP_HTTP_PATH } from "./mcp-http.ts";
 import { createRegistry, type TokenRegistry } from "./registry.ts";
 import { AgentStore } from "./store.ts";
 
+/** TLS material for Bun.serve; undefined keeps the plain ws://+http:// faces. */
+function tlsOptions(config: ServerConfig): { cert: string; key: string } | undefined {
+  if (!config.tlsCertPath && !config.tlsKeyPath) return undefined;
+  if (!config.tlsCertPath || !config.tlsKeyPath) {
+    throw new Error("MRC_TLS_CERT and MRC_TLS_KEY must be set together");
+  }
+  return {
+    cert: Bun.file(config.tlsCertPath),
+    key: Bun.file(config.tlsKeyPath),
+  } as unknown as { cert: string; key: string };
+}
+
 export interface Service {
   server: Server<WsData>;
   hub: Hub;
@@ -55,6 +67,7 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
   const server = Bun.serve<WsData>({
     hostname: config.host,
     port: config.port,
+    tls: tlsOptions(config),
     fetch(req, srv) {
       const url = new URL(req.url);
       if (url.pathname === AGENT_PATH) {
@@ -83,7 +96,10 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
   });
 
   const port = server.port ?? config.port;
-  const wsUrl = `ws://${config.host}:${port}${AGENT_PATH}`;
+  const secure = Boolean(tlsOptions(config));
+  const scheme = secure ? "wss" : "ws";
+  const httpScheme = secure ? "https" : "http";
+  const wsUrl = `${scheme}://${config.host}:${port}${AGENT_PATH}`;
   logger.info("websocket hub listening", { url: wsUrl });
 
   // Optional second face: MCP over Streamable HTTP for LAN clients
@@ -106,6 +122,7 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
     mcpServer = Bun.serve({
       hostname: config.host,
       port: config.mcpHttpPort,
+      tls: tlsOptions(config),
       fetch(req) {
         const url = new URL(req.url);
         if (
@@ -118,7 +135,7 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
       },
     });
     mcpHttpPort = mcpServer.port ?? config.mcpHttpPort;
-    mcpHttpUrl = `http://${config.host}:${mcpHttpPort}${MCP_HTTP_PATH}`;
+    mcpHttpUrl = `${httpScheme}://${config.host}:${mcpHttpPort}${MCP_HTTP_PATH}`;
     logger.info("mcp http listening", { url: mcpHttpUrl });
   }
 

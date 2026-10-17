@@ -19,6 +19,9 @@
  *   MRC_MAX_JOBS_PER_AGENT in-flight cap     (default 8)
  *   MRC_MAX_JOBS_PER_MIN rate limit          (default 120)
  *   MRC_MCP_HTTP_PORT  MCP over HTTP port    (default 0 = disabled)
+ *   MRC_TLS_CERT / MRC_TLS_KEY  PEM files; when set both faces serve
+ *                  wss://+https:// (self-signed is fine on a trusted LAN;
+ *                  agents need the CA or MRC_TLS_INSECURE=1)
  *   MRC_LOG_LEVEL    debug|info|warn|error   (default info)
  *
  * Flags: --mcp-http-port <n>, --no-mcp-stdio (systemd: hub + HTTP only).

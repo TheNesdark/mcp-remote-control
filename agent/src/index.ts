@@ -25,6 +25,16 @@ const VERSION = "0.5.1";
 const args = parseArgv(process.argv.slice(2));
 setLogLevel((argString(args, "log-level") ?? process.env.MRC_LOG_LEVEL ?? "info") as LogLevel);
 
+// Self-signed server certificates on a trusted LAN: --tls-insecure (or
+// MRC_TLS_INSECURE=1) disables TLS verification for the agent's own
+// WebSocket connection. Bun's WebSocket reads NODE_TLS_REJECT_UNAUTHORIZED
+// per connection, so setting it here covers every reconnect.
+const tlsInsecure = argFlag(args, "tls-insecure") || ["1", "true", "yes"].includes((process.env.MRC_TLS_INSECURE ?? "").toLowerCase());
+if (tlsInsecure) {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+  logger.warn("TLS certificate verification is DISABLED (--tls-insecure); trusted LANs only");
+}
+
 // ---------------------------------------------------------------------------
 // Settings: CLI flags > environment > config file (%APPDATA%/agent.json)
 // ---------------------------------------------------------------------------
