@@ -60,7 +60,10 @@ Environment variables (all optional except the token in production):
 | `MRC_JOB_HISTORY_TTL_MS` | `1800000` | How long a finished async job stays queryable (30 min). |
 | `MRC_SCREENSHOT_DIR` | `server/data/screenshots` | Where `agent_screenshot` saves pulled images. |
 | `MRC_MCP_HTTP_PORT` | _(unset)_ | Serve MCP over Streamable HTTP at `/mcp` on this port (LAN clients, `Authorization: Bearer <MRC_TOKEN>`). Used with `--no-mcp-stdio` under systemd. |
-| `MRC_PUBLIC_URL` | _(derived)_ | Base URL clients use to fetch screenshots (e.g. `http://192.168.1.192:8788`). When set, `agent_screenshot` returns a ready-to-use `downloadUrl`; otherwise only `downloadPath`. |
+| `MRC_PUBLIC_URL` | _(derived)_ | Base URL clients use to fetch screenshots (e.g. `http://192.168.1.192:8788`). When set, `agent_screenshot` returns a ready-to-use `downloadUrl` and stops embedding the image by default (SSE is slow). |
+| `MRC_AGENT_LATEST_VERSION` | `shared/version.ts` | Version announced to agents in `welcome` (OTA). Defaults to the build's own version, so a redeploy publishes it automatically. |
+| `MRC_AGENT_BINARY_PATH` | `/app/agent/rc-agent.exe` (image) | Local agent build served at `/agent/latest.exe`. |
+| `MRC_AGENT_BINARY_SHA256` | _(computed)_ | Expected fingerprint of that build; when unset the server hashes the file at boot. |
 | `MRC_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` (goes to stderr). |
 
 ## Remote client (persistent LAN server)

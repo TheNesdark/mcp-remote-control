@@ -1,6 +1,6 @@
-# Contexto de build del servidor central.
-# El Dockerfile solo necesita: manifests de los 3 workspaces, shared/, server/
-# y node_modules instalados dentro de la imagen.
+# Contexto de build del servidor central + agente Windows.
+# El Dockerfile necesita: manifests de los 3 workspaces, shared/, server/,
+# agent/src + agent/assets + agent/build.ts (para cross-compilar el .exe).
 
 # VCS / CI / docs
 .git

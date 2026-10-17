@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,6 +55,18 @@ test("welcome advertises the published agent version and binary", async () => {
   const res = await fetch(`http://127.0.0.1:${svc.port}/agent/latest.exe`);
   expect(res.status).toBe(200);
   expect(await res.text()).toBe("fake-windows-binary");
+});
+
+test("the sha256 is computed from the binary when MRC_AGENT_BINARY_SHA256 is unset", async () => {
+  dir = mkdtempSync(join(tmpdir(), "mrc-au-sha-"));
+  const binary = join(dir, "rc-agent.exe");
+  const content = "rebuilt-on-every-deploy";
+  await Bun.write(binary, content);
+
+  const svc = startWith({ agentLatestVersion: "0.9.0", agentBinaryPath: binary });
+  agent = new FakeAgent({ url: svc.wsUrl, token: TOKEN, name: "AU-3", onLog: () => {} });
+  const welcome = await agent.start();
+  expect(welcome.agentBinarySha256).toBe(createHash("sha256").update(content).digest("hex"));
 });
 
 test("the binary endpoint 404s when no build is configured", async () => {
