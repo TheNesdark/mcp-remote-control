@@ -7,3 +7,4 @@ dist/
 run/
 .env
 .env.local
+pilot/
