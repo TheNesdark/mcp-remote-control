@@ -608,8 +608,8 @@ static class MrcCua
         list.Sort(delegate(AutomationElement a, AutomationElement b2)
         {
             Rect ra = a.Current.BoundingRectangle, rb = b2.Current.BoundingRectangle;
-            long aa = RectFinite(ra) ? (long)ra.Width * ra.Height : 0;
-            long ab = RectFinite(rb) ? (long)rb.Width * rb.Height : 0;
+            long aa = RectFinite(ra) ? (long)ra.Width * (long)ra.Height : 0;
+            long ab = RectFinite(rb) ? (long)rb.Width * (long)rb.Height : 0;
             return ab.CompareTo(aa);
         });
         return list;
@@ -921,7 +921,7 @@ static class MrcCua
             {
                 AndCondition cond = new AndCondition(
                     new PropertyCondition(AutomationElement.ControlTypeProperty, ct),
-                    new PropertyCondition(AutomationElement.EnabledProperty, true));
+                    new PropertyCondition(AutomationElement.IsEnabledProperty, true));
                 AutomationElementCollection found = doc.FindAll(TreeScope.Descendants, cond);
                 foreach (AutomationElement e in found)
                 {
