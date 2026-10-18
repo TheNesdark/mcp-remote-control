@@ -36,7 +36,7 @@ export interface ServerConfig {
   maxJobsPerAgent: number;
   /** Max accepted jobs per agent in a rolling 60s window (MRC_MAX_JOBS_PER_MIN, default 120). */
   maxJobsPerMinute: number;
-  /** Finished async jobs kept for agent_job_status/list (MRC_JOB_HISTORY_MAX, default 100). */
+  /** Finished async jobs kept for agent_jobs status/list (MRC_JOB_HISTORY_MAX, default 100). */
   maxRetainedJobs: number;
   /** How long a finished async job stays queryable (MRC_JOB_HISTORY_TTL_MS, default 30 min). */
   retainedJobTtlMs: number;

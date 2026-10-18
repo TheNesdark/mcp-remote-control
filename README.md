@@ -66,13 +66,15 @@ Full design and roadmap: [`PLAN.md`](./PLAN.md).
 - [x] Shared wire protocol (`shared/protocol.ts`, zod-validated)
 - [x] WebSocket hub: `hello`/`welcome`, heartbeats, `presence`, jobs with
       timeout + cancel, liveness sweeper
-- [x] MCP tools: `agents_list`, `agent_exec`, `agent_exec_async` + `agent_job_*`,
-      `agent_fs_*` (list/read/write/upload/download/hash/search/mkdir/move/copy/
-      delete), `agent_info`, `agent_ps_list`, `agent_ps_kill`,
-      `agent_screenshot`, Windows operations (`agent_services`,
-      `agent_service_control`, `agent_eventlog`, `agent_net_ports`,
-      `agent_net_test`), `agent_power`, `agent_message`, diagnostics
-      (`agent_software`, `agent_time`, `agent_sessions`), `GET /health`
+- [x] MCP tools: `agents_list`, `agent_exec` (sync or `async=true`) + `agent_jobs`
+      (status/list/cancel), `agent_fs` (list/read/write/hash/search/mkdir/move/
+      copy/delete) + `agent_fs_transfer` (upload/download), `agent_info`,
+      `agent_ps` (list/kill), `agent_screenshot`, Windows operations
+      (`agent_services` with a control operation, `agent_eventlog`, `agent_net`
+      ports/test), `agent_power`, `agent_message`, diagnostics
+      (`agent_software`, `agent_time`, `agent_sessions`), `GET /health`.
+      Auditing keeps per-operation names (`agent_ps_kill`, `agent_fs_delete`,
+      `agent_exec_async`, ...).
 - [x] Real agent (`agent/src`) with reconnect/backoff: exec with process-tree
       kill, fs jobs, inventory, process listing/killing, screenshots
 - [x] Chunked file transfers (SHA-256 verified both ways) and screenshots

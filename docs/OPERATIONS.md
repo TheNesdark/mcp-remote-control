@@ -60,7 +60,7 @@ Recorded: every tool call (operation, agent, sanitized params, outcome,
 duration, transferred bytes when applicable), hub connection events
 (connect/disconnect/auth failures/revocation drops/heartbeat timeouts), and
 admin CLI actions. Secrets in params (`token`, `password`, …) are redacted
-and large blobs (e.g. `agent_fs_write` content) are truncated to ~1 KB, so
+and large blobs (e.g. `agent_fs` write content) are truncated to ~1 KB, so
 the log stays small. Transfer chunk traffic is internal plumbing and is not
 logged per chunk — the enclosing tool call is the single audited entry.
 
@@ -72,10 +72,10 @@ logged per chunk — the enclosing tool call is the single audited entry.
 | In-flight jobs per agent | 8 | `MRC_MAX_JOBS_PER_AGENT` | New jobs rejected with `agent_busy` |
 | Jobs per agent per rolling 60 s | 120 | `MRC_MAX_JOBS_PER_MIN` | Rejected with `rate_limited` (tool calls; internal transfer chunks don't count) |
 | Job output accumulation | 1 MB | — | `truncated: true`, caller should redirect to a file |
-| Async job history | 100 entries | `MRC_JOB_HISTORY_MAX` | Finished `agent_exec_async` jobs kept for `agent_job_status` / `agent_job_list` |
+| Async job history | 100 entries | `MRC_JOB_HISTORY_MAX` | Finished `agent_exec` async jobs kept for `agent_jobs` (status/list) |
 | Async job TTL | 30 min | `MRC_JOB_HISTORY_TTL_MS` | How long a finished async job stays queryable |
 | Chunk size | 256 KiB (max 512 KiB) | — | Transfers stay under the WS frame limit |
-| Transfer size | 1 GiB | — | `agent_fs_upload` / `agent_fs_download` |
+| Transfer size | 1 GiB | — | `agent_fs_transfer` upload/download |
 | Screenshot embed | 8 MB | — | Larger images return `localPath` only |
 
 ## Restart procedure
@@ -195,13 +195,13 @@ to `wss://<your-host>/agent`, no matter how often the server restarts.
 
 `agent_restart` (MCP tool) relaunches the agent detached. With
 `updatePath` — the staged new binary, typically uploaded with
-`agent_fs_upload` into the same directory as the running exe (see the
+`agent_fs_transfer` upload into the same directory as the running exe (see the
 `execPath` field in `agent_info`) — it swaps the exe first (rename-self →
 move-new-in) and relaunches, then cleans the `.old` file. Typical flow:
 
 ```
 agent_info            -> read execPath (e.g. C:\rc-agent\rc-agent.exe)
-agent_fs_upload       -> local new exe -> C:\rc-agent\rc-agent.new.exe
+agent_fs_transfer (upload) -> local new exe -> C:\rc-agent\rc-agent.new.exe
 agent_restart         -> updatePath=C:\rc-agent\rc-agent.new.exe
 agents_list           -> back online in seconds, new version
 ```

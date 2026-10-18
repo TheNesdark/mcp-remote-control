@@ -121,7 +121,7 @@ export interface AsyncJobHandle {
   startedAt: string;
 }
 
-/** A finished (or in-flight) async job kept for agent_job_status/list. */
+/** A finished (or in-flight) async job kept for agent_jobs status/list. */
 interface RetainedJob {
   jobId: string;
   agentId: string;
@@ -177,7 +177,7 @@ export interface HubOptions {
   maxJobsPerMinute: number;
   /** Auto-update: newest published agent build (announced in `welcome`). */
   update?: { latestVersion?: string; binaryUrl?: string; binarySha256?: string };
-  /** Finished async jobs kept for agent_job_status/list (default 100). */
+  /** Finished async jobs kept for agent_jobs status/list (default 100). */
   maxRetainedJobs?: number;
   /** How long a finished async job stays queryable (default 30 min). */
   retainedJobTtlMs?: number;
@@ -525,7 +525,7 @@ export class Hub {
 
   /**
    * Send a job and return as soon as it is dispatched: the "start a long task
-   * and poll it" flow behind agent_exec_async / agent_job_*. The outcome of an
+   * and poll it" flow behind agent_exec async / agent_jobs. The outcome of an
    * async job stays queryable for `maxRetainedJobs`/`retainedJobTtlMs` through
    * jobStatus() and jobList(), and jobCancel() stops it early.
    */
@@ -708,7 +708,7 @@ export class Hub {
   }
 
   // -------------------------------------------------------------------------
-  // Async job inspection (agent_job_status / agent_job_list / agent_job_cancel)
+  // Async job inspection (agent_jobs status / list / cancel)
   // -------------------------------------------------------------------------
 
   /** Snapshot of one job, or null when the id is unknown (never queued or evicted). */

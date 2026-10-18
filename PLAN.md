@@ -177,44 +177,30 @@ rechaza versiones incompatibles con mensaje explícito.
 |---|---|---|
 | `agents_list` | — | id, nombre, host, OS, online/**paused**, lastSeen, tags, caps |
 | `agent_info` | `agent` | hostname, OS, usuario, uptime, CPU (modelo/núcleos/load), RAM total/libre, IPs, discos con espacio libre, versión/caps del agente |
-| `agent_exec` | `agent`, `command`, `shell` (`cmd`\|`powershell`), `cwd?`, `env?`, `timeoutMs?`, `stdin?` | jobId, exitCode, stdout, stderr, truncado |
-| `agent_fs_list` | `agent`, `path` | entradas con tipo, tamaño, fecha |
-| `agent_fs_read` | `agent`, `path`, `encoding?`, `maxBytes?` | contenido utf8/base64 |
-| `agent_fs_write` | `agent`, `path`, `content`, `encoding?` | ok, bytes, sha256 |
-| `agent_fs_upload` | `agent`, `localPath` (host central), `remotePath` | ok, bytes, sha256 |
-| `agent_fs_download` | `agent`, `remotePath`, `localPath` (host central) | ok, bytes, sha256 |
-| `agent_ps_list` | `agent`, `filter?` (substring nombre/cmdline), `top?` (def 100, máx 5000), `sort?` (`cpu`\|`mem`\|`pid`\|`name`) | pid, ppid, nombre, cpuPercent, memBytes, usuario, command |
-| `agent_ps_kill` | `agent`, `pid`\|`name` (exactamente uno), `force?` (def true), `tree?` (def true) | outcomes por pid, `killedCount`; nunca mata al propio agente ni a pid 1 |
+| `agent_exec` | `agent`, `command`, `shell` (`cmd`\|`powershell`), `cwd?`, `env?`, `timeoutMs?`, `stdin?`, `async?` | jobId, exitCode, stdout, stderr, truncado; con `async=true` devuelve `jobId`+`state:running` sin esperar (hasta 24 h) |
+| `agent_fs` | `agent`, `operation` (`list`\|`read`\|`write`\|`hash`\|`search`\|`mkdir`\|`move`\|`copy`\|`delete`) más `path`/`source`/`destination`/`content`/filería `search`/`overwrite?`/`recursive?`/**`confirm`** (delete) | list: entradas tipo/tamaño/fecha · read: contenido utf8/base64 + eof/sha256 · write: ok, bytes, sha256 · hash: sha256+size sin transferir · search: archivos (nuevos primero) · mkdir: ruta resuelta+`created` · move/copy: destino, tipo, `overwritten` (en remoto) · delete: qué se borró (sin papelera, rechaza raíces) |
+| `agent_fs_transfer` | `agent`, `operation` (`upload`\|`download`), `localPath` (host central), `remotePath`, `mkdirs?` | ok, bytes, sha256; copia en trozos verificada de extremo a extremo |
+| `agent_ps` | `agent`, `operation` (`list`\|`kill`) + `filter?`/`top?`/`sort?` (list) o `pid`\|`name`/`force?`/`tree?` (kill) | list: pid, ppid, nombre, cpuPercent, memBytes, usuario, command · kill: outcomes por pid, `killedCount`; nunca se mata a sí mismo |
 | `agent_screenshot` | `agent`, `format` (`png`\|`jpeg`, def png), `quality?` (def 80, solo jpeg), `embed?` (def true) | imagen MCP (base64) + `localPath` en el host central, bytes, sha256, width/height · **solo monitor primario** |
 | `agent_restart` | `agent`, `updatePath?` (binario nuevo ya subido), `args?` | reinicio detached del agente; con `updatePath` reemplaza el exe antes de relanzar (self-update OTA) |
-| `agent_exec_async` | `agent`, `command`, `shell?`, `cwd?`, `env?`, `stdin?`, `timeoutMs?` (hasta 24 h) | `jobId`, `state: running` — no espera; el trabajo sigue en el agente |
-| `agent_job_status` | `jobId` | estado (`running`\|`ok`\|`failed`), exitCode, duración, stdout/stderr, meta |
-| `agent_job_list` | `agent?`, `state?`, `limit?` | jobs vivos (cualquier tipo) + historial retenido de los async |
-| `agent_job_cancel` | `jobId` | `cancelRequested`, estado; mata el árbol de procesos remoto |
-| `agent_fs_hash` | `agent`, `path` | sha256, size (sin transferir el archivo) |
-| `agent_fs_search` | `agent`, `path`, `pattern?`, `recursive?`, `maxDepth?`, `minBytes?`, `maxBytes?`, `newerThanDays?`, `olderThanDays?`, `top?` | archivos con ruta completa, tamaño y mtime (más nuevos primero) |
-| `agent_fs_mkdir` | `agent`, `path`, `parents?` | ruta absoluta resuelta, `created` |
-| `agent_fs_move` / `agent_fs_copy` | `agent`, `source`, `destination`, `overwrite?` | ruta destino, tipo, `overwritten`; se ejecuta en la máquina remota |
-| `agent_fs_delete` | `agent`, `path`, `recursive?`, **`confirm`** (obligatorio) | qué se borró; se rechazan raíces de unidad, sin papelera |
-| `agent_services` | `agent`, `filter?`, `state?`, `top?` | servicios Windows (name, displayName, status, startType) |
-| `agent_service_control` | `agent`, `name`, `action` (`start`\|`stop`\|`restart`\|`status`), `force?`, `waitSeconds?` | estado resultante del servicio |
+| `agent_jobs` | `operation` (`status`\|`list`\|`cancel`), `jobId?`, `agent?`, `state?`, `limit?` | status: estado (`running`\|`ok`\|`failed`), exitCode, duración, stdout/stderr, meta · list: jobs vivos + historial async · cancel: `cancelRequested`, mata el árbol remoto |
+| `agent_services` | `agent`, `operation?` (`list` def\|`control`) + `filter?`/`state?`/`top?` o `name`/`action`/`force?`/`waitSeconds?` | list: servicios Windows (name, displayName, status, startType) · control: estado resultante del servicio |
 | `agent_eventlog` | `agent`, `log?`, `level?`, `source?`, `hours?`, `max?`, `messageChars?` | eventos (time, level, id, provider, message truncado) |
-| `agent_net_ports` | `agent`, `protocol?`, `state?`, `filter?`, `top?` | endpoints TCP/UDP con pid y nombre de proceso |
-| `agent_net_test` | `agent`, `host`, `port?`, `count?`, `dns?`, `ping?` | direcciones resueltas, pings y resultado del connect TCP desde la máquina remota |
+| `agent_net` | `agent`, `operation` (`ports`\|`test`) + `protocol?`/`state?`/`filter?`/`top?` (ports) o `host`/`port?`/`count?`/`dns?`/`ping?` (test) | ports: endpoints TCP/UDP con pid y nombre de proceso · test: direcciones resueltas, pings y connect TCP desde la máquina remota |
 | `agent_power` | `agent`, `action` (`shutdown`\|`restart`\|`logoff`\|`lock`\|`sleep`\|`hibernate`\|`abort`), `delaySeconds?`, `message?`, `force?`, **`confirm`** (salvo lock/abort) | acción programada; la caída del agente tras reiniciar es el éxito |
 | `agent_message` | `agent`, `text`, `title?`, `style?`, `buttons?` | muestra un message box en el escritorio remoto (detached, sin respuesta del usuario) |
 | `agent_software` | `agent`, `filter?`, `scope` (`machine`\|`user`\|`all`, def machine), `top?` | inventario de programas instalados (registro Uninstall 64/32-bit, deduplicado): name, version, publisher, installDate, installLocation |
 | `agent_time` | `agent` | hora local/UTC, zona, desfase contra el reloj del servidor (`offsetFromServerMs`) y estado NTP (servicio W32Time, fuente, última sincronización) |
 | `agent_sessions` | `agent`, `interactiveOnly?` (def true) | sesiones de logon vía CIM (locale-proof): usuario, tipo (interactive/remote-interactive/…), `count`, hora de logon; con `interactiveOnly=false` incluye service/batch/network |
 
-Los wrappers de Windows (`agent_services`, `agent_service_control`, `agent_eventlog`,
-`agent_net_ports`, `agent_net_test`, `agent_power`, `agent_message`, `agent_fs_search`,
-`agent_fs_mkdir`, `agent_fs_move`, `agent_fs_copy`, `agent_fs_delete`, `agent_software`,
+Los wrappers de Windows (`agent_services`, `agent_eventlog`, `agent_net`,
+`agent_power`, `agent_message`, las operaciones `search`/`mkdir`/`move`/`copy`/`delete`
+de `agent_fs`, `agent_software`,
 `agent_time`, `agent_sessions`) **no requieren
 recompilar el agente**: el servidor compone un script PowerShell fijo a partir de los
 argumentos validados y el agente devuelve un único sobre JSON (`{ok, data}` /
 `{ok, error}`), con salida no-ASCII en UTF-8 sin BOM. Fallan rápido con `needs Windows`
-si el agente es POSIX. Las operaciones destructivas (`agent_fs_delete`, `agent_power`)
+si el agente es POSIX. Las operaciones destructivas (`agent_fs` delete, `agent_power`)
 exigen `confirm=true` y se auditan igual que el resto.
 
 Convenciones para el LLM: nombres estables `agent_*`, ids cortos legibles, errores

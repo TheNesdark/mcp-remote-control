@@ -6,7 +6,7 @@
  * that survives the agent being killed:
  *
  *   1. the caller (server tool) uploads the new binary to `updatePath`
- *      (agent_fs_upload) — same directory as the running exe so rename works;
+ *      (agent_fs_transfer upload) — same directory as the running exe so rename works;
  *   2. `restart` with updatePath: the exe renames itself to <name>.old
  *      (allowed on Windows while running), moves the new file onto its own
  *      name, waits, re-launches itself and deletes <name>.old;
@@ -26,7 +26,7 @@ import { basename, dirname, join } from "node:path";
 import type { ShortJobResult } from "./job-result.ts";
 
 export interface RestartParams {
-  /** Staged new binary (uploaded via agent_fs_upload) to swap in before relaunch. */
+  /** Staged new binary (uploaded via agent_fs_transfer) to swap in before relaunch. */
   updatePath?: string;
   /** Extra CLI args for the relaunched process (defaults to the current argv). */
   args?: string[];

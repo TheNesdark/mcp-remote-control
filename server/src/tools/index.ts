@@ -4,25 +4,17 @@ import type { Hub } from "../hub.ts";
 import { registerAgentSessions, registerAgentSoftware, registerAgentTime } from "./agent-diagnostics.ts";
 import { registerAgentEventLog } from "./agent-eventlog.ts";
 import { registerAgentExec } from "./agent-exec.ts";
-import { registerAgentExecAsync } from "./agent-exec-async.ts";
-import { registerAgentFsCopy, registerAgentFsDelete, registerAgentFsMkdir, registerAgentFsMove, registerAgentFsSearch } from "./agent-fs-manage.ts";
-import { registerAgentFsDownload } from "./agent-fs-download.ts";
-import { registerAgentFsHash } from "./agent-fs-hash.ts";
-import { registerAgentFsList } from "./agent-fs-list.ts";
-import { registerAgentFsRead } from "./agent-fs-read.ts";
-import { registerAgentFsUpload } from "./agent-fs-upload.ts";
-import { registerAgentFsWrite } from "./agent-fs-write.ts";
+import { registerAgentFs } from "./agent-fs.ts";
 import { registerAgentInfo } from "./agent-info.ts";
 import { registerAgentJobs } from "./agent-jobs.ts";
 import { registerAgentMessage } from "./agent-message.ts";
-import { registerAgentNetPorts, registerAgentNetTest } from "./agent-net.ts";
+import { registerAgentNet } from "./agent-net.ts";
 import { registerAgentPower } from "./agent-power.ts";
-import { registerAgentPsKill } from "./agent-ps-kill.ts";
-import { registerAgentPsList } from "./agent-ps-list.ts";
+import { registerAgentPs } from "./agent-ps.ts";
 import { registerAgentRestart } from "./agent-restart.ts";
 import { registerAgentScreenshot } from "./agent-screenshot.ts";
 import { registerAgentCuaTools } from "./agent-cua.ts";
-import { registerAgentServiceControl, registerAgentServices } from "./agent-services.ts";
+import { registerAgentServices } from "./agent-services.ts";
 import { registerAgentsList } from "./agents-list.ts";
 
 export interface ToolsOptions {
@@ -36,35 +28,28 @@ export interface ToolsOptions {
   audit: AuditLog;
 }
 
-/** Register every MCP tool exposed by the server. */
+/**
+ * Register every MCP tool exposed by the server.
+ *
+ * Several former one-shot tools were consolidated behind an `operation`
+ * selector (agent_fs[_transfer], agent_ps, agent_net, agent_services,
+ * agent_jobs, and agent_exec's async flag); the audit trail keeps recording
+ * the original per-operation names.
+ */
 export function registerTools(server: McpServer, hub: Hub, options: ToolsOptions): void {
   const { audit, screenshotDir, screenshotKeep, screenshotBaseUrl } = options;
   registerAgentsList(server, hub, audit);
   registerAgentExec(server, hub, audit);
-  registerAgentExecAsync(server, hub, audit);
   registerAgentJobs(server, hub, audit);
-  registerAgentFsList(server, hub, audit);
-  registerAgentFsRead(server, hub, audit);
-  registerAgentFsWrite(server, hub, audit);
-  registerAgentFsUpload(server, hub, audit);
-  registerAgentFsDownload(server, hub, audit);
-  registerAgentFsHash(server, hub, audit);
-  registerAgentFsSearch(server, hub, audit);
-  registerAgentFsMkdir(server, hub, audit);
-  registerAgentFsMove(server, hub, audit);
-  registerAgentFsCopy(server, hub, audit);
-  registerAgentFsDelete(server, hub, audit);
+  registerAgentFs(server, hub, audit);
   registerAgentInfo(server, hub, audit);
-  registerAgentPsList(server, hub, audit);
-  registerAgentPsKill(server, hub, audit);
+  registerAgentPs(server, hub, audit);
   registerAgentRestart(server, hub, audit);
   registerAgentScreenshot(server, hub, screenshotDir, audit, screenshotBaseUrl ?? "", screenshotKeep ?? 0);
   registerAgentCuaTools(server, hub, audit, { screenshotDir, screenshotBaseUrl: screenshotBaseUrl ?? "" });
   registerAgentServices(server, hub, audit);
-  registerAgentServiceControl(server, hub, audit);
   registerAgentEventLog(server, hub, audit);
-  registerAgentNetPorts(server, hub, audit);
-  registerAgentNetTest(server, hub, audit);
+  registerAgentNet(server, hub, audit);
   registerAgentPower(server, hub, audit);
   registerAgentMessage(server, hub, audit);
   registerAgentSoftware(server, hub, audit);

@@ -76,7 +76,7 @@ Tuning knobs (leave unset unless you have a reason):
 | `MRC_JOB_TIMEOUT_MS` | `30000` | Default job timeout. |
 | `MRC_MAX_JOBS_PER_AGENT` | `8` | Max in-flight jobs per agent (`agent_busy` above). |
 | `MRC_MAX_JOBS_PER_MIN` | `120` | Max tool-call jobs per agent per rolling 60 s (`rate_limited` above). |
-| `MRC_JOB_HISTORY_MAX` | `100` | Finished `agent_exec_async` jobs kept in memory for `agent_job_status` / `agent_job_list`. |
+| `MRC_JOB_HISTORY_MAX` | `100` | Finished `agent_exec` async jobs kept in memory for `agent_jobs` (status/list). |
 | `MRC_JOB_HISTORY_TTL_MS` | `1800000` | How long a finished async job stays queryable (30 min). |
 | `MRC_DB_PATH` | `<data>/mcp.db` | Override the SQLite registry path. |
 | `MRC_AUDIT_PATH` | `<data>/audit.jsonl` | Override the audit trail path. |
@@ -158,31 +158,31 @@ To keep the agent from using the tools without asking, restrict them by name:
 6. File tools:
 
    ```
-   agent_fs_list(agent="PC-01", path="C:\\Users\\User\\Documents")
-   agent_fs_read(agent="PC-01", path="C:\\temp\\log.txt")
-   agent_fs_write(agent="PC-01", path="C:\\temp\\hello.txt", content="hi")
-   agent_fs_upload(agent="PC-01", localPath="/root/installer.msi", remotePath="C:\\temp\\installer.msi")
-   agent_fs_download(agent="PC-01", remotePath="C:\\temp\\report.pdf", localPath="/root/report.pdf")
+   agent_fs(operation="list", agent="PC-01", path="C:\\Users\\User\\Documents")
+   agent_fs(operation="read", agent="PC-01", path="C:\\temp\\log.txt")
+   agent_fs(operation="write", agent="PC-01", path="C:\\temp\\hello.txt", content="hi")
+   agent_fs_transfer(operation="upload", agent="PC-01", localPath="/root/installer.msi", remotePath="C:\\temp\\installer.msi")
+   agent_fs_transfer(operation="download", agent="PC-01", remotePath="C:\\temp\\report.pdf", localPath="/root/report.pdf")
    ```
 
    `upload`/`download` copy between **this server's machine** and the remote
    machine in chunks, and verify SHA-256 (and size) in both directions. Writes
    are limited to 512 KiB per call; use upload for bigger files
-   (`agent_fs_write` supports `mkdirs=true`).
+   (`agent_fs` write supports `mkdirs=true`).
 7. Inventory, processes and screenshots:
 
    ```
    agent_info(agent="PC-01")
-   agent_ps_list(agent="PC-01", filter="chrome", top=20, sort="cpu")
-   agent_ps_kill(agent="PC-01", pid=1234)               # tree + force by default
-   agent_ps_kill(agent="PC-01", name="notepad.exe")     # kills every match
+   agent_ps(operation="list", agent="PC-01", filter="chrome", top=20, sort="cpu")
+   agent_ps(operation="kill", agent="PC-01", pid=1234)               # tree + force by default
+   agent_ps(operation="kill", agent="PC-01", name="notepad.exe")     # kills every match
    agent_screenshot(agent="PC-01")                      # primary monitor, embedded image
    agent_screenshot(agent="PC-01", format="jpeg", quality=70, embed=false)
    ```
 
    - `agent_info` returns hostname, OS, user, uptime, CPU, memory, IPs and disks
      with free space.
-   - `agent_ps_list` sorts by `cpu` (default), `mem`, `pid` or `name` and can
+   - `agent_ps` (list) sorts by `cpu` (default), `mem`, `pid` or `name` and can
      filter by process name / command line substring. `force=false` and
      `tree=false` request a graceful single-process kill instead.
    - `agent_screenshot` captures **only the primary monitor**. The agent never
@@ -200,47 +200,47 @@ To keep the agent from using the tools without asking, restrict them by name:
 
    ```
    agent_services(agent="PC-01", filter="spooler", state="running")
-   agent_service_control(agent="PC-01", name="Spooler", action="restart", waitSeconds=30)
+   agent_services(operation="control", agent="PC-01", name="Spooler", action="restart", waitSeconds=30)
    agent_eventlog(agent="PC-01", log="System", level="error", hours=48, max=50)
-   agent_net_ports(agent="PC-01", state="listen", filter="445")
-   agent_net_test(agent="PC-01", host="srv-01", port=445)
-   agent_fs_hash(agent="PC-01", path="C:\\temp\\rc-agent.exe")
+   agent_net(operation="ports", agent="PC-01", state="listen", filter="445")
+   agent_net(operation="test", agent="PC-01", host="srv-01", port=445)
+   agent_fs(operation="hash", agent="PC-01", path="C:\\temp\\rc-agent.exe")
    ```
 
    - `agent_services` lists name / displayName / status / startType, filtered by
-     a case-insensitive substring and/or state. `agent_service_control` starts,
+     a case-insensitive substring and/or state. `agent_services` (control) starts,
      stops, restarts or inspects one service and reports its resulting state
      (`force=true` also affects dependents; many services need an elevated
      agent, otherwise you get `Access is denied`).
    - `agent_eventlog` reads Windows event logs (System / Application /
      Security), newest first, filtered by severity, provider and look-back
      hours. Messages are truncated to `messageChars`.
-   - `agent_net_ports` lists TCP/UDP endpoints with the owning pid **and**
-     process name (needs Windows 8 / Server 2012 or newer); `agent_net_test`
+   - `agent_net` (ports) lists TCP/UDP endpoints with the owning pid **and**
+     process name (needs Windows 8 / Server 2012 or newer); `agent_net` (test)
      resolves, pings and TCP-connects from the remote machine's point of view,
      which is what tells you whether a backup target or database is reachable
      from that host.
-   - `agent_fs_hash` returns the SHA-256 and size of a remote file without
+   - `agent_fs` (hash) returns the SHA-256 and size of a remote file without
      transferring it (useful to verify an installer or OTA build).
    - These tools need **Windows**; on a POSIX agent they fail fast with
      `needs Windows` (use `agent_exec` there).
 9. Files and power:
 
    ```
-   agent_fs_search(agent="PC-01", path="C:\\Logs", pattern="*.log", recursive=true, olderThanDays=7)
-   agent_fs_mkdir(agent="PC-01", path="C:\\Temp\\2026")
-   agent_fs_move(agent="PC-01", source="C:\\a.txt", destination="C:\\b.txt")
-   agent_fs_copy(agent="PC-01", source="C:\\a.txt", destination="D:\\backup", overwrite=true)
-   agent_fs_delete(agent="PC-01", path="C:\\Temp\\old", recursive=true, confirm=true)
+   agent_fs(operation="search", agent="PC-01", path="C:\\Logs", pattern="*.log", recursive=true, olderThanDays=7)
+   agent_fs(operation="mkdir", agent="PC-01", path="C:\\Temp\\2026")
+   agent_fs(operation="move", agent="PC-01", source="C:\\a.txt", destination="C:\\b.txt")
+   agent_fs(operation="copy", agent="PC-01", source="C:\\a.txt", destination="D:\\backup", overwrite=true)
+   agent_fs(operation="delete", agent="PC-01", path="C:\\Temp\\old", recursive=true, confirm=true)
    agent_power(agent="PC-01", action="restart", delaySeconds=30, message="Mantenimiento", confirm=true)
    agent_message(agent="PC-01", text="Cierre las aplicaciones, hay mantenimiento", style="warning")
    ```
 
-   - `agent_fs_search` lists files under a directory (newest first) with size /
-     age filters; `agent_fs_mkdir`, `agent_fs_move` and `agent_fs_copy` work
+   - `agent_fs` (search) lists files under a directory (newest first) with size /
+     age filters; `agent_fs` mkdir/move/copy work
      entirely on the remote machine (no bytes cross the server) and refuse to
      replace an existing destination unless `overwrite=true`.
-   - `agent_fs_delete` is permanent (no recycle bin) and therefore needs
+   - `agent_fs` (delete) is permanent (no recycle bin) and therefore needs
      `confirm=true`; drive roots are rejected and the path is used literally
      (no wildcards). Non-empty directories need `recursive=true`.
    - `agent_power` actions: `shutdown`, `restart`, `logoff`, `lock`, `sleep`,
@@ -254,18 +254,18 @@ To keep the agent from using the tools without asking, restrict them by name:
 10. Async jobs (long work without blocking the session):
 
    ```
-   agent_exec_async(agent="PC-01", command="backup.cmd", timeoutMs=3600000)
-   agent_job_status(jobId="0f4c...")
-   agent_job_list(agent="PC-01", state="running")
-   agent_job_cancel(jobId="0f4c...")
+   agent_exec(agent="PC-01", command="backup.cmd", async=true, timeoutMs=3600000)
+   agent_jobs(operation="status", jobId="0f4c...")
+   agent_jobs(operation="list", agent="PC-01", state="running")
+   agent_jobs(operation="cancel", jobId="0f4c...")
    ```
 
-   `agent_exec_async` returns a `jobId` as soon as the command is running (same
-   arguments as `agent_exec`). `agent_job_status` reports the state
+   `agent_exec` with `async=true` returns a `jobId` as soon as the command is running (same
+   arguments as `agent_exec`). `agent_jobs` (status) reports the state
    (`running` | `ok` | `failed`), exit code, duration, stdout/stderr and
    metadata; output of a finished job is capped and the history is bounded by
-   `MRC_JOB_HISTORY_MAX` / `MRC_JOB_HISTORY_TTL_MS`. `agent_job_list` also shows
-   running synchronous jobs, and `agent_job_cancel` kills the whole remote
+   `MRC_JOB_HISTORY_MAX` / `MRC_JOB_HISTORY_TTL_MS`. `agent_jobs` (list) also shows
+   running synchronous jobs, and `agent_jobs` (cancel) kills the whole remote
    process tree (the agent confirms; the server gives up after a couple of
    seconds and marks the job failed).
 11. Diagnostics (fixed PowerShell probes, Windows only):
@@ -306,4 +306,4 @@ bearer header or `?token=<MRC_TOKEN>`; only files directly inside
 `MRC_SCREENSHOT_DIR` are served. Set `MRC_PUBLIC_URL` (e.g.
 `http://192.168.1.192:8788`) so `agent_screenshot` returns a full `downloadUrl`.
 
-   - `agent_ps_kill` refuses to kill the agent process itself.
+   - `agent_ps` (kill) refuses to kill the agent process itself.

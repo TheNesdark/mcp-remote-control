@@ -77,40 +77,66 @@ export function netPortsScript(args: NetPortsArgs): string {
   ]);
 }
 
-export function registerAgentNetPorts(server: McpServer, hub: Hub, audit: AuditLog | null = null): void {
-  registerJobTool<NetPortsArgs>(server, hub, audit, {
-    name: "agent_net_ports",
-    title: "List open ports on a remote agent",
+export function registerAgentNet(server: McpServer, hub: Hub, audit: AuditLog | null = null): void {
+  registerJobTool<NetArgs>(server, hub, audit, {
+    name: "agent_net",
+    title: "Inspect ports or test connectivity from a remote agent",
     description:
-      "List TCP/UDP endpoints on a remote machine together with the pid and process name that owns each one " +
-      "(via Get-NetTCPConnection / Get-NetUDPEndpoint, so it needs Windows 8 / Server 2012 or newer). " +
-      "By default only TCP listeners are returned; use state='established' or 'all' to see active connections. " +
-      "Filter with a case-insensitive substring on the process name, the local address or the local port. " +
-      "Handy to find what is using a port before stopping a service.",
+      "Network diagnostics on a remote machine (Windows). operation='ports' lists TCP/UDP endpoints together with " +
+      "the pid and process name that owns each one (via Get-NetTCPConnection / Get-NetUDPEndpoint, so it needs " +
+      "Windows 8 / Server 2012 or newer); by default only TCP listeners — use state='established' or 'all' for " +
+      "active connections, and 'filter' (case-insensitive) on process name, local address or local port. Handy to " +
+      "find what is using a port. operation='test' runs reachability checks from the remote machine's point of " +
+      "view, not the server's: resolve the name (DNS), ping it and, when 'port' is given, try a TCP connection — " +
+      "this tells you whether a backup target, database or camera is reachable from that specific host.",
     inputSchema: {
       agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
-      protocol: z.enum(["tcp", "udp", "all"]).optional().describe("Transport to inspect (default tcp)."),
-      state: z.enum(["listen", "established", "all"]).optional().describe("TCP state to keep (default listen)."),
-      filter: z.string().optional().describe("Case-insensitive substring on process name, local address or local port."),
-      top: z.number().int().positive().max(2_000).optional().describe("Return at most this many entries (default 200)."),
+      operation: z.enum(["ports", "test"]).describe("ports = socket inventory; test = DNS/ping/TCP reachability."),
+      protocol: z.enum(["tcp", "udp", "all"]).optional().describe("(ports) Transport to inspect (default tcp)."),
+      state: z.enum(["listen", "established", "all"]).optional().describe("(ports) TCP state to keep (default listen)."),
+      filter: z
+        .string()
+        .optional()
+        .describe("(ports) Case-insensitive substring on process name, local address or local port."),
+      top: z.number().int().positive().max(2_000).optional().describe("(ports) Return at most this many entries (default 200)."),
+      host: z.string().min(1).optional().describe("(test) Host name or IP address to test from the remote machine."),
+      port: z.number().int().min(1).max(65_535).optional().describe("(test) TCP port to test (e.g. 445, 1433, 80)."),
+      count: z.number().int().min(1).max(20).optional().describe("(test) Ping attempts (default 4)."),
+      dns: z.boolean().optional().describe("(test) Resolve the name (default true)."),
+      ping: z.boolean().optional().describe("(test) Send ICMP pings (default true)."),
     },
     options: {
-      op: "agent_net_ports",
+      op: (args) => (args.operation === "test" ? "agent_net_test" : "agent_net_ports"),
       jobType: "exec",
-      validate: windowsOnly(hub),
+      validate: (args) =>
+        windowsOnly(hub)(args) ?? (args.operation === "test" && args.host === undefined ? "operation 'test': 'host' is required" : null),
       timeoutMs: () => PS_DEFAULT_TIMEOUT_MS,
       buildParams: (args) =>
-        psExecParams(
-          netPortsScript({
-            agent: args.agent,
-            protocol: args.protocol ?? "tcp",
-            state: args.state ?? "listen",
-            ...(args.filter !== undefined ? { filter: args.filter } : {}),
-            top: args.top ?? 200,
-          }),
-        ),
+        args.operation === "test"
+          ? psExecParams(
+              netTestScript({
+                agent: args.agent,
+                host: args.host!,
+                ...(args.port !== undefined ? { port: args.port } : {}),
+                count: args.count ?? 4,
+                dns: args.dns ?? true,
+                ping: args.ping ?? true,
+              }),
+            )
+          : psExecParams(
+              netPortsScript({
+                agent: args.agent,
+                protocol: args.protocol ?? "tcp",
+                state: args.state ?? "listen",
+                ...(args.filter !== undefined ? { filter: args.filter } : {}),
+                top: args.top ?? 200,
+              }),
+            ),
       buildFailure: (outcome) => psFailure(outcome),
-      buildResult: (outcome) => psEnvelopeData<NetPortsData>(outcome.stdout),
+      buildResult: (outcome, args) =>
+        args.operation === "test"
+          ? psEnvelopeData<NetTestData>(outcome.stdout)
+          : psEnvelopeData<NetPortsData>(outcome.stdout),
     },
   });
 }
@@ -161,41 +187,6 @@ export function netTestScript(args: NetTestArgs): string {
   ]);
 }
 
-export function registerAgentNetTest(server: McpServer, hub: Hub, audit: AuditLog | null = null): void {
-  registerJobTool<NetTestArgs>(server, hub, audit, {
-    name: "agent_net_test",
-    title: "Test connectivity from a remote agent",
-    description:
-      "Run network diagnostics from the remote machine's point of view, not the server's: resolve the name (DNS), " +
-      "ping it and, when 'port' is given, try a TCP connection to it. This is what tells you whether a backup " +
-      "target, database or camera is reachable from that specific host. Returns the resolved addresses, the pings " +
-      "and (with a port) whether the TCP handshake succeeded.",
-    inputSchema: {
-      agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
-      host: z.string().min(1).describe("Host name or IP address to test from the remote machine."),
-      port: z.number().int().min(1).max(65_535).optional().describe("TCP port to test (e.g. 445, 1433, 80)."),
-      count: z.number().int().min(1).max(20).optional().describe("Ping attempts (default 4)."),
-      dns: z.boolean().optional().describe("Resolve the name (default true)."),
-      ping: z.boolean().optional().describe("Send ICMP pings (default true)."),
-    },
-    options: {
-      op: "agent_net_test",
-      jobType: "exec",
-      validate: windowsOnly(hub),
-      timeoutMs: () => PS_DEFAULT_TIMEOUT_MS,
-      buildParams: (args) =>
-        psExecParams(
-          netTestScript({
-            agent: args.agent,
-            host: args.host,
-            ...(args.port !== undefined ? { port: args.port } : {}),
-            count: args.count ?? 4,
-            dns: args.dns ?? true,
-            ping: args.ping ?? true,
-          }),
-        ),
-      buildFailure: (outcome) => psFailure(outcome),
-      buildResult: (outcome) => psEnvelopeData<NetTestData>(outcome.stdout),
-    },
-  });
-}
+type NetArgs = { agent: string; operation: "ports" | "test" } & Partial<Omit<NetPortsArgs, "agent">> & Partial<
+    Omit<NetTestArgs, "agent">
+  >;

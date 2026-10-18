@@ -234,28 +234,29 @@ try {
   const fsDir = mkdtempSync(join(tmpdir(), "mrc-e2e-fs-"));
   const helloPath = join(fsDir, "notes", "hello.txt");
 
-  const writeRes = await callAgentTool("agent_fs_write", {
+  const writeRes = await callAgentTool("agent_fs", {
     agent: "E2E-01",
+    operation: "write",
     path: helloPath,
     content: "hello file",
     mkdirs: true,
   });
   check(
-    "agent_fs_write creates dirs and returns bytes + sha256",
+    "agent_fs write creates dirs and returns bytes + sha256",
     writeRes.data.ok === true && writeRes.data.bytes === 10 && typeof writeRes.data.sha256 === "string",
     writeRes.data,
   );
 
-  const readRes = await callAgentTool("agent_fs_read", { agent: "E2E-01", path: helloPath });
+  const readRes = await callAgentTool("agent_fs", { agent: "E2E-01", operation: "read", path: helloPath });
   check(
-    "agent_fs_read returns content, eof and sha256",
+    "agent_fs read returns content, eof and sha256",
     readRes.data.content === "hello file" && readRes.data.eof === true && typeof readRes.data.sha256 === "string",
     readRes.data,
   );
 
-  const listRes = await callAgentTool("agent_fs_list", { agent: "E2E-01", path: join(fsDir, "notes") });
+  const listRes = await callAgentTool("agent_fs", { agent: "E2E-01", operation: "list", path: join(fsDir, "notes") });
   check(
-    "agent_fs_list shows the file",
+    "agent_fs list shows the file",
     Array.isArray(listRes.data.entries) &&
       (listRes.data.entries as Array<{ name: string }>).some((entry) => entry.name === "hello.txt"),
     listRes.data,
@@ -266,33 +267,35 @@ try {
   for (let i = 0; i < payload.length; i++) payload[i] = i % 251;
   writeFileSync(sourceBin, payload);
 
-  const uploadRes = await callAgentTool("agent_fs_upload", {
+  const uploadRes = await callAgentTool("agent_fs_transfer", {
     agent: "E2E-01",
+    operation: "upload",
     localPath: sourceBin,
     remotePath: join(fsDir, "remote.bin"),
   });
   check(
-    "agent_fs_upload reports ok, size and sha256",
+    "agent_fs_transfer upload reports ok, size and sha256",
     uploadRes.data.ok === true && uploadRes.data.bytes === payload.length && typeof uploadRes.data.sha256 === "string",
     uploadRes.data,
   );
 
-  const downloadRes = await callAgentTool("agent_fs_download", {
+  const downloadRes = await callAgentTool("agent_fs_transfer", {
     agent: "E2E-01",
+    operation: "download",
     remotePath: join(fsDir, "remote.bin"),
     localPath: join(fsDir, "down.bin"),
   });
   check(
-    "agent_fs_download round trips the same sha256",
+    "agent_fs_transfer download round trips the same sha256",
     downloadRes.data.ok === true &&
       downloadRes.data.bytes === payload.length &&
       downloadRes.data.sha256 === uploadRes.data.sha256,
     { up: uploadRes.data, down: downloadRes.data },
   );
 
-  const missingRes = await callAgentTool("agent_fs_read", { agent: "E2E-01", path: join(fsDir, "nope.txt") });
+  const missingRes = await callAgentTool("agent_fs", { agent: "E2E-01", operation: "read", path: join(fsDir, "nope.txt") });
   check(
-    "agent_fs_read reports missing files as an error",
+    "agent_fs read reports missing files as an error",
     missingRes.isError === true && String(missingRes.data.error ?? "").includes("ENOENT"),
     missingRes.data,
   );
@@ -310,10 +313,10 @@ try {
     infoRes.data,
   );
 
-  const psRes = await callAgentTool("agent_ps_list", { agent: "E2E-01", top: 500, sort: "pid" });
+  const psRes = await callAgentTool("agent_ps", { agent: "E2E-01", operation: "list", top: 500, sort: "pid" });
   const psProcesses = (psRes.data.processes ?? []) as Array<{ pid: number; name: string }>;
   check(
-    "agent_ps_list returns processes with pids",
+    "agent_ps list returns processes with pids",
     psProcesses.length > 0 && psProcesses.every((proc) => typeof proc.pid === "number"),
     { total: psRes.data.total, sample: psProcesses.slice(0, 3) },
   );
@@ -325,9 +328,9 @@ try {
   const remotePid = Number(/pid:(\d+)/.exec(String(spawned.data.stdout ?? ""))?.[1] ?? 0);
   check("spawned a remote sleep process to kill", Number.isInteger(remotePid) && remotePid > 0, spawned.data);
 
-  const killRes = await callAgentTool("agent_ps_kill", { agent: "E2E-01", pid: remotePid });
+  const killRes = await callAgentTool("agent_ps", { agent: "E2E-01", operation: "kill", pid: remotePid });
   check(
-    "agent_ps_kill reports the killed process",
+    "agent_ps kill reports the killed process",
     killRes.isError === false && Number(killRes.data.killedCount) >= 1,
     killRes.data,
   );
@@ -361,7 +364,7 @@ try {
     callAgentTool("agent_exec", { agent: "FAKE-01", command: "echo c" }),
     callAgentTool("agent_exec", { agent: "E2E-01", command: "echo x" }),
     callAgentTool("agent_info", { agent: "E2E-01" }),
-    callAgentTool("agent_ps_list", { agent: "E2E-01", top: 10 }),
+    callAgentTool("agent_ps", { agent: "E2E-01", operation: "list", top: 10 }),
   ]);
   const [cFakeA, cFakeB, cFakeC, cExec, cInfo, cPs] = concurrent;
   check(

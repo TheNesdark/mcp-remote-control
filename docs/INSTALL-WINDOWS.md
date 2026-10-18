@@ -11,7 +11,7 @@ not needed for the agent to work.
 ## Requirements
 
 - Windows 10/11 (x64). PowerShell 5.1 is used by the tray/first-run helpers and
-  by `agent_ps_*`/`agent_screenshot`; it ships with Windows.
+  by `agent_ps`/`agent_screenshot`; it ships with Windows.
 - Network reachability to the central server on the LAN
   (e.g. `ws://192.168.1.50:8787` — see `docs/OPERATIONS.md` for the server
   side: static IP, firewall, systemd).
@@ -130,7 +130,7 @@ Screenshot failures are explicit: the agent detects session 0 /
 4. `agent_screenshot` returns a correct primary-monitor image; with the agent
    started in session 0 it must fail with the clear `no interactive session`
    error instead.
-5. `agent_ps_list` shows processes with user/CPU/memory; `agent_ps_kill`
+5. `agent_ps` (list) shows processes with user/CPU/memory; `agent_ps` (kill)
    terminates a test process (try `notepad.exe`).
 6. `Open logs` opens the log folder and `agent.log` has recent entries.
 7. `Start with Windows` survives a logoff/logon cycle and `Exit` stops the

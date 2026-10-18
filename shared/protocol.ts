@@ -135,7 +135,7 @@ export const ScreenshotParams = z.object({
 export type ScreenshotParams = z.infer<typeof ScreenshotParams>;
 
 export const RestartParams = z.object({
-  /** Staged new binary (uploaded via agent_fs_upload) to swap in before relaunch. */
+  /** Staged new binary (uploaded via agent_fs_transfer) to swap in before relaunch. */
   updatePath: z.string().min(1).optional(),
   /** Args for the relaunched process (defaults to the agent's own argv). */
   args: z.array(z.string().max(4096)).max(64).optional(),

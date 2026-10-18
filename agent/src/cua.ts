@@ -234,14 +234,15 @@ function parseSidecarOutput(stdout: string, exe?: string, stderr?: string): Side
     }
   }
   // Diagnostics: persist the raw bytes so the hub can pull them when the JSON
-  // contract is broken (encoding/interference).
+  // contract is broken (encoding/interference). Written next to the exe.
   try {
-    const dump = join(process.env.LOCALAPPDATA ?? ".", "mrc-cua-parse-debug.txt");
-    writeFileSync(
-      dump,
-      `len=${Buffer.byteLength(stdout, "utf8")} exe=${exe ?? "?"}\nstderr=${(stderr ?? "").slice(0, 400)}\nstdout=${stdout}`,
-      "utf8",
-    );
+    if (exe) {
+      writeFileSync(
+        join(dirname(exe), "parse-debug.txt"),
+        `len=${Buffer.byteLength(stdout, "utf8")} exe=${exe}\nstderr=${(stderr ?? "").slice(0, 400)}\nstdout=${stdout}`,
+        "utf8",
+      );
+    }
   } catch {
     // best effort
   }

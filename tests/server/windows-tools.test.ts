@@ -192,27 +192,45 @@ test("the Windows helpers and job-history tools are registered", async () => {
   const tools = (await started.client.listTools()).tools.map((tool) => tool.name);
   for (const name of [
     "agent_services",
-    "agent_service_control",
     "agent_eventlog",
-    "agent_net_ports",
-    "agent_net_test",
-    "agent_fs_hash",
-    "agent_fs_search",
-    "agent_fs_mkdir",
-    "agent_fs_move",
-    "agent_fs_copy",
-    "agent_fs_delete",
+    "agent_net",
+    "agent_fs",
+    "agent_fs_transfer",
+    "agent_ps",
     "agent_power",
     "agent_message",
-    "agent_exec_async",
-    "agent_job_status",
-    "agent_job_list",
-    "agent_job_cancel",
+    "agent_exec",
+    "agent_jobs",
     "agent_software",
     "agent_time",
     "agent_sessions",
   ]) {
     expect(tools).toContain(name);
+  }
+  // Consolidated tools replaced their one-shot predecessors.
+  for (const gone of [
+    "agent_exec_async",
+    "agent_ps_list",
+    "agent_ps_kill",
+    "agent_net_ports",
+    "agent_net_test",
+    "agent_service_control",
+    "agent_job_status",
+    "agent_job_list",
+    "agent_job_cancel",
+    "agent_fs_read",
+    "agent_fs_write",
+    "agent_fs_list",
+    "agent_fs_hash",
+    "agent_fs_upload",
+    "agent_fs_download",
+    "agent_fs_search",
+    "agent_fs_mkdir",
+    "agent_fs_move",
+    "agent_fs_copy",
+    "agent_fs_delete",
+  ]) {
+    expect(tools).not.toContain(gone);
   }
 });
 
@@ -230,16 +248,16 @@ test("agent_services returns the parsed service list", async () => {
   expect(script).toContain("$__filter = 'spool'");
 });
 
-test("agent_service_control reports the resulting state", async () => {
+test("agent_services control reports the resulting state", async () => {
   const started = await startWindows();
-  const result = await call("agent_service_control", { agent: "W-01", name: "Spooler", action: "restart", waitSeconds: 20 });
+  const result = await call("agent_services", { agent: "W-01", operation: "control", name: "Spooler", action: "restart", waitSeconds: 20 });
   expect(result.isError).toBe(false);
   expect(result.data).toMatchObject({ name: "Spooler", status: "Running", action: "restart" });
   expect(started.commands[0]).toContain("Restart-Service -Name $__name");
   expect(started.commands[0]).toContain("$__wait = 20");
 });
 
-test("agent_eventlog, agent_net_ports and agent_net_test reach the right cmdlets", async () => {
+test("agent_eventlog, agent_net ports and test reach the right cmdlets", async () => {
   const started = await startWindows();
 
   const events = await call("agent_eventlog", { agent: "W-01", level: "error", max: 5, hours: 48 });
@@ -247,10 +265,10 @@ test("agent_eventlog, agent_net_ports and agent_net_test reach the right cmdlets
   expect(started.commands[0]).toContain("$__level = 2");
   expect(started.commands[0]).toContain("$__hours = 48");
 
-  const ports = await call("agent_net_ports", { agent: "W-01", state: "established" });
+  const ports = await call("agent_net", { agent: "W-01", operation: "ports", state: "established" });
   expect(ports.data.connections[0]).toMatchObject({ localPort: 3389, process: "svchost" });
 
-  const net = await call("agent_net_test", { agent: "W-01", host: "srv-01", port: 445, count: 2 });
+  const net = await call("agent_net", { agent: "W-01", operation: "test", host: "srv-01", port: 445, count: 2 });
   expect(net.data).toMatchObject({ host: "srv-01", tcp: { port: 445, open: true } });
   expect(net.data.pings[0].responseTimeMs).toBe(3);
   expect(started.commands[2]).toContain("$__port = 445");
@@ -288,41 +306,41 @@ test("agent_message reports that the box was shown", async () => {
 test("the filesystem helpers map onto the right cmdlets", async () => {
   const started = await startWindows();
 
-  const search = await call("agent_fs_search", { agent: "W-01", path: "C:\\Logs", pattern: "*.log", recursive: true, maxDepth: 2, olderThanDays: 7 });
+  const search = await call("agent_fs", { agent: "W-01", operation: "search", path: "C:\\Logs", pattern: "*.log", recursive: true, maxDepth: 2, olderThanDays: 7 });
   expect(search.data).toMatchObject({ matched: 2, returned: 1, truncated: true });
   expect(started.commands[0]).toContain("-Filter $__pattern -File -Force -Recurse -Depth $__depth");
 
-  const mkdir = await call("agent_fs_mkdir", { agent: "W-01", path: "C:\\Logs\\2026" });
+  const mkdir = await call("agent_fs", { agent: "W-01", operation: "mkdir", path: "C:\\Logs\\2026" });
   expect(mkdir.data).toMatchObject({ created: true });
 
-  const move = await call("agent_fs_move", { agent: "W-01", source: "C:\\a.txt", destination: "C:\\b.txt" });
+  const move = await call("agent_fs", { agent: "W-01", operation: "move", source: "C:\\a.txt", destination: "C:\\b.txt" });
   expect(move.data).toMatchObject({ destination: "C:\\b.txt", type: "file" });
   expect(started.commands[2]).toContain("Move-Item -LiteralPath $__source");
 
-  const copy = await call("agent_fs_copy", { agent: "W-01", source: "C:\\a.txt", destination: "C:\\b.txt", overwrite: true });
+  const copy = await call("agent_fs", { agent: "W-01", operation: "copy", source: "C:\\a.txt", destination: "C:\\b.txt", overwrite: true });
   expect(copy.data).toMatchObject({ overwritten: true });
   expect(started.commands[3]).toContain("Copy-Item -LiteralPath $__source -Destination $__destination -Recurse -Force");
 
-  const removed = await call("agent_fs_delete", { agent: "W-01", path: "C:\\tmp\\a.txt", confirm: true });
+  const removed = await call("agent_fs", { agent: "W-01", operation: "delete", path: "C:\\tmp\\a.txt", confirm: true });
   expect(removed.data).toMatchObject({ deleted: true, type: "file" });
 });
 
-test("agent_fs_delete requires confirm and never targets a drive root", async () => {
+test("agent_fs delete requires confirm and never targets a drive root", async () => {
   const started = await startWindows();
 
-  const noConfirm = await call("agent_fs_delete", { agent: "W-01", path: "C:\\tmp\\a.txt" });
+  const noConfirm = await call("agent_fs", { agent: "W-01", operation: "delete", path: "C:\\tmp\\a.txt" });
   expect(noConfirm.isError).toBe(true);
   expect(noConfirm.data.error).toContain("confirm=true");
 
-  const driveRoot = await call("agent_fs_delete", { agent: "W-01", path: "C:\\", confirm: true });
+  const driveRoot = await call("agent_fs", { agent: "W-01", operation: "delete", path: "C:\\", confirm: true });
   expect(driveRoot.isError).toBe(true);
   expect(driveRoot.data.error).toContain("drive root");
   expect(started.commands.length).toBe(0);
 });
 
-test("agent_fs_hash reads the hash out of the job metadata", async () => {
+test("agent_fs hash reads the hash out of the job metadata", async () => {
   await startWindows();
-  const result = await call("agent_fs_hash", { agent: "W-01", path: "C:\\temp\\rc-agent.exe" });
+  const result = await call("agent_fs", { agent: "W-01", operation: "hash", path: "C:\\temp\\rc-agent.exe" });
   expect(result.isError).toBe(false);
   expect(result.data).toEqual({ ok: true, path: "C:\\temp\\rc-agent.exe", sha256: "a".repeat(64), size: 4096 });
 });
@@ -334,7 +352,7 @@ test("a script failure comes back as an error with the PowerShell message", asyn
       exitCode: 1,
     }),
   });
-  const result = await call("agent_service_control", { agent: "W-01", name: "nope", action: "start" });
+  const result = await call("agent_services", { agent: "W-01", operation: "control", name: "nope", action: "start" });
   expect(result.isError).toBe(true);
   expect(result.data).toEqual({ ok: false, error: "Cannot find any service with service name 'nope'." });
 });
@@ -347,7 +365,7 @@ test("Windows-only tools refuse a POSIX agent", async () => {
   expect(started.commands.length).toBe(0);
 });
 
-test("agent_exec_async, agent_job_status and agent_job_cancel work over MCP", async () => {
+test("agent_exec async, agent_jobs status/list/cancel work over MCP", async () => {
   const started = await startWindows({
     respond: (msg) => {
       if (msg.jobType !== "exec") return undefined;
@@ -355,23 +373,23 @@ test("agent_exec_async, agent_job_status and agent_job_cancel work over MCP", as
     },
   });
 
-  const started_ = await call("agent_exec_async", { agent: "W-01", command: "backup.cmd" });
+  const started_ = await call("agent_exec", { agent: "W-01", command: "backup.cmd", async: true });
   expect(started_.isError).toBe(false);
   const jobId = started_.data.jobId as string;
   expect(started_.data.state).toBe("running");
   expect(jobId.length).toBeGreaterThan(0);
 
-  const running = await call("agent_job_status", { jobId });
+  const running = await call("agent_jobs", { operation: "status", jobId });
   expect(["running", "ok"]).toContain(running.data.state);
 
-  const listed = await call("agent_job_list", { agent: "W-01" });
+  const listed = await call("agent_jobs", { operation: "list", agent: "W-01" });
   expect(listed.data.jobs.some((job: { jobId: string }) => job.jobId === jobId)).toBe(true);
 
-  const cancelled = await call("agent_job_cancel", { jobId });
+  const cancelled = await call("agent_jobs", { operation: "cancel", jobId });
   expect(cancelled.isError).toBe(false);
   expect(cancelled.data.cancelRequested === true || cancelled.data.status.state === "ok").toBe(true);
 
-  const unknown = await call("agent_job_status", { jobId: "does-not-exist" });
+  const unknown = await call("agent_jobs", { operation: "status", jobId: "does-not-exist" });
   expect(unknown.isError).toBe(true);
   expect(unknown.data.error).toContain("unknown_job");
 
@@ -415,6 +433,36 @@ test("agent_sessions lists interactive logons and honours interactiveOnly", asyn
   const all = await call("agent_sessions", { agent: "W-01", interactiveOnly: false });
   expect(all.isError).toBe(false);
   expect(started.commands[1]).toContain("$__interactiveOnly = $false");
+});
+
+test("consolidated tools validate their operation arguments", async () => {
+  const started = await startWindows();
+
+  const svc = await call("agent_services", { agent: "W-01", operation: "control" });
+  expect(svc.isError).toBe(true);
+  expect(svc.data.error).toContain("'name' is required");
+
+  const net = await call("agent_net", { agent: "W-01", operation: "test" });
+  expect(net.isError).toBe(true);
+  expect(net.data.error).toContain("'host' is required");
+
+  const ps = await call("agent_ps", { agent: "W-01", operation: "kill" });
+  expect(ps.isError).toBe(true);
+  expect(ps.data.error).toContain("exactly one of 'pid' or 'name'");
+
+  const fs = await call("agent_fs", { agent: "W-01", operation: "list" });
+  expect(fs.isError).toBe(true);
+  expect(fs.data.error).toContain("'path' is required");
+
+  const transfer = await call("agent_fs_transfer", { agent: "W-01", operation: "download", localPath: "C:\\x" });
+  expect(transfer.isError).toBe(true);
+  expect(transfer.text || JSON.stringify(transfer.data)).toContain("remotePath");
+
+  const slowTimeout = await call("agent_exec", { agent: "W-01", command: "x", timeoutMs: 12 * 3_600_000 });
+  expect(slowTimeout.isError).toBe(true);
+  expect(slowTimeout.data.error).toContain("sync");
+
+  expect(started.commands.length).toBe(0);
 });
 
 test("the diagnostics tools refuse a POSIX agent", async () => {

@@ -20,8 +20,10 @@ import { type Hub, type JobOutcome } from "../hub.ts";
 import { toolError, toolJson } from "./util.ts";
 
 export interface JobToolOptions<TArgs extends { agent: string }> {
-  op: string;
-  jobType: JobType;
+  /** Audit op label; a function lets consolidated tools log the chosen operation. */
+  op: string | ((args: TArgs) => string);
+  /** Static job type, or a per-call selector for consolidated (multi-operation) tools. */
+  jobType: JobType | ((args: TArgs) => JobType);
   buildParams: (args: TArgs) => unknown;
   /** Map a successful outcome to the tool payload (may throw -> toolError). */
   buildResult: (outcome: JobOutcome, args: TArgs) => unknown;
@@ -52,26 +54,28 @@ export function registerJobTool<TArgs extends { agent: string }>(
     { title: def.title, description: def.description, inputSchema: def.inputSchema },
     async (args) => {
       const typed = args as TArgs;
+      const opName = typeof op === "function" ? op(typed) : op;
+      const job = typeof jobType === "function" ? jobType(typed) : jobType;
       if (validate) {
         const error = validate(typed);
         if (error) {
           if (audit) {
-            auditToolCall(audit, { op, agent: typed.agent, params: typed, startedAt: Date.now(), ok: false, error });
+            auditToolCall(audit, { op: opName, agent: typed.agent, params: typed, startedAt: Date.now(), ok: false, error });
           }
           return toolJson({ ok: false, error }, true);
         }
       }
       let outcome: JobOutcome;
       try {
-        outcome = await hub.request(typed.agent, jobType, buildParams(typed), timeoutMs?.(typed), {
-          op,
+        outcome = await hub.request(typed.agent, job, buildParams(typed), timeoutMs?.(typed), {
+          op: opName,
           params: typed,
         });
       } catch (err) {
         return toolError(err);
       }
       if (!outcome.ok) {
-        const payload = buildFailure?.(outcome, typed) ?? { ok: false, error: outcome.error ?? `${jobType} failed` };
+        const payload = buildFailure?.(outcome, typed) ?? { ok: false, error: outcome.error ?? `${job} failed` };
         return toolJson(payload, true);
       }
       try {
