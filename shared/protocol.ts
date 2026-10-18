@@ -29,6 +29,7 @@ export const JOB_TYPES = [
   "screenshot",
   "restart",
   "cua",
+  "browser",
 ] as const;
 export const JobType = z.enum(JOB_TYPES);
 export type JobType = z.infer<typeof JobType>;
@@ -156,6 +157,22 @@ export const CuaParams = z.object({
   timeoutMs: z.number().int().positive().max(120_000).optional(),
 });
 export type CuaParams = z.infer<typeof CuaParams>;
+
+// ---------------------------------------------------------------------------
+// Live-browser control over CDP (agent/src/browser-cdp.ts)
+// ---------------------------------------------------------------------------
+
+export const BrowserParams = z.object({
+  operation: z.enum(["state", "open", "navigate", "text", "tabs", "click"]),
+  browser: z.enum(["chrome", "msedge"]).optional(),
+  url: z.string().max(2048).optional(),
+  max_chars: z.number().int().min(200).max(40_000).optional(),
+  match: z.string().min(1).max(120).optional(),
+  nth: z.number().int().min(0).max(50).optional(),
+  /** Target id prefix from `tabs` to drive a specific tab. */
+  target_id: z.string().min(1).max(64).optional(),
+});
+export type BrowserParams = z.infer<typeof BrowserParams>;
 
 
 // ---------------------------------------------------------------------------

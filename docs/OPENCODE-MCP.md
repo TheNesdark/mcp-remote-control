@@ -304,27 +304,32 @@ To keep the agent from using the tools without asking, restrict them by name:
       window's foreground first and needs `confirm=true` (the sidecar refuses
       runs without it).
 
-    Native browser control (`agent_cua_browser`) attaches to the browser the
-    USER already runs — their real profiles and windows, no automation
-    browser, no debug port:
+    Native browser control (`agent_cua_browser`) drives the browser the USER
+    already runs — their real profile, tabs and logins — over its DevTools
+    Protocol port:
 
     ```
-    agent_cua_browser(agent="SRV-RX", operation="state")                # url/title/ready
-    agent_cua_browser(agent="SRV-RX", operation="tabs")                 # tab titles
+    agent_cua_browser(agent="SRV-RX", operation="state")                # url/title/text preview
+    agent_cua_browser(agent="SRV-RX", operation="tabs")                 # tab list with target_id
     agent_cua_browser(agent="SRV-RX", operation="text", max_chars=8000) # page text
     agent_cua_browser(agent="SRV-RX", operation="open", url="https://example.com", confirm=true)
-    agent_cua_browser(agent="SRV-RX", operation="navigate", url="https://example.com", new_tab=true, confirm=true)
+    agent_cua_browser(agent="SRV-RX", operation="navigate", url="https://example.com", confirm=true)
     agent_cua_browser(agent="SRV-RX", operation="click", match="log in", confirm=true)
     ```
 
-    - `state`/`tabs`/`text` are read-only. `open` takes over the live Chrome/
-      Edge/Firefox window (new tab with `new_tab=true`) or launches the
-      installed browser with its default profile when none is running;
-      `navigate` drives the address bar; `click` clicks the nth enabled
-      link/button whose text contains `match`. `open`/`navigate`/`click` need
-      `confirm=true` and only accept `http(s)://` or `file://` URLs.
-    - For anything the pattern match cannot express, read the tree with
-      `agent_cua_get_window_state` and click by coordinates.
+    - One-time setup on the machine: open `chrome://inspect/#remote-debugging`
+      in Chrome (or `edge://inspect`) and turn on "Allow remote debugging".
+      Chrome then writes a `DevToolsActivePort` file the agent discovers.
+      The FIRST time a tab is touched Chrome shows an "Allow debugging?"
+      prompt; the user accepts it once per tab. Firefox has no CDP port: use
+      `agent_cua_get_window_state` + `agent_cua_click` there.
+    - `state`/`tabs`/`text` are read-only. `open` creates a new tab at `url`,
+      `navigate` drives the chosen tab (see `target_id` from `tabs`), `click`
+      clicks the nth enabled link/button whose text contains `match`.
+      `open`/`navigate`/`click` need `confirm=true` and only accept
+      `http(s)://` or `file://` URLs.
+    - For anything outside the page (dialogs, non-browser windows) read the
+      tree with `agent_cua_get_window_state` and click by coordinates.
 
     Screen recording (`agent_cua_record`) captures the primary monitor for a
     bounded clip and pulls the finished file to the hub:

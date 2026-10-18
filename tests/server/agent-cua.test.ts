@@ -77,22 +77,6 @@ function sidecarMeta(msg: JobRequestMsg): Record<string, unknown> {
       return { focused_hwnd: 101 };
     case "screenshot":
       return { path: "C:\\Users\\SERVER-RX\\AppData\\Local\\Temp\\mrc-cua-shot.png", bytes: FAKE_PNG.length };
-    case "browser_state":
-      return {
-        browser: "chrome", window_id: 101, window_title: "Example - Google Chrome",
-        url: "https://example.com/", page_title: "Example Domain", page_ready: true,
-        bounds: { x: 10, y: 20, width: 1600, height: 900 },
-      };
-    case "browser_open":
-      return { mode: "takeover", browser: "chrome", window_id: 101, navigated: true };
-    case "browser_navigate":
-      return { navigated: true, window_id: 101, url: "https://example.com/" };
-    case "browser_get_text":
-      return { url: "https://example.com/", title: "Example Domain", truncated: false, text: "Example Domain" };
-    case "browser_tabs":
-      return { browser: "chrome", tab_count: 1, tabs: [{ title: "Example Domain", selected: true }] };
-    case "browser_click":
-      return { clicked: { x: 10, y: 20 }, name: "More information...", matches: 1 };
     case "record":
       return {
         path: "C:\\Users\\SERVER-RX\\AppData\\Local\\Temp\\mrc-cua-rec.avi", bytes: FAKE_PNG.length,
@@ -100,6 +84,30 @@ function sidecarMeta(msg: JobRequestMsg): Record<string, unknown> {
       };
     default:
       return { unexpectedTool: params.tool };
+  }
+}
+
+/** Canned CDP results for `browser` jobs (agent/src/browser-cdp.ts on Windows). */
+function browserMeta(msg: JobRequestMsg): Record<string, unknown> {
+  const params = (msg.params ?? {}) as { operation?: string };
+  switch (params.operation) {
+    case "state":
+      return {
+        browser: "chrome", target_id: "A1B2", url: "https://example.com/", page_title: "Example Domain",
+        ready: "complete", text_head: "Example Domain This domain is for use in",
+      };
+    case "open":
+      return { browser: "chrome", target_id: "A1B2", url: "https://example.com/", first_access_prompt: false };
+    case "navigate":
+      return { browser: "chrome", target_id: "A1B2", navigated: true, url: "https://example.com/" };
+    case "text":
+      return { browser: "chrome", target_id: "A1B2", url: "https://example.com/", title: "Example Domain", truncated: false, text: "Example Domain" };
+    case "tabs":
+      return { browser: "chrome", tab_count: 1, tabs: [{ target_id: "A1B2", title: "Example Domain", url: "https://example.com/" }] };
+    case "click":
+      return { browser: "chrome", target_id: "A1B2", clicked: { x: 10, y: 20, w: 100, h: 20 }, tag: "a", text: "More information...", matches: 1, via: "dom" };
+    default:
+      return { unexpectedOperation: params.operation };
   }
 }
 
@@ -111,6 +119,7 @@ function respond(msg: JobRequestMsg): FakeResponse {
     return { stdout: FAKE_PNG.toString("base64"), meta: { eof: true, size: FAKE_PNG.length, sha256: FAKE_PNG_SHA } };
   }
   if (msg.jobType === "cua") return { meta: sidecarMeta(msg) };
+  if (msg.jobType === "browser") return { meta: browserMeta(msg) };
   return { ok: false, error: `unexpected job ${msg.jobType}` };
 }
 
@@ -294,13 +303,13 @@ test("agent_cua_browser and agent_cua_record are registered", async () => {
   expect(tools).toContain("agent_cua_record");
 });
 
-test("agent_cua_browser state is read-only and routes browser_state", async () => {
+test("agent_cua_browser state is read-only and routes a browser job", async () => {
   const started = await start();
   const result = await call("agent_cua_browser", { agent: "W-CUA-01", operation: "state" });
   expect(result.isError).toBe(false);
   expect(result.data.browser).toBe("chrome");
   expect(result.data.url).toBe("https://example.com/");
-  expect(started.jobs[0]).toMatchObject({ jobType: "cua", params: { tool: "browser_state", args: {} } });
+  expect(started.jobs[0]).toMatchObject({ jobType: "browser", params: { operation: "state" } });
 });
 
 test("agent_cua_browser open/navigate/click require confirm", async () => {
@@ -328,22 +337,22 @@ test("agent_cua_browser validates url scheme and click match", async () => {
   expect(started.jobs.length).toBe(0);
 });
 
-test("agent_cua_browser click with confirm drives browser_click through the sidecar", async () => {
+test("agent_cua_browser click with confirm drives a browser click job", async () => {
   const started = await start();
   const result = await call("agent_cua_browser", {
     agent: "W-CUA-01",
     operation: "click",
     match: "more information",
-    window_id: 101,
+    nth: 1,
     confirm: true,
   });
   expect(result.isError).toBe(false);
-  expect(result.data.clicked).toEqual({ x: 10, y: 20 });
-  const params = (started.jobs[0]?.params ?? {}) as { tool: string; args: Record<string, unknown> };
-  expect(params.tool).toBe("browser_click");
-  expect(params.args).toMatchObject({ match: "more information", window_id: 101, confirm: true });
-  expect(params.args).not.toHaveProperty("agent");
-  expect(params.args).not.toHaveProperty("operation");
+  expect(result.data.clicked).toEqual({ x: 10, y: 20, w: 100, h: 20 });
+  expect(result.data.via).toBe("dom");
+  const params = (started.jobs[0]?.params ?? {}) as Record<string, unknown>;
+  expect(params).toMatchObject({ operation: "click", match: "more information", nth: 1 });
+  expect(params).not.toHaveProperty("agent");
+  expect(params).not.toHaveProperty("confirm");
 });
 
 // -------------------------------------------------------------- record tool

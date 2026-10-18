@@ -443,66 +443,57 @@ function registerAgentCuaRecord(
 // -------------------------------------------------------------------- browser
 
 /**
- * agent_cua_browser: native control of the browser the USER already runs.
- * Their real profiles and windows - no automation browser, no CDP debug port.
- * When Chrome/Edge/Firefox is open its live window (and active tab) is driven
- * through the Windows UI Automation tree plus synthesized input; when it is
- * not, `open` starts the installed browser with the default profile.
+ * agent_cua_browser: control of the browser the USER already runs, over the
+ * Chrome DevTools Protocol of their real profile (chrome://inspect -> "Allow
+ * remote debugging"; the first touch of a tab asks "Allow debugging?" once).
+ * Reads use the DOM directly (url, text, tabs); click resolves link/button
+ * text inside the page. agent_cua_get_window_state + agent_cua_click remain
+ * the fallback for browsers without CDP (Firefox) and non-browser windows.
  */
 function registerAgentCuaBrowser(server: McpServer, hub: Hub, audit: AuditLog): void {
-  interface Args extends CuaArgsBag {
+  interface Args {
+    agent: string;
     operation: "state" | "open" | "navigate" | "text" | "tabs" | "click";
-    browser?: "chrome" | "msedge" | "firefox";
+    browser?: "chrome" | "msedge";
     url?: string;
-    new_tab?: boolean;
     max_chars?: number;
     match?: string;
     nth?: number;
+    target_id?: string;
     confirm?: boolean;
     timeoutMs?: number;
   }
-  const SIDECAR_BY_OP: Record<Args["operation"], string> = {
-    state: "browser_state",
-    open: "browser_open",
-    navigate: "browser_navigate",
-    text: "browser_get_text",
-    tabs: "browser_tabs",
-    click: "browser_click",
-  };
   const MUTATING = new Set(["open", "navigate", "click"]);
 
   registerJobTool<Args>(server, hub, audit, {
     name: "agent_cua_browser",
-    title: "Control the user's real browser natively (UI Automation)",
+    title: "Control the user's live browser (Chrome DevTools Protocol)",
     description:
-      "Native browser control over the browser the USER runs (their profiles, their windows) - never a " +
-      "separate automation browser. state/tabs/text are read-only reads of the active window (url, page " +
-      "title, page text, tab list). open attaches to the live browser and points it at url (opens a new " +
-      "tab when new_tab: true) or launches the installed browser with its default profile when none runs; " +
-      "navigate drives the address bar of the active window; click clicks the nth enabled link/button " +
-      "whose text contains `match`. For clicks inside pages read element rects with " +
-      "agent_cua_get_window_state and use agent_cua_click for arbitrary points. open/navigate/click " +
-      "require confirm: true.",
+      "Drives the browser the USER runs (their real profile, tabs and logins) through its DevTools-Protocol " +
+      "port: state (url/title/text preview), tabs (list with target_id), text (page innerText), open (new " +
+      "tab at url), navigate (current tab to url), click (nth enabled link/button whose text contains " +
+      "`match`). One-time setup on the machine: enable chrome://inspect/#remote-debugging once; the first " +
+      "touch of each tab shows an 'Allow debugging?' prompt the user accepts once. Firefox is not " +
+      "supported - for it use agent_cua_get_window_state + agent_cua_click. open/navigate/click require " +
+      "confirm: true.",
     inputSchema: {
       agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
       operation: z.enum(["state", "open", "navigate", "text", "tabs", "click"]).describe("Browser operation to run."),
-      browser: z.enum(["chrome", "msedge", "firefox"]).optional().describe("Which browser (default: the one already open, else chrome)."),
+      browser: z.enum(["chrome", "msedge"]).optional().describe("Which browser to attach to (default: the one with debugging enabled)."),
       url: z.string().max(2048).optional().describe("http(s) or file:// URL for open/navigate."),
-      new_tab: z.boolean().optional().describe("open/navigate: Ctrl+T first so the current tab survives."),
       max_chars: z.number().int().min(200).max(40_000).optional().describe("text: page text cap (default 8000)."),
       match: z.string().min(1).max(120).optional().describe("click: substring of the link/button text."),
-      nth: z.number().int().min(0).optional().describe("click: which match to use (default 0)."),
-      window_id: windowIdSchema,
-      pid: pidSchema,
+      nth: z.number().int().min(0).max(50).optional().describe("click: which match to use (default 0)."),
+      target_id: z.string().min(1).max(64).optional().describe("Target id (or prefix) from tabs to drive a specific tab."),
       confirm: z.boolean().optional().describe("Required true for open/navigate/click."),
-      timeoutMs: z.number().int().positive().max(TIMEOUT_MAX).optional().describe("Sidecar/job timeout in ms."),
+      timeoutMs: z.number().int().positive().max(TIMEOUT_MAX).optional().describe("Job timeout in ms."),
     },
     options: {
       op: (args) => `agent_cua_browser_${args.operation}`,
-      jobType: "cua",
+      jobType: "browser",
       validate: (args) => {
         if (MUTATING.has(args.operation) && args.confirm !== true) return CONFIRM_HINT;
-        if ((args.operation === "navigate" || (args.operation === "open" && args.url !== undefined)) &&
+        if ((args.operation === "navigate" || args.operation === "open") &&
             !/^https?:\/\//i.test(args.url ?? "") && !(args.url ?? "").toLowerCase().startsWith("file://")) {
           return `${args.operation} requires a full http(s):// or file:// url`;
         }
@@ -510,10 +501,15 @@ function registerAgentCuaBrowser(server: McpServer, hub: Hub, audit: AuditLog): 
         return null;
       },
       timeoutMs: (args) => args.timeoutMs,
-      buildParams: (args) => {
-        const { operation: _operation, ...rest } = args;
-        return { tool: SIDECAR_BY_OP[args.operation], args: cuaArgs(rest) };
-      },
+      buildParams: (args) => ({
+        operation: args.operation,
+        ...(args.browser ? { browser: args.browser } : {}),
+        ...(args.url ? { url: args.url } : {}),
+        ...(args.max_chars ? { max_chars: args.max_chars } : {}),
+        ...(args.match ? { match: args.match } : {}),
+        ...(args.nth !== undefined ? { nth: args.nth } : {}),
+        ...(args.target_id ? { target_id: args.target_id } : {}),
+      }),
       buildResult: (outcome) => ({ jobId: outcome.jobId, ...(outcome.meta ?? {}) }),
     },
   });

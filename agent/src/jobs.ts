@@ -14,11 +14,13 @@ import {
   RestartParams as RestartSchema,
   ScreenshotParams as ScreenshotSchema,
   CuaParams as CuaSchema,
+  BrowserParams as BrowserSchema,
   type AgentMsg,
   type JobCancelMsg,
   type JobRequestMsg,
 } from "@mrc/shared";
 import { runCuaCall } from "./cua.ts";
+import { runBrowserCall } from "./browser-cdp.ts";
 import { runExec, type RunningExec } from "./exec.ts";
 import { fsHash, fsList, fsRead, fsWrite } from "./fs.ts";
 import type { ShortJobResult } from "./job-result.ts";
@@ -71,6 +73,7 @@ const SHORT_JOBS: Record<string, ShortJobHandler> = {
   screenshot: (params) => takeScreenshot(parseOrThrow(ScreenshotSchema, "screenshot", params)),
   restart: (params) => restartAgent(parseOrThrow(RestartSchema, "restart", params)),
   cua: (params) => runCuaCall(parseOrThrow(CuaSchema, "cua", params)),
+  browser: (params) => runBrowserCall(parseOrThrow(BrowserSchema, "browser", params)),
 };
 
 /** Job types handled by a single async function. */
