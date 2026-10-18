@@ -37,6 +37,7 @@ COPY agent/package.json ./agent/
 RUN bun install --frozen-lockfile --production
 COPY shared ./shared
 COPY agent/src ./agent/src
+COPY agent/tray ./agent/tray
 COPY agent/assets ./agent/assets
 COPY agent/build.ts ./agent/build.ts
 RUN bun run build:exe --out /app/agent/rc-agent.exe
