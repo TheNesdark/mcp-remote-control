@@ -9,6 +9,8 @@
     "./env": "./env.ts",
     "./log": "./log.ts",
     "./secret": "./secret.ts",
-    "./version": "./version.ts"
+    "./version": "./version.ts",
+    "./cua-version": "./cua-version.ts",
+    "./cua-tools": "./cua-tools.ts"
   }
 }

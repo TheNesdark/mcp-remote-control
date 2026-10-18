@@ -19,6 +19,7 @@ export const MAX_JOB_OUTPUT_BYTES = 1_048_576;
 
 export const JOB_TYPES = [
   "exec",
+  "cua",
   "fs.list",
   "fs.read",
   "fs.write",
@@ -139,6 +140,23 @@ export const RestartParams = z.object({
   /** Args for the relaunched process (defaults to the agent's own argv). */
   args: z.array(z.string().max(4096)).max(64).optional(),
 });
+/**
+ * `cua` job: invoke one Cua Driver tool (`cua-driver call <tool>`), or manage
+ * the locally provisioned driver. The agent is a dumb pipe: fixed argv, JSON
+ * over stdin, stdout verbatim — the server owns the semantics.
+ */
+export const CuaParams = z.object({
+  /** call: run the tool once; setup: re-download/verify the driver; status: report local state. */
+  action: z.enum(["call", "setup", "status"]).default("call"),
+  /** MCP tool name from the driver manifest (required for action=call). */
+  tool: z.string().min(1).max(64).optional(),
+  /** Tool input JSON (sent to the CLI over stdin). */
+  args: z.record(z.string(), z.unknown()).optional(),
+  /** Write the first image block of the response to a temp file and report its path. */
+  screenshot: z.boolean().optional(),
+});
+export type CuaParams = z.infer<typeof CuaParams>;
+
 export type RestartParams = z.infer<typeof RestartParams>;
 
 // ---------------------------------------------------------------------------
@@ -176,6 +194,15 @@ export const PresenceMsg = z.object({
   paused: z.boolean(),
 });
 
+/**
+ * Agent -> Server: capability set changed at runtime (e.g. the Cua Driver was
+ * auto-provisioned after `welcome`). The hub replaces the agent's caps.
+ */
+export const CapsMsg = z.object({
+  type: z.literal("caps"),
+  caps: z.array(z.string()).min(1),
+});
+
 export const JobOutputMsg = z.object({
   type: z.literal("job.output"),
   jobId: z.string().min(1),
@@ -201,6 +228,7 @@ export const AgentMsg = z.discriminatedUnion("type", [
   HelloMsg,
   HeartbeatMsg,
   PresenceMsg,
+  CapsMsg,
   JobOutputMsg,
   JobResultMsg,
 ]);
@@ -208,6 +236,7 @@ export type AgentMsg = z.infer<typeof AgentMsg>;
 export type HelloMsg = z.infer<typeof HelloMsg>;
 export type HeartbeatMsg = z.infer<typeof HeartbeatMsg>;
 export type PresenceMsg = z.infer<typeof PresenceMsg>;
+export type CapsMsg = z.infer<typeof CapsMsg>;
 export type JobOutputMsg = z.infer<typeof JobOutputMsg>;
 export type JobResultMsg = z.infer<typeof JobResultMsg>;
 
@@ -226,6 +255,12 @@ export const WelcomeMsg = z.object({
   agentBinaryUrl: z.string().min(1).optional(),
   /** sha256 of the published build: the agent MUST verify before swapping. */
   agentBinarySha256: z.string().min(1).optional(),
+  /** Cua Driver: newest build the hub serves (agent auto-provisions it). */
+  cuaDriverVersion: z.string().min(1).optional(),
+  /** Where to fetch the driver zip; relative URLs resolve against the hub origin. */
+  cuaDriverUrl: z.string().min(1).optional(),
+  /** sha256 of that zip: the agent MUST verify before unpacking. */
+  cuaDriverSha256: z.string().min(1).optional(),
 });
 
 export const JobRequestMsg = z.object({

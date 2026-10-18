@@ -177,6 +177,8 @@ export interface HubOptions {
   maxJobsPerMinute: number;
   /** Auto-update: newest published agent build (announced in `welcome`). */
   update?: { latestVersion?: string; binaryUrl?: string; binarySha256?: string };
+  /** Cua Driver build announced to agents in `welcome` (auto-provision). */
+  cua?: { version: string; url: string; sha256: string };
   /** Finished async jobs kept for agent_job_status/list (default 100). */
   maxRetainedJobs?: number;
   /** How long a finished async job stays queryable (default 30 min). */
@@ -259,6 +261,19 @@ export class Hub {
           } catch {
             // socket already gone
           }
+        }
+        return;
+      }
+      case "caps": {
+        // The agent re-publishes its capabilities (e.g. Cua Driver was
+        // auto-provisioned after welcome). Last frame wins.
+        if (msg.caps.join(",") !== record.caps.join(",")) {
+          record.caps = msg.caps;
+          logger.info("agent capabilities updated", {
+            agentId: record.agentId,
+            name: record.name,
+            caps: msg.caps,
+          });
         }
         return;
       }
@@ -442,6 +457,9 @@ export class Hub {
       ...(this.opts.update?.latestVersion ? { latestAgentVersion: this.opts.update.latestVersion } : {}),
       ...(this.opts.update?.binaryUrl ? { agentBinaryUrl: this.opts.update.binaryUrl } : {}),
       ...(this.opts.update?.binarySha256 ? { agentBinarySha256: this.opts.update.binarySha256 } : {}),
+      ...(this.opts.cua ? { cuaDriverVersion: this.opts.cua.version } : {}),
+      ...(this.opts.cua ? { cuaDriverUrl: this.opts.cua.url } : {}),
+      ...(this.opts.cua ? { cuaDriverSha256: this.opts.cua.sha256 } : {}),
     });
     this.opts.registry.touch(record.agentId, {
       name: hello.name,

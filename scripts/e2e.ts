@@ -344,12 +344,14 @@ try {
     probe.data,
   );
 
-  const shot = await callAgentTool("agent_screenshot", { agent: "E2E-01" });
-  const shotWorked = shot.isError === false && typeof shot.data.localPath === "string";
-  const shotHeadless =
-    shot.isError === true &&
-    /no interactive session|no graphical display|no capture tool/.test(String(shot.data.text ?? shot.data.error ?? ""));
-  check("agent_screenshot captures or reports a clear headless error", shotWorked || shotHeadless, shot.data);
+  // agent_screenshot is retired in favour of the Cua Driver tools; the real
+  // Linux agent has no `cua` capability, so the gate must answer cleanly.
+  const gated = await callAgentTool("agent_cua_list_windows", { agent: "E2E-01" });
+  check(
+    "cua tools refuse an agent without the capability",
+    gated.isError === true || gated.data?.ok === false,
+    gated.data,
+  );
 
   // -------------------------------------------------------------------------
   // Concurrent jobs across two agents (fake + real)

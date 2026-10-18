@@ -93,7 +93,7 @@ Everything lives under one directory, `MRC_DATA_DIR` (default `server/data/`,
 
 - `mcp.db` — enrolled agents, token hashes, first/last seen
 - `audit.jsonl` — audit trail
-- `screenshots/` — images received by `agent_screenshot` (streamed by the agent
+- `screenshots/` — images captured through the Cua Driver tools (streamed back by the agent
   and saved on this host). Served read-only to MCP clients at
   `GET /screenshots/<file>` on the MCP HTTP port (Bearer `MRC_TOKEN` or
   `?token=`), so a client on another machine can `curl` them.

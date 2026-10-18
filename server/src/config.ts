@@ -6,6 +6,7 @@ import {
 } from "@mrc/shared";
 import { statSync } from "node:fs";
 import { join } from "node:path";
+import { CUA_DRIVER_SHA256, CUA_DRIVER_VERSION } from "@mrc/shared/cua-version";
 import { VERSION } from "@mrc/shared/version";
 import { DEFAULT_MAX_RETAINED_JOBS, DEFAULT_RETAINED_JOB_TTL_MS } from "./hub.ts";
 import type { LogLevel } from "./log.ts";
@@ -52,6 +53,12 @@ export interface ServerConfig {
   agentBinarySha256: string;
   /** Auto-update: local file served at /agent/latest.exe (empty = not served). */
   agentBinaryPath: string;
+  /** Cua Driver: local zip served at /cua/latest.zip (empty = not published). */
+  cuaDriverPath: string;
+  /** Cua Driver: override the pinned announcement version (empty = use the pin). */
+  cuaDriverVersion: string;
+  /** Cua Driver: override the pinned announcement sha256 (empty = use the pin). */
+  cuaDriverSha256: string;
   /** TLS material for both faces (MRC_TLS_CERT/MRC_TLS_KEY); ws://+http:// when unset. */
   tlsCertPath: string;
   tlsKeyPath: string;
@@ -84,6 +91,16 @@ function portOrZero(raw: string | undefined, name: string, fallback: number): nu
  * Where the Docker image puts the agent build; absent in dev checkouts, where
  * OTA stays off unless MRC_AGENT_BINARY_PATH points at a binary.
  */
+/** Where the Docker image puts the Cua Driver zip; absent in dev checkouts. */
+function defaultCuaDriverPath(dataDir: string): string {
+  const candidate = join(dataDir, "..", "..", "agent", "cua-driver.zip");
+  try {
+    return statSync(candidate).isFile() ? candidate : "";
+  } catch {
+    return "";
+  }
+}
+
 function defaultAgentBinaryPath(dataDir: string): string {
   const candidate = join(dataDir, "..", "..", "agent", "rc-agent.exe");
   try {
@@ -131,6 +148,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     // Default to the build shipped in the image (see Dockerfile), so a deploy
     // publishes the agent automatically without any environment variable.
     agentBinaryPath: env.MRC_AGENT_BINARY_PATH?.trim() || defaultAgentBinaryPath(dataDir),
+    // Same idea as the agent binary: the image ships the pinned driver zip and
+    // publishes it with the version + sha256 baked at build (shared/cua-version.ts).
+    cuaDriverPath: env.MRC_CUA_DRIVER_PATH?.trim() || defaultCuaDriverPath(dataDir),
+    cuaDriverVersion: env.MRC_CUA_DRIVER_VERSION?.trim() || CUA_DRIVER_VERSION,
+    cuaDriverSha256: env.MRC_CUA_DRIVER_SHA256?.trim().toLowerCase() || CUA_DRIVER_SHA256,
     tlsCertPath: env.MRC_TLS_CERT?.trim() ?? "",
     tlsKeyPath: env.MRC_TLS_KEY?.trim() ?? "",
     logLevel,

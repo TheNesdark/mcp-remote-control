@@ -11,7 +11,7 @@ not needed for the agent to work.
 ## Requirements
 
 - Windows 10/11 (x64). PowerShell 5.1 is used by the tray/first-run helpers and
-  by `agent_ps_*`/`agent_screenshot`; it ships with Windows.
+  by `agent_ps_*`/Cua captures; it ships with Windows.
 - Network reachability to the central server on the LAN
   (e.g. `ws://192.168.1.50:8787` — see `docs/OPERATIONS.md` for the server
   side: static IP, firewall, systemd).
@@ -94,7 +94,7 @@ with `already_running` (the agent itself can still run without a tray).
 |---|---|---|
 | **User logon (recommended)** — run once + `Start with Windows` | ✅ works | The agent runs in the interactive session, which screenshots require. |
 | **Task Scheduler at logon** ("run only when user is logged on") | ✅ works | Same session requirement; useful for central deployment. |
-| **Task Scheduler at startup** ("whether logged on or not") | ❌ | Everything except screenshots works; a locked/absent desktop makes `agent_screenshot` fail with `no interactive session`. |
+| **Task Scheduler at startup** ("whether logged on or not") | ❌ | Everything except screenshots works; a locked/absent desktop makes Cua captures fail with `session 0 has no desktop`. |
 | **Windows service** (session 0) | ❌ | Not supported in v1 (F6 backlog); screenshots are impossible. |
 
 Screenshot failures are explicit: the agent detects session 0 /
@@ -127,7 +127,7 @@ Screenshot failures are explicit: the agent detects session 0 /
 3. Tray: icon appears; tooltip `NAME - Connected - ws://...`; menu open/disable
    works; `Disable agent` flips the tooltip to *Paused* and
    `agents_list` shows `paused: true`; `Enable agent` reverses it.
-4. `agent_screenshot` returns a correct primary-monitor image; with the agent
+4. `agent_cua_get_desktop_state` returns a correct full-desktop image; with the agent
    started in session 0 it must fail with the clear `no interactive session`
    error instead.
 5. `agent_ps_list` shows processes with user/CPU/memory; `agent_ps_kill`

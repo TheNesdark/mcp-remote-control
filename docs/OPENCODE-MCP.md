@@ -66,7 +66,7 @@ the agent binary is discovered on its own.
 | `MRC_REQUIRE_DB_TOKENS` | _(off)_ | Set to `1` to reject the shared token; only enrolled per-agent tokens work. |
 | `MRC_DATA_DIR` | `server/data` | Single root for data: `mcp.db`, `audit.jsonl` and `screenshots/` all live inside it. |
 | `MRC_MCP_HTTP_PORT` | _(off)_ | Serve MCP over Streamable HTTP at `/mcp` on this port (LAN clients, `Authorization: Bearer <MRC_TOKEN>`). Used with `--no-mcp-stdio`. |
-| `MRC_PUBLIC_URL` | _(derived)_ | Base URL clients use to fetch screenshots (e.g. `http://192.168.1.192:8788`). When set, `agent_screenshot` returns a ready-to-use `downloadUrl` and stops embedding the image by default (SSE is slow). |
+| `MRC_PUBLIC_URL` | _(derived)_ | Base URL clients use to fetch screenshots (e.g. `http://192.168.1.192:8788`). When set, cua captures return a ready-to-use `screenshotDownloadUrl`. |
 | `MRC_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` (goes to stderr). |
 
 Tuning knobs (leave unset unless you have a reason):
@@ -80,8 +80,11 @@ Tuning knobs (leave unset unless you have a reason):
 | `MRC_JOB_HISTORY_TTL_MS` | `1800000` | How long a finished async job stays queryable (30 min). |
 | `MRC_DB_PATH` | `<data>/mcp.db` | Override the SQLite registry path. |
 | `MRC_AUDIT_PATH` | `<data>/audit.jsonl` | Override the audit trail path. |
-| `MRC_SCREENSHOT_DIR` | `<data>/screenshots` | Override where `agent_screenshot` saves images. |
+| `MRC_SCREENSHOT_DIR` | `<data>/screenshots` | Override where cua captures (screenshots) are saved. |
 | `MRC_SCREENSHOT_KEEP` | `200` | Newest screenshots to keep on disk; older ones are pruned after each capture and at boot (0 = keep everything). |
+| `MRC_CUA_DRIVER_PATH` | `<repo>/agent/cua-driver.zip` if it exists | Cua Driver zip served at `/cua/latest.zip`. The Docker image sets this and ships the zip. |
+| `MRC_CUA_DRIVER_VERSION` | `shared/cua-version.ts` | Fixed to the pinned build on purpose (same rationale as the agent OTA). |
+| `MRC_CUA_DRIVER_SHA256` | `shared/cua-version.ts` | Expected fingerprint of the zip; verified by the build and by every agent before unpacking. |
 | `MRC_TLS_CERT` / `MRC_TLS_KEY` | _(off)_ | PEM pair: both faces serve `wss://` + `https://`. |
 
 Auto-update (OTA) — no variable needed when the image ships the build:
@@ -176,8 +179,6 @@ To keep the agent from using the tools without asking, restrict them by name:
    agent_ps_list(agent="PC-01", filter="chrome", top=20, sort="cpu")
    agent_ps_kill(agent="PC-01", pid=1234)               # tree + force by default
    agent_ps_kill(agent="PC-01", name="notepad.exe")     # kills every match
-   agent_screenshot(agent="PC-01")                      # primary monitor, embedded image
-   agent_screenshot(agent="PC-01", format="jpeg", quality=70, embed=false)
    ```
 
    - `agent_info` returns hostname, OS, user, uptime, CPU, memory, IPs and disks
@@ -185,16 +186,10 @@ To keep the agent from using the tools without asking, restrict them by name:
    - `agent_ps_list` sorts by `cpu` (default), `mem`, `pid` or `name` and can
      filter by process name / command line substring. `force=false` and
      `tree=false` request a graceful single-process kill instead.
-   - `agent_screenshot` captures **only the primary monitor**. The agent never
-     writes the image to the remote disk: it streams it inside the job and the
-     server verifies size + SHA-256, saves its local copy (`localPath`) and, by
-     default, embeds it in the tool result (`embed=false` for path-only). Over
-     the HTTP face (MRC_PUBLIC_URL set) embedding defaults to false because a
-     multi-MB base64 blob in the SSE response is slow and times out on clients:
-     fetch the image through downloadUrl instead. On
-     Windows the agent must run in an interactive desktop session: session 0
-     (service) or a locked desktop fails with `no interactive session`.
-     Screenshots above 8 MB are not embedded (use the `localPath` or JPEG).
+   - Screenshots: the old `agent_screenshot` is retired — capture through Cua
+     Driver on `cua`-capable machines: `agent_cua_get_desktop_state` (full
+     desktop, any monitor) or `agent_cua_get_window_state` /(screenshots=true on
+     agent_cua_call) for one window, saved server-side with path + downloadUrl.
 8. Windows operations (the server only builds a PowerShell script from the
    validated arguments; the agent returns one JSON envelope):
 
@@ -287,6 +282,38 @@ To keep the agent from using the tools without asking, restrict them by name:
      CIM, so it works on any display language; `interactiveOnly=false` adds
      service/batch/network sessions collapsed per user.
 
+12. Computer use (Cua Driver): the GUI stack is **trycua/cua Cua Driver** (MIT),
+    shipped by the hub and auto-installed on Windows agents — 64 tools plus
+    three companions:
+
+    ```
+    agent_cua_status(agent="PC-01")                      # install + daemon state
+    agent_cua_setup(agent="PC-01")                       # (re)provision the driver
+    agent_cua_list_windows(agent="PC-01")                # pick a pid/window_id
+    agent_cua_get_window_state(agent="PC-01", params={pid,window_id})
+    agent_cua_click(agent="PC-01", params={pid,element_token}, confirm=true)
+    agent_cua_call(agent="PC-01", tool="type_text", params={...}, screenshot=true)
+    ```
+
+    - Every driver tool is exposed verbatim as `agent_cua_<name>` with the
+      driver's own description and parameter list; `params` carries its input
+      JSON. `session` defaults to `"mrc"` so `element_token` snapshots stay
+      valid between calls (a stale token fails with `stale_element_token`:
+      re-read with `get_window_state`).
+    - Tools the **driver itself flags as destructive** (click, type, kill_app,
+      clipboard_write, …) additionally require `confirm=true` — same house
+      rule as `agent_fs_delete`/`agent_power`.
+    - `delivery_mode` defaults to `background` everywhere: the user keeps
+      their cursor and foreground. `foreground` is available tool-per-tool
+      when a target refuses background delivery.
+    - `agent_cua_call` is the generic escape hatch (any tool name); with
+      `screenshot=true` the image block is saved on the server and returned
+      as `screenshotPath` + `screenshotDownloadUrl` (same flow the old
+      `agent_screenshot` used — that tool is retired).
+    - Machines publish the `cua` capability when the driver runs there; call
+      tools fail fast with advice otherwise (`agent_cua_status` → 
+      `agent_cua_setup`). Windows only; `agent_screenshot` no longer exists.
+
 ### Saving a screenshot on the client's machine
 
 The MCP server cannot write to the client's disk (MCP is request/response). The
@@ -304,6 +331,6 @@ curl -fL -H "Authorization: Bearer $MRC_TOKEN" \
 `GET /screenshots/<file>` is served on the **MCP HTTP port** and accepts the
 bearer header or `?token=<MRC_TOKEN>`; only files directly inside
 `MRC_SCREENSHOT_DIR` are served. Set `MRC_PUBLIC_URL` (e.g.
-`http://192.168.1.192:8788`) so `agent_screenshot` returns a full `downloadUrl`.
+`http://192.168.1.192:8788`) so cua captures return a full `screenshotDownloadUrl`.
 
    - `agent_ps_kill` refuses to kill the agent process itself.

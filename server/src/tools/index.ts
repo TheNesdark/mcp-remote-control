@@ -20,9 +20,9 @@ import { registerAgentPower } from "./agent-power.ts";
 import { registerAgentPsKill } from "./agent-ps-kill.ts";
 import { registerAgentPsList } from "./agent-ps-list.ts";
 import { registerAgentRestart } from "./agent-restart.ts";
-import { registerAgentScreenshot } from "./agent-screenshot.ts";
 import { registerAgentServiceControl, registerAgentServices } from "./agent-services.ts";
 import { registerAgentsList } from "./agents-list.ts";
+import { registerCuaTools } from "./cua.ts";
 
 export interface ToolsOptions {
   /** Where agent_screenshot saves pulled images. */
@@ -57,7 +57,9 @@ export function registerTools(server: McpServer, hub: Hub, options: ToolsOptions
   registerAgentPsList(server, hub, audit);
   registerAgentPsKill(server, hub, audit);
   registerAgentRestart(server, hub, audit);
-  registerAgentScreenshot(server, hub, screenshotDir, audit, screenshotBaseUrl ?? "", screenshotKeep ?? 0);
+  // agent_screenshot is retired: cua-enabled machines capture through the Cua
+  // Driver tools (get_desktop_state / get_window_state/screenshots), which see
+  // every window and monitor — not just the primary one.
   registerAgentServices(server, hub, audit);
   registerAgentServiceControl(server, hub, audit);
   registerAgentEventLog(server, hub, audit);
@@ -68,4 +70,5 @@ export function registerTools(server: McpServer, hub: Hub, options: ToolsOptions
   registerAgentSoftware(server, hub, audit);
   registerAgentTime(server, hub, audit);
   registerAgentSessions(server, hub, audit);
+  registerCuaTools(server, hub, { audit, screenshotDir, screenshotKeep, screenshotBaseUrl });
 }

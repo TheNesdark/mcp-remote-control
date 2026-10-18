@@ -22,6 +22,8 @@ import { loadSettings, readConfig } from "./settings.ts";
 import { protectString } from "./dpapi.ts";
 import { runFirstRunDialog } from "./first-run.ts";
 import { TrayIntegration } from "./tray.ts";
+import { installedDriverVersion, provisionCuaDriver, type CuaAnnouncement } from "./cua.ts";
+import type { CuaBridge } from "./cua-job.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -74,14 +76,49 @@ let autoUpdateScheduled = false;
 let trayWanted = argFlag(args, "tray") || (process.platform === "win32" && !argFlag(args, "no-tray"));
 if (argFlag(args, "no-tray")) trayWanted = false;
 
-const CAPS = ["exec", "fs", "info", "ps", "screenshot", "restart"];
+const BASE_CAPS = ["exec", "fs", "info", "ps", "screenshot", "restart"];
+// Cua Driver: `cua` only when the exe actually runs on this box. Re-probed
+// after provisioning; the new set is pushed with a `caps` frame.
+let driverVersion: string | null =
+  process.platform === "win32" ? installedDriverVersion() : null;
+function currentCaps(): string[] {
+  return driverVersion ? [...BASE_CAPS, "cua"] : [...BASE_CAPS];
+}
+let cuaAnnouncement: CuaAnnouncement | null = null;
+function hubOrigin(): string {
+  // ws(s)://host:port/... -> http(s)://host:port (where /cua/latest.zip is served)
+  try {
+    const url = new URL(serverUrl);
+    const scheme = url.protocol === "wss:" ? "https:" : "http:";
+    return `${scheme}//${url.host}`;
+  } catch {
+    return "";
+  }
+}
+let autoProvisionRunning = false;
+async function autoProvisionCua(): Promise<void> {
+  if (process.platform !== "win32" || !cuaAnnouncement || autoProvisionRunning) return;
+  autoProvisionRunning = true;
+  try {
+    const result = await provisionCuaDriver(cuaAnnouncement, { hubOrigin: hubOrigin(), token });
+    if (driverVersion !== result.version) {
+      driverVersion = result.version;
+      logger.info("Cua Driver ready", { version: result.version, downloaded: result.downloaded });
+      connection?.send({ type: "caps", caps: currentCaps() });
+    }
+  } catch (err) {
+    logger.warn(`Cua Driver provisioning failed: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    autoProvisionRunning = false;
+  }
+}
 
 const agentContext = () => ({
   name,
   version: VERSION,
   agentId: connection?.agentId ?? settings.agentId ?? null,
   server: serverUrl,
-  caps: CAPS,
+  caps: currentCaps(),
 });
 
 const jobs = new JobManager({
@@ -89,6 +126,15 @@ const jobs = new JobManager({
   log: (msg, fields) => logger.debug(msg, fields),
   maxConcurrent: Number(argString(args, "max-jobs") ?? 4),
   context: agentContext,
+  ...(process.platform === "win32"
+    ? {
+        cua: {
+          announcement: () => cuaAnnouncement,
+          hubOrigin,
+          token: () => token,
+        } satisfies CuaBridge,
+      }
+    : {}),
 });
 
 let lastConnectionState: ConnectionState = "connecting";
@@ -186,13 +232,17 @@ connection = new AgentConnection({
   os: `${os.type()} ${os.release()}`,
   version: VERSION,
   tags,
-  caps: CAPS,
+  caps: currentCaps(),
   onJobRequest: (msg) => jobs.handleRequest(msg),
   onJobCancel: (msg) => jobs.handleCancel(msg),
   onIdAssigned: (id) => {
     void settings.setAgentId(id).catch((err) => logger.debug(`could not persist agent id: ${String(err)}`));
   },
   onWelcome: (msg) => {
+    if (msg.cuaDriverVersion && msg.cuaDriverUrl && msg.cuaDriverSha256) {
+      cuaAnnouncement = { version: msg.cuaDriverVersion, url: msg.cuaDriverUrl, sha256: msg.cuaDriverSha256 };
+      void autoProvisionCua();
+    }
     if (autoUpdateScheduled) return; // one attempt per process; a failure retries next start
     autoUpdateScheduled = true;
     void handleAutoUpdate(msg, {

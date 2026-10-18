@@ -69,10 +69,12 @@ Full design and roadmap: [`PLAN.md`](./PLAN.md).
 - [x] MCP tools: `agents_list`, `agent_exec`, `agent_exec_async` + `agent_job_*`,
       `agent_fs_*` (list/read/write/upload/download/hash/search/mkdir/move/copy/
       delete), `agent_info`, `agent_ps_list`, `agent_ps_kill`,
-      `agent_screenshot`, Windows operations (`agent_services`,
+      Windows operations (`agent_services`,
       `agent_service_control`, `agent_eventlog`, `agent_net_ports`,
       `agent_net_test`), `agent_power`, `agent_message`, diagnostics
-      (`agent_software`, `agent_time`, `agent_sessions`), `GET /health`
+      (`agent_software`, `agent_time`, `agent_sessions`), full computer use
+      via Cua Driver (`agent_cua_*`, 64 tools) replacing `agent_screenshot`,
+      `GET /health`
 - [x] Real agent (`agent/src`) with reconnect/backoff: exec with process-tree
       kill, fs jobs, inventory, process listing/killing, screenshots
 - [x] Chunked file transfers (SHA-256 verified both ways) and screenshots

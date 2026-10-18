@@ -20,6 +20,7 @@
     "build:exe": "bun run agent/build.ts",
     "test": "bun test --preload ./tests/setup-env.ts",
     "typecheck": "tsc --noEmit",
-    "e2e": "bun run scripts/e2e.ts"
+    "e2e": "bun run scripts/e2e.ts",
+    "gen:cua-manifest": "bun run scripts/gen-cua-manifest.ts"
   }
 }

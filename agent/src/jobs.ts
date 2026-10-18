@@ -11,12 +11,14 @@ import {
   InfoParams as InfoSchema,
   PsKillParams as PsKillSchema,
   PsListParams as PsListSchema,
+  CuaParams,
   RestartParams as RestartSchema,
   ScreenshotParams as ScreenshotSchema,
   type AgentMsg,
   type JobCancelMsg,
   type JobRequestMsg,
 } from "@mrc/shared";
+import { runCuaJob, type CuaBridge } from "./cua-job.ts";
 import { runExec, type RunningExec } from "./exec.ts";
 import { fsHash, fsList, fsRead, fsWrite } from "./fs.ts";
 import type { ShortJobResult } from "./job-result.ts";
@@ -31,12 +33,15 @@ export interface JobManagerOptions {
   maxConcurrent?: number;
   /** Static metadata reported by the `info` job. */
   context?: () => AgentInfoContext;
+  /** Cua Driver bridge for the `cua` job (agent index.ts). */
+  cua?: CuaBridge;
 }
 
 const DEFAULT_MAX_CONCURRENT = 4;
 
 interface ShortJobContext {
   agentInfo: () => AgentInfoContext | undefined;
+  cua?: CuaBridge;
 }
 
 type ShortJobHandler = (params: unknown, ctx: ShortJobContext) => Promise<ShortJobResult>;
@@ -68,6 +73,10 @@ const SHORT_JOBS: Record<string, ShortJobHandler> = {
   "ps.kill": (params) => killProcesses(parseOrThrow(PsKillSchema, "ps.kill", params)),
   screenshot: (params) => takeScreenshot(parseOrThrow(ScreenshotSchema, "screenshot", params)),
   restart: (params) => restartAgent(parseOrThrow(RestartSchema, "restart", params)),
+  cua: (params, ctx) => {
+    if (!ctx.cua) throw new Error("cua bridge unavailable");
+    return runCuaJob(parseOrThrow(CuaParams, "cua", params), ctx.cua);
+  },
 };
 
 /** Job types handled by a single async function. */
@@ -183,7 +192,7 @@ export class JobManager {
   private async runShortJob(msg: JobRequestMsg): Promise<ShortJobResult> {
     const handler = SHORT_JOBS[msg.jobType];
     if (!handler) throw new Error(`unsupported job type '${msg.jobType}'`);
-    return handler(msg.params, { agentInfo: () => this.opts.context?.() });
+    return handler(msg.params, { agentInfo: () => this.opts.context?.(), cua: this.opts.cua });
   }
 
   private sendResult(

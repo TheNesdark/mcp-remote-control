@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { AGENT_PATH, MAX_FRAME_BYTES } from "@mrc/shared";
+import { CUA_DRIVER_URL_PATH } from "@mrc/shared/cua-version";
 import { AuditLog } from "./audit.ts";
 import { screenshotBaseUrl, type ServerConfig } from "./config.ts";
 import { Hub, type WsData } from "./hub.ts";
@@ -70,6 +71,15 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
   const hub = new Hub({
     registry,
     audit,
+    ...(config.cuaDriverPath && config.cuaDriverVersion && config.cuaDriverSha256
+      ? {
+          cua: {
+            version: config.cuaDriverVersion,
+            url: CUA_DRIVER_URL_PATH,
+            sha256: config.cuaDriverSha256,
+          },
+        }
+      : {}),
     heartbeatIntervalMs: config.heartbeatIntervalMs,
     heartbeatTimeoutMs: config.heartbeatTimeoutMs,
     defaultJobTimeoutMs: config.defaultJobTimeoutMs,
@@ -141,6 +151,16 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
           headers: {
             "content-type": "application/octet-stream",
             "content-disposition": `attachment; filename="${basename(config.agentBinaryPath)}"`,
+          },
+        });
+      }
+      // Cua Driver: hand out the pinned driver zip (same public-program policy).
+      if (url.pathname === CUA_DRIVER_URL_PATH && config.cuaDriverPath) {
+        const file = Bun.file(config.cuaDriverPath);
+        return new Response(file, {
+          headers: {
+            "content-type": "application/zip",
+            "content-disposition": "attachment; filename=\"cua-driver.zip\"",
           },
         });
       }
