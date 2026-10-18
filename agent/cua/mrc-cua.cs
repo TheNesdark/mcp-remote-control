@@ -994,17 +994,39 @@ static class MrcCua
         // Screen rect of the matched characters (falls back to every bounding
         // rect of the range; the first visible one is the target).
         Rect box = new Rect(0, 0, 0, 0);
+        int rectCount = 0;
         try
         {
             Rect[] rects = hit.GetBoundingRectangles();
+            rectCount = rects == null ? 0 : rects.Length;
             foreach (Rect r in rects)
             {
+                // Chromium often reports off-screen/hidden matches with an empty
+                // rect; the first usable one is the visible line of the match.
                 if (RectFinite(r) && r.Width > 0.5 && r.Height > 0.5) { box = r; break; }
             }
         }
         catch { }
         if (!RectFinite(box) || box.Width < 0.5)
-            throw new InvalidOperationException("the matched text has no on-screen rect (hidden or off-screen): scroll to it and retry");
+        {
+            // Chromium does not expose geometry for link text until the page's
+            // accessibility tree is populated by an interaction: activate the
+            // document once, then retry the same range.
+            try
+            {
+                doc.SetFocus();
+                System.Threading.Thread.Sleep(200);
+                Rect[] again = hit.GetBoundingRectangles();
+                foreach (Rect r in again)
+                {
+                    if (RectFinite(r) && r.Width > 0.5 && r.Height > 0.5) { box = r; break; }
+                }
+            }
+            catch { }
+        }
+        if (!RectFinite(box) || box.Width < 0.5)
+            throw new InvalidOperationException("the matched text has no on-screen rect (" + rectCount +
+                " rects of " + text.Length + " chars; hidden or off-screen): retry, or use agent_cua_get_window_state + agent_cua_click");
         int cx = (int)(box.X + box.Width / 2), cy = (int)(box.Y + box.Height / 2);
 
         // Prefer the UIA invoke action when an enclosing control offers it (it
