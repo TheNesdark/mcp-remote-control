@@ -19,7 +19,12 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
 using System.Windows.Automation;
+using System.Windows.Automation.Text;
 using System.Windows.Forms;
+// UIA text traversal lives in a separate namespace and collides with nothing
+// else here; alias it so the type names stay readable.
+using TextPatternRangeEndpoint = System.Windows.Automation.Text.TextPatternRangeEndpoint;
+using TextUnit = System.Windows.Automation.Text.TextUnit;
 
 static class MrcCua
 {
@@ -650,12 +655,20 @@ static class MrcCua
         catch { return null; }
     }
 
-    /** The URL from the address bar (first Edit whose ValuePattern value looks like a URL). */
+    /**
+     * The URL from the address bar. Chrome/Edge expose the omnibox as an Edit
+     * whose ValuePattern value is the CURRENT url (scheme included) even though
+     * the visible text omits "https://", while the page's own Edit fields hold
+     * whatever the site puts there. So: explicit URL-ish values win, then the
+     * Edit sitting highest on screen (the toolbar), which is the omnibox.
+     */
     static string ReadAddressBar(AutomationElement win)
     {
         try
         {
             AutomationElementCollection edits = win.FindAll(TreeScope.Descendants, IsEdit);
+            string best = "";
+            double bestTop = double.MaxValue;
             foreach (AutomationElement e in edits)
             {
                 object pat;
@@ -668,7 +681,17 @@ static class MrcCua
                     lower.StartsWith("about:") || lower.StartsWith("edge://") || lower.StartsWith("chrome://") ||
                     lower.StartsWith("data:"))
                     return v;
+                // Omnibox fallback: a host-like value in the topmost Edit.
+                Rect r;
+                try { r = e.Current.BoundingRectangle; } catch { continue; }
+                if (!RectFinite(r)) continue;
+                if (r.Y < bestTop && (lower.IndexOf('.') > 0 || lower.IndexOf(':') > 0) && lower.IndexOf(' ') < 0)
+                {
+                    bestTop = r.Y;
+                    best = v;
+                }
             }
+            return best;
         }
         catch { }
         return "";
@@ -913,46 +936,107 @@ static class MrcCua
         AutomationElement win = BrowserWindow(p);
         AutomationElement doc = ActiveDocument(win);
         if (doc == null) throw new InvalidOperationException("no page is loaded in this browser window");
-        List<AutomationElement> hits = new List<AutomationElement>();
-        ControlType[] kinds = new ControlType[] { ControlType.Hyperlink, ControlType.Button };
-        foreach (ControlType ct in kinds)
+
+        // Read the page with the TextPattern (Chromium exposes the DOM only when
+        // UIA asks for it, which is what happens here), then find the match in
+        // the DOM range and ask for its screen rect. Walking the Control view
+        // with FindAll is not enough: Chromium keeps text/link children out of
+        // the tree until the text pattern is exercised.
+        object textPat;
+        if (!doc.TryGetCurrentPattern(TextPattern.Pattern, out textPat))
+            throw new InvalidOperationException("the page exposes no TextPattern; use agent_cua_get_window_state + agent_cua_click by coordinates");
+        TextPattern tp = (TextPattern)textPat;
+        TextPatternRange range = tp.DocumentRange;
+        string text;
+        try { text = range.GetText(-1) ?? ""; }
+        catch (Exception ex) { throw new InvalidOperationException("TextPattern read failed: " + ex.Message); }
+
+        List<int> hitsAt = new List<int>();
+        int from = 0;
+        while (hitsAt.Count < 12)
         {
-            try
-            {
-                AndCondition cond = new AndCondition(
-                    new PropertyCondition(AutomationElement.ControlTypeProperty, ct),
-                    new PropertyCondition(AutomationElement.IsEnabledProperty, true));
-                AutomationElementCollection found = doc.FindAll(TreeScope.Descendants, cond);
-                foreach (AutomationElement e in found)
-                {
-                    string name = e.Current.Name ?? "";
-                    if (name.ToLowerInvariant().Contains(match)) hits.Add(e);
-                    if (hits.Count > 12) break;
-                }
-            }
-            catch { }
-            if (hits.Count > 12) break;
+            int at = text.ToLowerInvariant().IndexOf(match, from, StringComparison.Ordinal);
+            if (at < 0) break;
+            hitsAt.Add(at);
+            from = at + 1;
         }
-        if (hits.Count == 0) throw new InvalidOperationException("no enabled link or button contains '" + match + "'");
+        if (hitsAt.Count == 0)
+            throw new InvalidOperationException("the page text does not contain '" + match + "'");
+
         int nth = 0;
         string nthStr = Param(p, "nth");
         if (nthStr.Length > 0) int.TryParse(nthStr, out nth);
-        if (nth < 0 || nth >= hits.Count)
-            throw new ArgumentException("nth " + nth + " out of range (" + hits.Count + " matches for '" + match + "')");
-        AutomationElement target = hits[nth];
-        Rect r = target.Current.BoundingRectangle;
-        if (!RectFinite(r) || r.Width < 1)
-            throw new InvalidOperationException("the target element is not visible on screen; scroll it into view first");
-        int cx = (int)(r.X + r.Width / 2), cy = (int)(r.Y + r.Height / 2);
-        if (!StealFocus((IntPtr)win.Current.NativeWindowHandle)) throw new InvalidOperationException("foreground unavaiable before click");
-        if (!SetCursorPos(cx, cy)) throw new InvalidOperationException("SetCursorPos failed");
-        System.Threading.Thread.Sleep(60);
-        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
-        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+        if (nth < 0 || nth >= hitsAt.Count)
+            throw new ArgumentException("nth " + nth + " out of range (" + hitsAt.Count + " matches for '" + match + "')");
+
+        // Narrow the document range to the matched text and scroll it into view.
+        int offset = hitsAt[nth];
+        TextPatternRange hit;
+        try
+        {
+            hit = range.Clone();
+            int skipped = hit.MoveEndpointByUnit(TextPatternRangeEndpoint.Start, TextUnit.Character, offset);
+            int take = hit.MoveEndpointByUnit(TextPatternRangeEndpoint.End, TextUnit.Character, -(text.Length - offset - match.Length));
+            if (skipped != offset || take != match.Length) throw new InvalidOperationException("range narrowing off (" + skipped + "/" + take + " of " + text.Length + ")");
+            hit.ScrollIntoView(true);
+            System.Threading.Thread.Sleep(150);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException("could not locate the text rect: " + ex.Message);
+        }
+
+        // Screen rect of the matched characters (falls back to every bounding
+        // rect of the range; the first visible one is the target).
+        Rect box = new Rect(0, 0, 0, 0);
+        try
+        {
+            Rect[] rects = hit.GetBoundingRectangles();
+            foreach (Rect r in rects)
+            {
+                if (RectFinite(r) && r.Width > 0.5 && r.Height > 0.5) { box = r; break; }
+            }
+        }
+        catch { }
+        if (!RectFinite(box) || box.Width < 0.5)
+            throw new InvalidOperationException("the matched text has no on-screen rect (hidden or off-screen): scroll to it and retry");
+        int cx = (int)(box.X + box.Width / 2), cy = (int)(box.Y + box.Height / 2);
+
+        // Prefer the UIA invoke action when an enclosing control offers it (it
+        // survives scroll/focus races); otherwise click the text point.
+        bool invoked = false;
+        try
+        {
+            TreeWalker walker = TreeWalker.ControlViewWalker;
+            AutomationElement node = hit.GetEnclosingElement();
+            for (int up = 0; up < 4 && node != null && !invoked; up++)
+            {
+                object invoke;
+                if (node.TryGetCurrentPattern(InvokePattern.Pattern, out invoke))
+                {
+                    ((InvokePattern)invoke).Invoke();
+                    invoked = true;
+                    break;
+                }
+                node = walker.GetParent(node);
+            }
+        }
+        catch { }
+
+        if (!invoked)
+        {
+            if (!StealFocus((IntPtr)win.Current.NativeWindowHandle)) throw new InvalidOperationException("foreground unavaiable before click");
+            if (!SetCursorPos(cx, cy)) throw new InvalidOperationException("SetCursorPos failed");
+            System.Threading.Thread.Sleep(60);
+            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+        }
+
         StringBuilder sb = new StringBuilder();
         sb.Append("{\"ok\":true,\"clicked\":{\"x\":").Append(cx).Append(",\"y\":").Append(cy)
-          .Append("},\"name\":").Append(JsonStr(target.Current.Name ?? ""))
-          .Append(",\"matches\":").Append(hits.Count).Append("}");
+          .Append("},\"matched\":").Append(JsonStr(text.Substring(offset, Math.Min(match.Length + 40, text.Length - offset)).Split('\n')[0]))
+          .Append(",\"via\":").Append(JsonStr(invoked ? "invoke" : "mouse"))
+          .Append(",\"matches\":").Append(hitsAt.Count).Append("}");
         return sb.ToString();
     }
 
