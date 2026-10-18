@@ -19,6 +19,8 @@ const CONTENT_TYPES: Record<string, string> = {
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
   ".webp": "image/webp",
+  ".mp4": "video/mp4",
+  ".avi": "video/x-msvideo",
 };
 
 function authorized(req: Request, url: URL, token: string): boolean {

@@ -286,6 +286,60 @@ To keep the agent from using the tools without asking, restrict them by name:
    - `agent_sessions` shows who is logged on (console and RDP by default) via
      CIM, so it works on any display language; `interactiveOnly=false` adds
      service/batch/network sessions collapsed per user.
+12. Computer use (own C# sidecar, Windows only; the same engine drives all of
+    these — see `agent/cua/mrc-cua.cs`):
+
+    ```
+    agent_cua_list_windows(agent="SRV-RX")                          # hwnd/pid/title per window
+    agent_cua_get_window_state(agent="SRV-RX", window_id=262414)    # UIA tree with element rects
+    agent_cua_screenshot(agent="SRV-RX", window_id=262414)          # PNG pulled to the hub
+    agent_cua_click(agent="SRV-RX", x=820, y=460, window_id=262414, confirm=true)
+    agent_cua_type_text(agent="SRV-RX", text="hola", window_id=262414, confirm=true)
+    agent_cua_press_key(agent="SRV-RX", key="enter", window_id=262414, confirm=true)
+    agent_cua_scroll(agent="SRV-RX", x=820, y=460, ticks=-3, confirm=true)
+    ```
+
+    - Coordinates come from the element rects of `agent_cua_get_window_state`;
+      `window_id` is the HWND in decimal. Every input tool steals the target
+      window's foreground first and needs `confirm=true` (the sidecar refuses
+      runs without it).
+
+    Native browser control (`agent_cua_browser`) attaches to the browser the
+    USER already runs — their real profiles and windows, no automation
+    browser, no debug port:
+
+    ```
+    agent_cua_browser(agent="SRV-RX", operation="state")                # url/title/ready
+    agent_cua_browser(agent="SRV-RX", operation="tabs")                 # tab titles
+    agent_cua_browser(agent="SRV-RX", operation="text", max_chars=8000) # page text
+    agent_cua_browser(agent="SRV-RX", operation="open", url="https://example.com", confirm=true)
+    agent_cua_browser(agent="SRV-RX", operation="navigate", url="https://example.com", new_tab=true, confirm=true)
+    agent_cua_browser(agent="SRV-RX", operation="click", match="log in", confirm=true)
+    ```
+
+    - `state`/`tabs`/`text` are read-only. `open` takes over the live Chrome/
+      Edge/Firefox window (new tab with `new_tab=true`) or launches the
+      installed browser with its default profile when none is running;
+      `navigate` drives the address bar; `click` clicks the nth enabled
+      link/button whose text contains `match`. `open`/`navigate`/`click` need
+      `confirm=true` and only accept `http(s)://` or `file://` URLs.
+    - For anything the pattern match cannot express, read the tree with
+      `agent_cua_get_window_state` and click by coordinates.
+
+    Screen recording (`agent_cua_record`) captures the primary monitor for a
+    bounded clip and pulls the finished file to the hub:
+
+    ```
+    agent_cua_record(agent="SRV-RX", duration_sec=15, fps=4, confirm=true)
+    ```
+
+    - MP4/h264 when `ffmpeg.exe` is on that machine (next to the sidecar or on
+      PATH), otherwise a motion-JPEG `.avi` (playable in VLC; remux with
+      `ffmpeg -i in.avi -c copy out.mp4`). The call blocks for the clip plus
+      encoding (1–60 s, 1–10 fps), needs `confirm=true`, and the clip is saved
+      with the screenshots (`downloadUrl` included when `MRC_PUBLIC_URL` is
+      set). Nothing is ever uploaded anywhere: the file lands on the hub disk.
+
 
 ### Saving a screenshot on the client's machine
 

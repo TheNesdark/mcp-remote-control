@@ -25,6 +25,9 @@ import { toolError, toolJson } from "./util.ts";
 
 const TIMEOUT_MAX = 115_000;
 
+const windowIdSchema = z.number().int().positive().optional().describe("HWND in decimal, from agent_cua_list_windows.");
+const pidSchema = z.number().int().positive().optional().describe("Fallback target: the process's biggest on-screen window.");
+
 /** Args bag every MRC_CUA tool receives; extra keys pass through to the sidecar CLI. */
 interface CuaArgsBag {
   agent: string;
@@ -85,8 +88,6 @@ export function registerAgentCuaTools(
   opts: { screenshotDir: string; screenshotBaseUrl?: string },
 ): void {
   const timeoutSchema = z.number().int().positive().max(TIMEOUT_MAX).optional().describe("Sidecar/job timeout in ms.");
-  const windowIdSchema = z.number().int().positive().optional().describe("HWND in decimal, from agent_cua_list_windows.");
-  const pidSchema = z.number().int().positive().optional().describe("Fallback target: the process's biggest on-screen window.");
   const confirmSchema = z.boolean().describe(CONFIRM_HINT);
   const targetError = (args: object): string | null => {
     const a = args as { window_id?: number; pid?: number };
@@ -130,6 +131,11 @@ export function registerAgentCuaTools(
   // -- screenshot (sidecar saves a PNG; hub pulls it via chunked transfer) --
 
   registerAgentCuaScreenshot(server, hub, audit, opts);
+
+  // -- native browser control + screen recording -----------------------------
+
+  registerAgentCuaRecord(server, hub, audit, opts);
+  registerAgentCuaBrowser(server, hub, audit);
 
   // -- input (destructive, confirm-gated) -----------------------------------
 
@@ -331,3 +337,185 @@ function registerAgentCuaScreenshot(
     },
   );
 }
+
+// --------------------------------------------------------------------- record
+
+/**
+ * agent_cua_record: the sidecar captures the primary monitor for a bounded
+ * duration and encodes it on the agent (ffmpeg/h264 when present, motion-JPEG
+ * AVI otherwise); the hub then pulls the finished file with a chunked,
+ * sha256-verified transfer and serves it under /screenshots/ like images.
+ */
+function registerAgentCuaRecord(
+  server: McpServer,
+  hub: Hub,
+  audit: AuditLog,
+  opts: { screenshotDir: string; screenshotBaseUrl?: string },
+): void {
+  interface Args extends CuaArgsBag {
+    duration_sec?: number;
+    fps?: number;
+    timeoutMs?: number;
+    confirm?: boolean;
+  }
+  const { screenshotDir, screenshotBaseUrl } = opts;
+
+  server.registerTool(
+    "agent_cua_record",
+    {
+      title: "Record a short screen clip via the CUA engine",
+      description:
+        "Capture the agent's primary monitor for duration_sec seconds (1-60, default 10) at fps frames/s " +
+        "(1-10, default 4) and encode it on the agent. MP4/h264 when ffmpeg is available on that machine, " +
+        "otherwise a motion-JPEG .avi (playable in VLC; remux with `ffmpeg -i in.avi -c copy out.mp4`). " +
+        "This call BLOCKS for the whole clip plus encoding. The hub pulls the finished file with a " +
+        "sha256-verified transfer and returns downloadPath. Requires confirm: true (it records the screen).",
+      inputSchema: {
+        agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
+        duration_sec: z.number().int().min(1).max(60).optional().describe("Clip length in seconds (default 10)."),
+        fps: z.number().int().min(1).max(10).optional().describe("Frames per second (default 4)."),
+        confirm: z.boolean().describe("Record the screen: pass true to acknowledge."),
+        timeoutMs: z.number().int().positive().max(TIMEOUT_MAX).optional().describe("Sidecar/job timeout in ms."),
+      },
+    },
+    async (raw) => {
+      const args = raw as unknown as Args;
+      const startedAt = Date.now();
+      const auditCall = (ok: boolean, error?: string, extra?: Record<string, unknown>): void => {
+        auditToolCall(audit, { op: "agent_cua_record", agent: args.agent, params: args, startedAt, ok, ...extra, error });
+      };
+      const fail = (error: string) => {
+        auditCall(false, error);
+        return toolJson({ ok: false, error }, true);
+      };
+      if (args.confirm !== true) return fail("agent_cua_record requires confirm: true (the clip records the whole screen)");
+      try {
+        const sidecarArgs: Record<string, number | boolean> = { confirm: true };
+        if (args.duration_sec) sidecarArgs.duration_sec = args.duration_sec;
+        if (args.fps) sidecarArgs.fps = args.fps;
+        const outcome = await hub.request(args.agent, "cua", { tool: "record", args: sidecarArgs }, args.timeoutMs, {
+          op: "agent_cua_record",
+          params: args,
+        });
+        if (!outcome.ok) return fail(outcome.error ?? "cua record failed");
+        const meta = (outcome.meta ?? {}) as { path?: unknown; encoder?: unknown; frames?: unknown; fps?: unknown };
+        const remotePath = typeof meta.path === "string" ? meta.path : "";
+        if (!remotePath) return fail("cua record failed: sidecar returned no path");
+        const ext = remotePath.toLowerCase().endsWith(".mp4") ? ".mp4" : ".avi";
+
+        await mkdir(screenshotDir, { recursive: true });
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
+        const localPath = join(screenshotDir, `rec-${stamp}${ext}`);
+        let bytes: Buffer;
+        try {
+          const transfer = await downloadFile(hub, args.agent, remotePath, localPath, { timeoutMs: args.timeoutMs });
+          bytes = Buffer.from(await Bun.file(localPath).arrayBuffer());
+          if (bytes.length !== transfer.bytes) return fail("cua record failed: size mismatch after transfer");
+        } catch (err) {
+          return fail(`cua record failed: transfer error (${err instanceof Error ? err.message : String(err)})`);
+        }
+
+        const sha256 = createHash("sha256").update(bytes).digest("hex");
+        const downloadPath = `${SCREENSHOT_HTTP_PREFIX}${basename(localPath)}`;
+        const payload = {
+          ok: true,
+          agent: args.agent,
+          localPath,
+          bytes: bytes.length,
+          sha256,
+          encoder: meta.encoder ?? "unknown",
+          frames: meta.frames,
+          fps: meta.fps,
+          duration_sec: args.duration_sec ?? 10,
+          downloadPath,
+          ...(screenshotBaseUrl ? { downloadUrl: `${screenshotBaseUrl}${downloadPath}` } : {}),
+        };
+        auditCall(true, undefined, { bytes: bytes.length });
+        return toolJson(payload);
+      } catch (err) {
+        auditCall(false, err instanceof Error ? err.message : String(err));
+        return toolError(err);
+      }
+    },
+  );
+}
+
+// -------------------------------------------------------------------- browser
+
+/**
+ * agent_cua_browser: native control of the browser the USER already runs.
+ * Their real profiles and windows - no automation browser, no CDP debug port.
+ * When Chrome/Edge/Firefox is open its live window (and active tab) is driven
+ * through the Windows UI Automation tree plus synthesized input; when it is
+ * not, `open` starts the installed browser with the default profile.
+ */
+function registerAgentCuaBrowser(server: McpServer, hub: Hub, audit: AuditLog): void {
+  interface Args extends CuaArgsBag {
+    operation: "state" | "open" | "navigate" | "text" | "tabs" | "click";
+    browser?: "chrome" | "msedge" | "firefox";
+    url?: string;
+    new_tab?: boolean;
+    max_chars?: number;
+    match?: string;
+    nth?: number;
+    confirm?: boolean;
+    timeoutMs?: number;
+  }
+  const SIDECAR_BY_OP: Record<Args["operation"], string> = {
+    state: "browser_state",
+    open: "browser_open",
+    navigate: "browser_navigate",
+    text: "browser_get_text",
+    tabs: "browser_tabs",
+    click: "browser_click",
+  };
+  const MUTATING = new Set(["open", "navigate", "click"]);
+
+  registerJobTool<Args>(server, hub, audit, {
+    name: "agent_cua_browser",
+    title: "Control the user's real browser natively (UI Automation)",
+    description:
+      "Native browser control over the browser the USER runs (their profiles, their windows) - never a " +
+      "separate automation browser. state/tabs/text are read-only reads of the active window (url, page " +
+      "title, page text, tab list). open attaches to the live browser and points it at url (opens a new " +
+      "tab when new_tab: true) or launches the installed browser with its default profile when none runs; " +
+      "navigate drives the address bar of the active window; click clicks the nth enabled link/button " +
+      "whose text contains `match`. For clicks inside pages read element rects with " +
+      "agent_cua_get_window_state and use agent_cua_click for arbitrary points. open/navigate/click " +
+      "require confirm: true.",
+    inputSchema: {
+      agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
+      operation: z.enum(["state", "open", "navigate", "text", "tabs", "click"]).describe("Browser operation to run."),
+      browser: z.enum(["chrome", "msedge", "firefox"]).optional().describe("Which browser (default: the one already open, else chrome)."),
+      url: z.string().max(2048).optional().describe("http(s) or file:// URL for open/navigate."),
+      new_tab: z.boolean().optional().describe("open/navigate: Ctrl+T first so the current tab survives."),
+      max_chars: z.number().int().min(200).max(40_000).optional().describe("text: page text cap (default 8000)."),
+      match: z.string().min(1).max(120).optional().describe("click: substring of the link/button text."),
+      nth: z.number().int().min(0).optional().describe("click: which match to use (default 0)."),
+      window_id: windowIdSchema,
+      pid: pidSchema,
+      confirm: z.boolean().optional().describe("Required true for open/navigate/click."),
+      timeoutMs: z.number().int().positive().max(TIMEOUT_MAX).optional().describe("Sidecar/job timeout in ms."),
+    },
+    options: {
+      op: (args) => `agent_cua_browser_${args.operation}`,
+      jobType: "cua",
+      validate: (args) => {
+        if (MUTATING.has(args.operation) && args.confirm !== true) return CONFIRM_HINT;
+        if ((args.operation === "navigate" || (args.operation === "open" && args.url !== undefined)) &&
+            !/^https?:\/\//i.test(args.url ?? "") && !(args.url ?? "").toLowerCase().startsWith("file://")) {
+          return `${args.operation} requires a full http(s):// or file:// url`;
+        }
+        if (args.operation === "click" && !args.match) return "click requires 'match' (substring of a link/button text)";
+        return null;
+      },
+      timeoutMs: (args) => args.timeoutMs,
+      buildParams: (args) => {
+        const { operation: _operation, ...rest } = args;
+        return { tool: SIDECAR_BY_OP[args.operation], args: cuaArgs(rest) };
+      },
+      buildResult: (outcome) => ({ jobId: outcome.jobId, ...(outcome.meta ?? {}) }),
+    },
+  });
+}
+

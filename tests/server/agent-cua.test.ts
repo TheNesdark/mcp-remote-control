@@ -77,6 +77,27 @@ function sidecarMeta(msg: JobRequestMsg): Record<string, unknown> {
       return { focused_hwnd: 101 };
     case "screenshot":
       return { path: "C:\\Users\\SERVER-RX\\AppData\\Local\\Temp\\mrc-cua-shot.png", bytes: FAKE_PNG.length };
+    case "browser_state":
+      return {
+        browser: "chrome", window_id: 101, window_title: "Example - Google Chrome",
+        url: "https://example.com/", page_title: "Example Domain", page_ready: true,
+        bounds: { x: 10, y: 20, width: 1600, height: 900 },
+      };
+    case "browser_open":
+      return { mode: "takeover", browser: "chrome", window_id: 101, navigated: true };
+    case "browser_navigate":
+      return { navigated: true, window_id: 101, url: "https://example.com/" };
+    case "browser_get_text":
+      return { url: "https://example.com/", title: "Example Domain", truncated: false, text: "Example Domain" };
+    case "browser_tabs":
+      return { browser: "chrome", tab_count: 1, tabs: [{ title: "Example Domain", selected: true }] };
+    case "browser_click":
+      return { clicked: { x: 10, y: 20 }, name: "More information...", matches: 1 };
+    case "record":
+      return {
+        path: "C:\\Users\\SERVER-RX\\AppData\\Local\\Temp\\mrc-cua-rec.avi", bytes: FAKE_PNG.length,
+        frames: 8, fps: 4, duration_sec: 2, encoder: "mjpeg-avi",
+      };
     default:
       return { unexpectedTool: params.tool };
   }
@@ -262,4 +283,90 @@ test("agent_cua_screenshot fails cleanly when the sidecar has no path", async ()
   client.close();
   agent.stop();
   service.close();
+});
+
+// ------------------------------------------------------------- browser tools
+
+test("agent_cua_browser and agent_cua_record are registered", async () => {
+  const started = await start();
+  const tools = (await started.client.listTools()).tools.map((tool) => tool.name);
+  expect(tools).toContain("agent_cua_browser");
+  expect(tools).toContain("agent_cua_record");
+});
+
+test("agent_cua_browser state is read-only and routes browser_state", async () => {
+  const started = await start();
+  const result = await call("agent_cua_browser", { agent: "W-CUA-01", operation: "state" });
+  expect(result.isError).toBe(false);
+  expect(result.data.browser).toBe("chrome");
+  expect(result.data.url).toBe("https://example.com/");
+  expect(started.jobs[0]).toMatchObject({ jobType: "cua", params: { tool: "browser_state", args: {} } });
+});
+
+test("agent_cua_browser open/navigate/click require confirm", async () => {
+  const started = await start();
+  for (const args of [
+    { operation: "open", url: "https://example.com/" },
+    { operation: "navigate", url: "https://example.com/" },
+    { operation: "click", match: "more information" },
+  ]) {
+    const result = await call("agent_cua_browser", { agent: "W-CUA-01", ...args });
+    expect(result.isError).toBe(true);
+    expect(result.text + JSON.stringify(result.data ?? "")).toMatch(/confirm/i);
+  }
+  expect(started.jobs.length).toBe(0);
+});
+
+test("agent_cua_browser validates url scheme and click match", async () => {
+  const started = await start();
+  const bad = await call("agent_cua_browser", { agent: "W-CUA-01", operation: "navigate", url: "javascript:alert(1)", confirm: true });
+  expect(bad.isError).toBe(true);
+  expect(bad.text + JSON.stringify(bad.data ?? "")).toMatch(/http/);
+  const noMatch = await call("agent_cua_browser", { agent: "W-CUA-01", operation: "click", confirm: true });
+  expect(noMatch.isError).toBe(true);
+  expect(noMatch.text + JSON.stringify(noMatch.data ?? "")).toMatch(/match/);
+  expect(started.jobs.length).toBe(0);
+});
+
+test("agent_cua_browser click with confirm drives browser_click through the sidecar", async () => {
+  const started = await start();
+  const result = await call("agent_cua_browser", {
+    agent: "W-CUA-01",
+    operation: "click",
+    match: "more information",
+    window_id: 101,
+    confirm: true,
+  });
+  expect(result.isError).toBe(false);
+  expect(result.data.clicked).toEqual({ x: 10, y: 20 });
+  const params = (started.jobs[0]?.params ?? {}) as { tool: string; args: Record<string, unknown> };
+  expect(params.tool).toBe("browser_click");
+  expect(params.args).toMatchObject({ match: "more information", window_id: 101, confirm: true });
+  expect(params.args).not.toHaveProperty("agent");
+  expect(params.args).not.toHaveProperty("operation");
+});
+
+// -------------------------------------------------------------- record tool
+
+test("agent_cua_record requires confirm", async () => {
+  const started = await start();
+  const result = await call("agent_cua_record", { agent: "W-CUA-01", duration_sec: 5 });
+  expect(result.isError).toBe(true);
+  expect(result.text + JSON.stringify(result.data ?? "")).toMatch(/confirm/i);
+  expect(started.jobs.length).toBe(0);
+});
+
+test("agent_cua_record pulls the clip into the screenshot dir with sha256", async () => {
+  const started = await start();
+  const result = await call("agent_cua_record", { agent: "W-CUA-01", duration_sec: 2, fps: 4, confirm: true });
+  expect(result.isError).toBe(false);
+  expect(result.data.sha256).toBe(FAKE_PNG_SHA);
+  expect(result.data.encoder).toBe("mjpeg-avi");
+  expect(result.data.localPath.startsWith(started.screenshotDir)).toBe(true);
+  expect(result.data.localPath.endsWith(".avi")).toBe(true);
+  expect(existsSync(result.data.localPath)).toBe(true);
+  expect(result.data.downloadPath).toContain("/screenshots/");
+  const jobsReported = started.jobs.filter((job) => job.jobType === "cua");
+  expect(jobsReported).toHaveLength(1);
+  expect(jobsReported[0]).toMatchObject({ params: { tool: "record", args: { duration_sec: 2, fps: 4, confirm: true } } });
 });
