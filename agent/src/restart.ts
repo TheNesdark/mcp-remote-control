@@ -61,7 +61,10 @@ export function buildWindowsRestartScript(exe: string, updatePath: string | null
   if (updatePath) {
     lines.push(
       `move /y "${exe}" "${exe}.old" >nul || exit /b 1`,
-      `move /y "${updatePath}" "${exe}" >nul || exit /b 1`,
+      // copy + delete instead of move: works across drives (network shares,
+      // USB, ...), which a cross-drive `move` does not.
+      `copy /y "${updatePath}" "${exe}" >nul || exit /b 1`,
+      `del /f /q "${updatePath}" >nul 2>&1`,
     );
   }
   lines.push(`start "" "${exe}" ${quoted}`, `del /f /q "${exe}.old" >nul 2>&1`);

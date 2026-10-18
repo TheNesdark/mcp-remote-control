@@ -18,6 +18,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { downloadFile } from "../transfers.ts";
 import { CUA_DRIVER_VERSION } from "@mrc/shared/cua-version";
 import { CUA_TOOLS, CUA_TOOLS_SOURCE_VERSION } from "@mrc/shared/cua-tools";
 import { z } from "zod";
@@ -30,6 +31,16 @@ import { toolError, toolJson } from "./util.ts";
 
 /** Shared session label so element tokens keep working between calls. */
 export const CUA_DEFAULT_SESSION = "mrc";
+
+/** Driver tools whose response carries a PNG in the image content block. */
+export const CUA_IMAGE_TOOLS = new Set([
+  "get_window_state",
+  "get_desktop_state",
+  "zoom",
+  "get_browser_state",
+  "verify_state",
+  "parse_visual_regions",
+]);
 
 /** Generous for tree walks and captures; the CLI itself caps calls at 120s. */
 export const CUA_JOB_TIMEOUT_MS = 60_000;
@@ -118,13 +129,15 @@ export function registerCuaTools(server: McpServer, hub: Hub, options: CuaToolsO
           record(false, error);
           return toolJson({ ok: false, error }, true);
         }
+        const wantScreenshot =
+          typed.params?.screenshot !== false && CUA_IMAGE_TOOLS.has(spec.name);
         const params = { session: CUA_DEFAULT_SESSION, ...(typed.params ?? {}) };
         let outcome: JobOutcome;
         try {
           outcome = await hub.request(
             typed.agent,
             "cua",
-            { action: "call", tool: spec.name, args: params },
+            { action: "call", tool: spec.name, args: params, ...(wantScreenshot ? { screenshot: true } : {}) },
             typed.timeoutMs ?? CUA_JOB_TIMEOUT_MS,
             { op: toolName, params: { tool: spec.name, args: params } },
             { maxOutputBytes: CUA_MAX_OUTPUT_BYTES },
@@ -286,19 +299,35 @@ export function registerCuaTools(server: McpServer, hub: Hub, options: CuaToolsO
         };
         // Persist an image if asked: same local path + downloadUrl contract as
         // the old screenshot flow, so a remote opencode can curl it.
-        if (args.screenshot && typeof meta.screenshotBase64 === "string" && meta.screenshotBase64) {
-          const bytes = Buffer.from(meta.screenshotBase64, "base64");
+        // Agent may report the image either as a remote path (new, chunked
+        // transfer) or as base64 in meta (legacy 0.8.0 agents and direct calls).
+        const remotePath = typeof meta.screenshotPath === "string" ? meta.screenshotPath : null;
+        const inlineBase64 = typeof meta.screenshotBase64 === "string" ? meta.screenshotBase64 : null;
+        if (args.screenshot && (remotePath || inlineBase64)) {
           await mkdir(screenshotDir, { recursive: true });
           const stamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
           const localPath = join(screenshotDir, `cua-${args.tool}-${stamp}.png`);
-          await Bun.write(localPath, bytes);
-          scheduleScreenshotPrune(screenshotDir, screenshotKeep ?? 0);
-          payload.screenshotPath = localPath;
-          payload.screenshotBytes = bytes.length;
-          payload.screenshotSha256 = createHash("sha256").update(bytes).digest("hex");
-          const downloadPath = `${SCREENSHOT_HTTP_PREFIX}${basename(localPath)}`;
-          payload.screenshotDownloadPath = downloadPath;
-          if (screenshotBaseUrl) payload.screenshotDownloadUrl = `${screenshotBaseUrl}${downloadPath}`;
+          try {
+            let bytes: Buffer;
+            if (remotePath) {
+              const transfer = await downloadFile(hub, args.agent, remotePath, localPath, { timeoutMs: args.timeoutMs ?? CUA_JOB_TIMEOUT_MS });
+              bytes = Buffer.from(await Bun.file(localPath).arrayBuffer());
+              if (bytes.length !== transfer.bytes) throw new Error("screenshot size mismatch after transfer");
+            } else {
+              bytes = Buffer.from(inlineBase64!, "base64");
+              await Bun.write(localPath, bytes);
+            }
+            const sha = createHash("sha256").update(bytes).digest("hex");
+            scheduleScreenshotPrune(screenshotDir, screenshotKeep ?? 0);
+            payload.screenshotPath = localPath;
+            payload.screenshotBytes = bytes.length;
+            payload.screenshotSha256 = sha;
+            const downloadPath = `${SCREENSHOT_HTTP_PREFIX}${basename(localPath)}`;
+            payload.screenshotDownloadPath = downloadPath;
+            if (screenshotBaseUrl) payload.screenshotDownloadUrl = `${screenshotBaseUrl}${downloadPath}`;
+          } catch (err) {
+            payload.screenshotError = err instanceof Error ? err.message : String(err);
+          }
         }
         payload.stdout = meta.stdout ?? "";
         if (audit) auditToolCall(audit, { op: "agent_cua_call", agent: args.agent, params: { tool: args.tool }, startedAt, ok: true });

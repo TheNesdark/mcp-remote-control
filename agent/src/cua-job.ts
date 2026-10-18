@@ -10,7 +10,7 @@
  * uses). `setup` (re)downloads the announced driver; `status` reports the
  * local install plus the daemon state.
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CuaParams } from "@mrc/shared";
@@ -87,11 +87,8 @@ export async function runCuaJob(params: CuaParams, bridge: CuaBridge): Promise<S
 
     const meta: Record<string, unknown> = { exitCode, stdout, stderr: stderr.slice(0, 4_000) };
     if (shotFile && existsSync(shotFile)) {
-      try {
-        meta.screenshotBase64 = readFileSync(shotFile).toString("base64");
-      } catch {
-        // the text result stays valid without the image
-      }
+      meta.screenshotPath = shotFile;
+      try { meta.screenshotBytes = Bun.file(shotFile).size; } catch { /* fine */ }
     }
     if (exitCode !== 0) {
       meta.ok = false;
