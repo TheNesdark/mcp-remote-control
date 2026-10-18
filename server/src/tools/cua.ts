@@ -156,7 +156,33 @@ export function registerCuaTools(server: McpServer, hub: Hub, options: CuaToolsO
           return toolJson({ ok: false, error, exitCode: meta.exitCode ?? null, stdout: meta.stdout ?? null }, true);
         }
         record(true);
-        return toolJson({ ok: true, tool: spec.name, exitCode: meta.exitCode ?? 0, stdout: meta.stdout ?? "" });
+        const payload: Record<string, unknown> = { ok: true, tool: spec.name, exitCode: meta.exitCode ?? 0, stdout: meta.stdout ?? "" };
+        // Image-bearing tools: the agent wrote a PNG via --screenshot-out-file;
+        // pull it back (chunked) so the client gets a local path + downloadUrl.
+        if (wantScreenshot) {
+          const remotePath = typeof meta.screenshotPath === "string" ? meta.screenshotPath : null;
+          if (remotePath) {
+            const stamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
+            await mkdir(screenshotDir, { recursive: true });
+            const localPath = join(screenshotDir, `cua-${spec.name}-${stamp}.png`);
+            try {
+              const transfer = await downloadFile(hub, typed.agent, remotePath, localPath, { timeoutMs: typed.timeoutMs ?? CUA_JOB_TIMEOUT_MS });
+              const bytes = Buffer.from(await Bun.file(localPath).arrayBuffer());
+              if (bytes.length !== transfer.bytes) throw new Error("screenshot size mismatch after transfer");
+              const sha = createHash("sha256").update(bytes).digest("hex");
+              scheduleScreenshotPrune(screenshotDir, screenshotKeep ?? 0);
+              payload.screenshotPath = localPath;
+              payload.screenshotBytes = bytes.length;
+              payload.screenshotSha256 = sha;
+              const downloadPath = `${SCREENSHOT_HTTP_PREFIX}${basename(localPath)}`;
+              payload.screenshotDownloadPath = downloadPath;
+              if (screenshotBaseUrl) payload.screenshotDownloadUrl = `${screenshotBaseUrl}${downloadPath}`;
+            } catch (err) {
+              payload.screenshotError = err instanceof Error ? err.message : String(err);
+            }
+          }
+        }
+        return toolJson(payload);
       },
     );
   }

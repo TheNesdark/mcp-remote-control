@@ -72,7 +72,12 @@ export async function runCuaJob(params: CuaParams, bridge: CuaBridge): Promise<S
   const shotDir = params.screenshot ? mkdtempSync(join(tmpdir(), "mrc-cua-")) : null;
   const shotFile = shotDir ? join(shotDir, "shot.png") : null;
   const args = [exe, "call", params.tool];
-  if (shotFile) args.push("--screenshot-out-file", shotFile);
+  // pass the path both as a CLI flag and inside the JSON args: the flag writes
+  // the image block to disk, and the JSON field keeps the driver consistent
+  if (shotFile) {
+    args.push("--screenshot-out-file", shotFile);
+    params.args = { ...(params.args ?? {}), screenshot_out_file: shotFile };
+  }
 
   try {
     const proc = Bun.spawn(args, {
