@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-#
 # mcp-remote-control — servidor central (hub de agentes + MCP sobre HTTP).
 #
 # Build:
