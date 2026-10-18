@@ -26,4 +26,6 @@ bunfig.toml
 # El agente se compila en una stage separada del Dockerfile; se excluyen del
 # runtime pero deben estar disponibles en el build context.
 agent/tray
+!agent/tray/first-run.ps1
+!agent/tray/tray.ps1
 agent/install.ps1
