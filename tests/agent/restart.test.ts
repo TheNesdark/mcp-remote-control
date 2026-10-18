@@ -7,7 +7,7 @@ import { buildWindowsRestartScript, RESTART_EXIT_DELAY_MS, restartAgent } from "
 test("windows restart script waits, swaps and relaunches", () => {
   const script = buildWindowsRestartScript("C:\\rc-agent.exe", "C:\\new.exe", ["--name", "PC-01"]);
   const atSelf = script.indexOf('move /y "C:\\rc-agent.exe" "C:\\rc-agent.exe.old"');
-  const atNew = script.indexOf('move /y "C:\\new.exe" "C:\\rc-agent.exe"');
+  const atNew = script.indexOf('copy /y "C:\\new.exe" "C:\\rc-agent.exe"');
   const atStart = script.indexOf('start "" "C:\\rc-agent.exe" "--name" "PC-01"');
   const atClean = script.indexOf('del /f /q "C:\\rc-agent.exe.old"');
   expect(atSelf).toBeGreaterThanOrEqual(0);
@@ -63,7 +63,7 @@ test("windows restart spawns the detached script, reports it and arms the self-e
   expect(exitDelays).toEqual([RESTART_EXIT_DELAY_MS]);
 
   const content = await Bun.file(spawned[0]!).text();
-  expect(content).toContain('move /y "C:\\staged\\new.exe"');
+  expect(content).toContain('copy /y "C:\\staged\\new.exe"');
   expect(content).toContain('"--name" "X"');
   rmSync(dir, { recursive: true, force: true });
 });
