@@ -386,3 +386,23 @@ test("agent reconnects with a stable id after a server restart", async () => {
     connection.stop();
   }
 }, 60_000);
+
+test("reconfigure applies name/server/token and reconnects with the new identity", async () => {
+  const service = createService(testConfig());
+  const { connection } = startAgent(service);
+  try {
+    await waitFor(() => (service.hub.list()[0]?.online ? true : undefined));
+    expect(service.hub.list()[0]!.name).toBe("AI-01");
+
+    connection.reconfigure({ name: "FARMACIA-01" });
+    await waitFor(() => (service.hub.list()[0]?.name === "FARMACIA-01" && service.hub.list()[0]?.online ? true : undefined), {
+      label: "reconfigured reconnect",
+      timeoutMs: 8_000,
+    });
+    // same agent, renamed on the fly: no restart, no duplicate entry
+    expect(service.hub.list().length).toBe(1);
+  } finally {
+    connection.stop();
+    service.close();
+  }
+});

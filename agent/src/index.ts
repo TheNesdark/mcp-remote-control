@@ -21,7 +21,6 @@ import { handleAutoUpdate } from "./auto-update.ts";
 import { loadSettings, readConfig } from "./settings.ts";
 import { protectString } from "./dpapi.ts";
 import { runFirstRunDialog } from "./first-run.ts";
-import { restartAgent } from "./restart.ts";
 import { TrayIntegration } from "./tray.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -157,13 +156,16 @@ async function runSettingsDialog(): Promise<void> {
   }
 
   if (changed) {
-    logger.info("settings changed; restarting agent to apply");
+    // Apply in the running process: hello carries name/server/token, so a
+    // fresh reconnect is enough (a full restart used to leave the old process
+    // owning the hub connection, pinning the tray at "connecting").
+    logger.info("settings changed; reconnecting with the new values");
+    name = newName;
+    serverUrl = newServer;
+    token = newToken;
+    connection?.reconfigure({ name: newName, serverUrl: newServer, token: newToken });
+    tray.setLabel(newName);
     tray.setState("connecting", newServer);
-    try {
-      await restartAgent({}, { platform: process.platform, execPath: process.execPath });
-    } catch (err) {
-      logger.warn(`restart failed: ${String(err)}; apply changes on next launch`);
-    }
   }
 }
 

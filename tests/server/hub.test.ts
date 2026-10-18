@@ -279,3 +279,58 @@ test("tool calls and auth events land in the audit trail", async () => {
   expect(failed).toMatchObject({ actor: "tool", ok: false });
   expect(String(failed!.error)).toMatch(/Unknown agent/);
 });
+
+test("a reconnecting agent takes over the previous connection", async () => {
+  const svc = makeService();
+  const first = makeAgent({ name: "T-16", agentId: "ag_takenover" });
+  const welcome = await first.start();
+  expect(welcome.agentId).toBe("ag_takenover");
+
+  // Same agent id, same version (a restart racing its own half-open socket).
+  const second = makeAgent({ name: "T-16-renamed", agentId: "ag_takenover" });
+  await second.start();
+
+  await waitFor(() => (first.lastClose?.code === 4003 ? true : undefined));
+  expect(first.lastClose).toEqual({ code: 4003, reason: "taken_over" });
+
+  const listed = svc.hub.list();
+  expect(listed.length).toBe(1);
+  expect(listed[0]!.name).toBe("T-16-renamed");
+  expect(listed[0]!.online).toBe(true);
+});
+
+test("an older agent build cannot take over a newer connection", async () => {
+  const svc = makeService();
+  const modern = makeAgent({ name: "T-17", version: "9.9.9", agentId: "ag_version_guard" });
+  await modern.start();
+
+  const legacy = makeAgent({ name: "T-17", version: "0.0.1", agentId: "ag_version_guard" });
+  await expect(legacy.start(3_000)).rejects.toThrow(/closed before welcome/);
+  expect(legacy.lastError?.code).toBe("superseded");
+
+  // the modern connection is untouched
+  const listed = svc.hub.list();
+  expect(listed.length).toBe(1);
+  expect(listed[0]!.version).toBe("9.9.9");
+  expect(listed[0]!.online).toBe(true);
+});
+
+test("the takeover fails in-flight jobs of the replaced connection", async () => {
+  const svc = makeService();
+  const first = makeAgent({
+    name: "T-18",
+    agentId: "ag_inflight",
+    respond: (msg) => (msg.jobType === "exec" ? { stdout: "never\n", sleepMs: 30_000 } : undefined),
+  });
+  await first.start();
+
+  const running = svc.hub.request("T-18", "exec", { command: "sleep" });
+  await waitFor(() => (svc.hub.stats().jobs.running === 1 ? true : undefined));
+
+  const second = makeAgent({ name: "T-18", agentId: "ag_inflight" });
+  await second.start();
+
+  const outcome = await running;
+  expect(outcome.ok).toBe(false);
+  expect(outcome.error).toMatch(/replaced by a newer connection/);
+});

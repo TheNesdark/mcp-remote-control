@@ -63,6 +63,8 @@ export interface FakeResponse {
 
 export class FakeAgent {
   agentId: string | null = null;
+  /** Last websocket close (code + reason), for takeover/rejection tests. */
+  lastClose: { code: number; reason: string } | null = null;
   welcome: WelcomeMsg | null = null;
   connected = false;
   lastError: ServerErrorMsg | null = null;
@@ -137,6 +139,7 @@ export class FakeAgent {
 
       ws.addEventListener("close", (event) => {
         clearTimeout(timer);
+        this.lastClose = { code: event.code, reason: event.reason };
         this.connected = false;
         this.clearHeartbeat();
         for (const t of this.jobTimers.values()) clearTimeout(t);

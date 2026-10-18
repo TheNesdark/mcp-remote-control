@@ -87,6 +87,11 @@ export class TrayIntegration {
     }
   }
 
+  /** Rename the agent in the tray tooltip/menu (the helper tracks `label`). */
+  setLabel(label: string): void {
+    this.opts.label = label;
+  }
+
   setState(state: ConnectionState, detail?: string): void {
     this.state = state;
     if (detail !== undefined) this.detail = detail;

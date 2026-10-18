@@ -12,7 +12,11 @@
  *      name, waits, re-launches itself and deletes <name>.old;
  *   3. `restart` without updatePath: just relaunch the same binary.
  *
- * The job result is sent *before* the process dies (the caller sees "ok" even
+ * On Windows this process **exits** shortly after spawning the script: the
+ * relaunched instance must be the only one running, otherwise the old process
+ * keeps the hub connection (same agent id) and the fresh instance can never
+ * log in — which is exactly what happened when applying settings changes. The
+ * job result is sent *before* the process dies (the caller sees "ok" even
  * though the websocket drops right after). On POSIX (dev hosts) the job is
  * validated and logged but does not actually kill anything: restarting a dev
  * agent managed by a shell loop is the operator's business.
@@ -32,8 +36,19 @@ export interface RestartDeps {
   platform?: NodeJS.Platform;
   execPath?: string;
   argv?: string[];
-  spawnDetached?: (scriptPath: string) => void;
+  /** Launches the script fully detached; returns false when that failed. */
+  spawnDetached?: (scriptPath: string) => boolean;
+  /**
+   * Arms the process exit once the detached relaunch script is running; the
+   * argument is the grace delay in ms (default: `process.exit(0)` after
+   * RESTART_EXIT_DELAY_MS). Overridable so unit tests observe the scheduled
+   * exit without dying.
+   */
+  scheduleExit?: (delayMs: number) => void;
 }
+
+/** Grace between spawning the script and exiting: enough to flush job.result. */
+export const RESTART_EXIT_DELAY_MS = 1_500;
 
 /** cmd script: swap exe (rename self -> .old, stage -> self), wait, relaunch, cleanup. */
 export function buildWindowsRestartScript(exe: string, updatePath: string | null, args: string[]): string {
@@ -78,27 +93,47 @@ export async function restartAgent(params: RestartParams, deps: RestartDeps = {}
   await Bun.write(scriptPath, buildWindowsRestartScript(execPath, params.updatePath ?? null, args));
 
   const spawn = deps.spawnDetached ?? defaultSpawnDetached;
-  spawn(scriptPath);
-  return { meta: { ok: true, platform, execPath, updating: Boolean(params.updatePath), script: basename(scriptPath) } };
+  if (!spawn(scriptPath)) {
+    return {
+      meta: {
+        ok: false,
+        platform,
+        execPath,
+        error: "could not launch the detached relaunch script; restart the agent manually to apply changes",
+        script: basename(scriptPath),
+      },
+    };
+  }
+
+  // This process must die or it keeps owning the hub connection (same agent
+  // id) and the relaunched instance can never connect. The script waits ~5s
+  // before starting the new instance, so exiting after a short grace period
+  // is safe; the grace lets the job.result frame flush first.
+  const scheduleExit = deps.scheduleExit ?? defaultScheduleExit;
+  scheduleExit(RESTART_EXIT_DELAY_MS);
+  return { meta: { ok: true, platform, execPath, updating: Boolean(params.updatePath), script: basename(scriptPath), exiting: true } };
 }
 
-function defaultSpawnDetached(scriptPath: string): void {
+/** Arm the process exit after `delayMs` (unref'd so it never holds the loop). */
+function defaultScheduleExit(delayMs: number): void {
+  const timer = setTimeout(() => process.exit(0), delayMs);
+  timer.unref?.();
+}
+
+function defaultSpawnDetached(scriptPath: string): boolean {
   // wmic spawns the cmd fully detached from this process' job; when wmic is
   // absent (future Windows), fall back to a `start` from cmd which detaches
   // from the agent process but not fully from its console session.
-  let wmicOk = false;
   try {
     const wmic = Bun.spawnSync(["wmic", "process", "call", "create", scriptPath], { timeout: 10_000 });
-    wmicOk = (wmic.exitCode ?? 1) === 0 && String(wmic.stdout ?? "").includes("ReturnValue = 0");
+    if ((wmic.exitCode ?? 1) === 0 && String(wmic.stdout ?? "").includes("ReturnValue = 0")) return true;
   } catch {
     // wmic.exe was removed in Windows 11 21H2+; fall through to cmd /c start.
   }
-  if (!wmicOk) {
-    try {
-      Bun.spawnSync(["cmd.exe", "/c", "start", "", "/min", scriptPath], { timeout: 10_000 });
-    } catch {
-      // Best-effort: the detached script may not survive the agent exit, but
-      // the swap still happened and the user can relaunch manually.
-    }
+  try {
+    const start = Bun.spawnSync(["cmd.exe", "/c", "start", "", "/min", scriptPath], { timeout: 10_000 });
+    return (start.exitCode ?? 1) === 0;
+  } catch {
+    return false;
   }
 }

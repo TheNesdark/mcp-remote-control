@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildWindowsRestartScript, restartAgent } from "../../agent/src/restart.ts";
+import { buildWindowsRestartScript, RESTART_EXIT_DELAY_MS, restartAgent } from "../../agent/src/restart.ts";
 
 test("windows restart script waits, swaps and relaunches", () => {
   const script = buildWindowsRestartScript("C:\\rc-agent.exe", "C:\\new.exe", ["--name", "PC-01"]);
@@ -35,26 +35,55 @@ test("restart on posix validates and defers to the supervisor", async () => {
   expect(meta.execPath).toBe("/usr/bin/bun");
 });
 
-test("windows restart spawns the detached script and reports it", async () => {
+test("windows restart spawns the detached script, reports it and arms the self-exit", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mrc-restart-"));
   const spawned: string[] = [];
+  const exitDelays: number[] = [];
   // execPath inside a temp dir so the .bat lands somewhere cleanable on any OS
   const res = await restartAgent(
     { updatePath: "C:\\staged\\new.exe", args: ["--name", "X"] },
     {
       platform: "win32",
       execPath: join(dir, "rc-agent.exe"),
-      spawnDetached: (script) => void spawned.push(script),
+      spawnDetached: (script) => {
+        spawned.push(script);
+        return true;
+      },
+      scheduleExit: (delayMs) => void exitDelays.push(delayMs),
     },
   );
-  const meta = res.meta as { updating: boolean; script: string };
+  const meta = res.meta as { updating: boolean; script: string; exiting?: boolean };
   expect(meta.updating).toBe(true);
+  expect(meta.exiting).toBe(true);
   expect(meta.script.endsWith(".bat")).toBe(true);
   expect(spawned.length).toBe(1);
   expect(spawned[0]!.endsWith(meta.script)).toBe(true);
+  // The old process must schedule its own death: the relaunched instance can
+  // not connect while this one holds the hub connection (same agent id).
+  expect(exitDelays).toEqual([RESTART_EXIT_DELAY_MS]);
 
   const content = await Bun.file(spawned[0]!).text();
   expect(content).toContain('move /y "C:\\staged\\new.exe"');
   expect(content).toContain('"--name" "X"');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("windows restart reports failure (and stays alive) when the script cannot start", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mrc-restart-"));
+  const exitDelays: number[] = [];
+  const res = await restartAgent(
+    {},
+    {
+      platform: "win32",
+      execPath: join(dir, "rc-agent.exe"),
+      spawnDetached: () => false,
+      scheduleExit: (delayMs) => void exitDelays.push(delayMs),
+    },
+  );
+  const meta = res.meta as { ok?: boolean; error?: string; exiting?: boolean };
+  expect(meta.ok).toBe(false);
+  expect(meta.error).toContain("relaunch script");
+  expect(meta.exiting).toBeUndefined();
+  expect(exitDelays).toEqual([]); // never exit on a failed relaunch
   rmSync(dir, { recursive: true, force: true });
 });

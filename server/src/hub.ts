@@ -17,6 +17,7 @@ import {
   parseAgentMsg,
   type ServerMsg,
 } from "@mrc/shared";
+import { compareVersions } from "@mrc/shared/version";
 import { appendJobOutcome, appendJobRejection, AuditLog } from "./audit.ts";
 import { HubError } from "./hub-error.ts";
 import { JobLimiter } from "./job-limits.ts";
@@ -342,8 +343,60 @@ export class Hub {
     const agentId = hello.agentId ?? verdict.agentId ?? `ag_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
     let record: AgentRecord | undefined = this.agents.get(agentId);
     if (record?.online) {
-      this.rejectHello(ws, "already_connected", `agent id '${agentId}' is already connected`);
-      return;
+      // A second process claims this agent id (restart race, half-open old
+      // socket, or a leftover instance that did not exit). Prefer the newer
+      // agent version so an OTA cannot be held hostage by the old process,
+      // otherwise last hello wins: adopt the newcomer and kick the previous
+      // socket with a terminal code the agent treats as fatal, so the loser
+      // exits instead of reconnecting in a loop.
+      if (compareVersions(hello.version, record.version) < 0) {
+        this.rejectHello(
+          ws,
+          "superseded",
+          `agent '${record.name}' already runs version ${record.version}; this ${hello.version} build was replaced`,
+        );
+        return;
+      }
+      const previous = record.ws;
+      logger.warn("agent reconnected, taking over the previous connection", {
+        agentId,
+        name: hello.name,
+        from: record.version,
+        to: hello.version,
+        remote: ws.remoteAddress,
+      });
+      this.opts.audit.append({
+        actor: "hub",
+        op: "agent:taken_over",
+        agent: record.name,
+        params: { agentId, by: ws.remoteAddress },
+        ok: true,
+      });
+      if (previous) {
+        this.bySocket.delete(previous);
+        try {
+          // 4003: agents treat it as fatal (auth-style rejection), which is
+          // exactly what a replaced instance should do — old agents from
+          // before the takeover code need this too.
+          previous.close(4003, "taken_over");
+        } catch {
+          // socket already gone
+        }
+        // The old process is gone with it: fail its in-flight jobs now instead
+        // of waiting for the timeout (handleClose would, but this socket is no
+        // longer mapped by the time its close event fires).
+        for (const [jobId, job] of this.pending) {
+          if (job.agentId !== record.agentId) continue;
+          this.finalizeJob(jobId, job, {
+            ...this.collectOutput(job),
+            ok: false,
+            durationMs: Date.now() - job.startedAt,
+            error: `agent '${record.name}' was replaced by a newer connection during the job`,
+          });
+        }
+      }
+      record.online = false;
+      record.ws = null;
     }
     if (!record) {
       record = {

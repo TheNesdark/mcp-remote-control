@@ -23,7 +23,10 @@ import { existsSync } from "node:fs";
 import { rename } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { WelcomeMsg } from "@mrc/shared";
+import { compareVersions } from "@mrc/shared/version";
 import { restartAgent } from "./restart.ts";
+
+export { compareVersions };
 
 export interface AutoUpdateOptions {
   /** The agent's own version (VERSION in index.ts). */
@@ -46,18 +49,6 @@ export type AutoUpdateDecision =
   | { action: "none"; reason: string }
   | { action: "update"; version: string; url: string }
   | { action: "skip"; reason: string };
-
-/** "0.5.10" > "0.5.9"; unparsable components count as 0. */
-export function compareVersions(a: string, b: string): number {
-  const parse = (v: string): number[] => v.split("-")[0]!.split(".").map((p) => Number.parseInt(p, 10) || 0);
-  const left = parse(a);
-  const right = parse(b);
-  for (let i = 0; i < Math.max(left.length, right.length); i++) {
-    const diff = (left[i] ?? 0) - (right[i] ?? 0);
-    if (diff !== 0) return diff > 0 ? 1 : -1;
-  }
-  return 0;
-}
 
 /** Resolve a possibly relative binary URL against the hub's http(s) origin. */
 export function resolveBinaryUrl(raw: string, serverUrl: string | undefined): string {

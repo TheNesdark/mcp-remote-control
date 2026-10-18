@@ -112,6 +112,31 @@ export class AgentConnection {
     this.wake?.();
   }
 
+  /**
+   * Apply new settings without a process restart: the next `hello` carries the
+   * new values (the agent id is untouched, so the hub re-adopts the agent).
+   * Only settings the hello frame carries are re-read; everything else still
+   * needs a restart.
+   */
+  reconfigure(opts: { name?: string; serverUrl?: string; token?: string }): void {
+    const changes: string[] = [];
+    if (opts.name !== undefined && opts.name !== this.opts.name) {
+      this.opts.name = opts.name;
+      changes.push("name");
+    }
+    if (opts.serverUrl !== undefined && opts.serverUrl !== this.opts.serverUrl) {
+      this.opts.serverUrl = opts.serverUrl;
+      changes.push("server");
+    }
+    if (opts.token !== undefined && opts.token !== this.opts.token) {
+      this.opts.token = opts.token;
+      changes.push("token");
+    }
+    if (changes.length === 0) return;
+    this.log("info", `settings applied (${changes.join(", ")}); reconnecting`);
+    this.reconnectNow();
+  }
+
   pause(): void {
     this.setPaused(true);
   }
@@ -164,6 +189,9 @@ export class AgentConnection {
         return;
       }
       if (close.code === 4003 && close.reason !== "heartbeat timeout") {
+        // Also covers "taken_over": the hub adopted a newer instance of this
+        // agent id (restart race or a settings relaunch), so we are the stale
+        // one — exiting stops two processes from fighting over the connection.
         this.opts.onFatal?.(`server rejected this agent: ${close.reason || "unknown reason"}`);
         return;
       }
