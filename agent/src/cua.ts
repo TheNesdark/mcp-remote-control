@@ -17,8 +17,10 @@
  *    first `cua` call. No installer step needed.
  */
 import { readdirSync } from "node:fs";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import type { CuaParams } from "@mrc/shared";
 import CUA_CS from "../cua/mrc-cua.cs" with { type: "text" };
 import type { ShortJobResult } from "./job-result.ts";
@@ -85,9 +87,11 @@ async function compileSidecar(target: string, dir: string, cscPath: string): Pro
   mkdirSync(dir, { recursive: true });
   const cs = join(dir, "mrc-cua.cs");
   writeFileSync(cs, CUA_CS, "utf8");
+  writeFileSync(join(dir, `${CUA_EXE}.sha`), cuaSourceSha(), "utf8");
 
+  // WindowsBase provides the Rect type used by UIA BoundingRectangle.
   const refs: string[] = [];
-  for (const asm of ["UIAutomationClient", "UIAutomationTypes"]) {
+  for (const asm of ["UIAutomationClient", "UIAutomationTypes", "WindowsBase"]) {
     const dll = findInGacs(asm);
     if (!dll) throw new Error(`cua sidecar compilation failed: ${asm}.dll not found in the GAC`);
     refs.push(`/r:${dll}`);
@@ -98,7 +102,7 @@ async function compileSidecar(target: string, dir: string, cscPath: string): Pro
   refs.push(`/r:${join(runtime, "System.Windows.Forms.dll")}`);
   refs.push(`/r:${join(runtime, "System.Drawing.dll")}`);
 
-  const args = ["/nologo", "/warn:0", `/out:${target}`, ...refs, cs];
+  const args = ["/nologo", "/warn:0", "/target:winexe", `/out:${target}`, ...refs, cs];
   const proc = Bun.spawn([cscPath, ...args], { stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, code] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -111,19 +115,37 @@ async function compileSidecar(target: string, dir: string, cscPath: string): Pro
   }
 }
 
-/** Returns the exe path, compiling the embedded sources when missing. */
+function cuaSourceSha(): string {
+  return createHash("sha256").update(CUA_CS, "utf8").digest("hex");
+}
+
+/** Returns the exe path, compiling the embedded sources when missing/stale. */
 export async function ensureCuaExe(opts: CuaRunnerOptions = {}): Promise<string> {
+  const provisionDir = opts.provisionDir ?? join(process.env.LOCALAPPDATA ?? dirname(process.execPath), "mrc-remote-control", "cua");
+  const provisioned = join(provisionDir, CUA_EXE);
   for (const candidate of cuaExeCandidates(opts)) {
-    if (existsSync(candidate)) return candidate;
+    if (!existsSync(candidate)) continue;
+    // Free candidates win, EXCEPT the provisioned exe: its sources live inside
+    // the agent, so a new deployment ships a new .cs and the compiled binary
+    // has to be rebuilt (staleness check by hash marker).
+    if (candidate !== provisioned) return candidate;
+    const shaPath = join(provisionDir, `${CUA_EXE}.sha`);
+    let current = "";
+    try {
+      current = readFileSync(shaPath, "utf8").trim();
+    } catch {
+      // missing marker => compiled by an older agent build: recompile
+    }
+    if (current === cuaSourceSha()) return provisioned;
+    break;
   }
   if (process.platform !== "win32") {
     throw new Error("cua sidecar not found (set MRC_CUA_EXE or place mrc-cua.exe next to the agent)");
   }
   const cscPath = opts.csc ?? findCsc();
   if (!cscPath) throw new Error("cua sidecar not found and csc.exe is unavailable (no .NET Framework 4.8)");
-  const local = opts.provisionDir ?? join(process.env.LOCALAPPDATA ??dirname(process.execPath), "mrc-remote-control", "cua");
-  const target = join(local, CUA_EXE);
-  if (!existsSync(target)) await compileSidecar(target, local, cscPath);
+  const target = provisioned;
+  await compileSidecar(target, provisionDir, cscPath);
   return target;
 }
 
@@ -133,11 +155,16 @@ export async function ensureCuaExe(opts: CuaRunnerOptions = {}): Promise<string>
 
 export async function runCuaCall(params: CuaParams, opts: CuaRunnerOptions = {}): Promise<ShortJobResult> {
   const exe = await ensureCuaExe(opts);
+  // Helper for the Bun pipe truncation seen on Windows: the sidecar mirrors its
+  // JSON to a temp file we read after the process exits (near-atomic), keeping
+  // the stdout read as a fallback for older sidecars.
+  const outPath = join(tmpdir(), `mrc-cua-out-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.json`);
   const argv: string[] = [exe, params.tool];
   for (const [key, value] of Object.entries(params.args ?? {})) {
     if (value === undefined) continue;
     argv.push(`--${key}`, String(value));
   }
+  argv.push("--out", outPath);
   const child = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe" });
   const timeoutMs = params.timeoutMs ?? CUA_DEFAULT_TIMEOUT_MS;
   // Two guards: kill the process at timeout, and reject shortly after so a
@@ -171,7 +198,11 @@ export async function runCuaCall(params: CuaParams, opts: CuaRunnerOptions = {})
     if (code !== 0) {
       throw new Error(`cua sidecar exited ${code}${stderr.trim() ? `: ${stderr.trim().slice(0, 200)}` : ""}`);
     }
-    const parsed = parseSidecarOutput(stdout);
+    let payload = stdout;
+    if (existsSync(outPath)) {
+      payload = readFileSync(outPath, "utf8");
+    }
+    const parsed = parseSidecarOutput(payload, exe, stderr);
     if (typeof parsed.ok !== "boolean") throw new Error("cua sidecar returned invalid JSON");
     if (!parsed.ok) throw new Error(parsed.error != null ? String(parsed.error) : "cua call failed");
     const meta: Record<string, unknown> = { ...parsed, ok: true };
@@ -179,12 +210,17 @@ export async function runCuaCall(params: CuaParams, opts: CuaRunnerOptions = {})
     return { meta } satisfies ShortJobResult;
   } finally {
     clearTimeout(killer);
+    try {
+      rmSync(outPath, { force: true });
+    } catch {
+      // best effort
+    }
   }
 }
 
 type SidecarOutput = { ok?: boolean; error?: unknown; [key: string]: unknown };
 
-function parseSidecarOutput(stdout: string): SidecarOutput {
+function parseSidecarOutput(stdout: string, exe?: string, stderr?: string): SidecarOutput {
   const trimmed = stdout.trim();
   if (trimmed.length === 0) throw new Error("cua sidecar produced no output");
   // One-shot protocol: the whole stdout is the JSON object; tolerate stray
@@ -196,6 +232,18 @@ function parseSidecarOutput(stdout: string): SidecarOutput {
     } catch {
       start = trimmed.indexOf("{", start + 1);
     }
+  }
+  // Diagnostics: persist the raw bytes so the hub can pull them when the JSON
+  // contract is broken (encoding/interference).
+  try {
+    const dump = join(process.env.LOCALAPPDATA ?? ".", "mrc-cua-parse-debug.txt");
+    writeFileSync(
+      dump,
+      `len=${Buffer.byteLength(stdout, "utf8")} exe=${exe ?? "?"}\nstderr=${(stderr ?? "").slice(0, 400)}\nstdout=${stdout}`,
+      "utf8",
+    );
+  } catch {
+    // best effort
   }
   throw new Error("cua sidecar output is not JSON");
 }

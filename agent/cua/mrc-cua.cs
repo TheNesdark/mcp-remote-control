@@ -17,6 +17,7 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Forms;
 
@@ -36,10 +37,10 @@ static class MrcCua
     [DllImport("user32.dll")] static extern bool IsWindow(IntPtr hWnd);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
 
-    const int MOUSEEVENTF_LEFTDOWN = 0x0002, MOUSEEVENTF_LEFTUP = 0x0004;
-    const int MOUSEEVENTF_RIGHTDOWN = 0x0008, MOUSEEVENTF_RIGHTUP = 0x0010;
-    const int MOUSEEVENTF_MIDDLEDOWN = 0x0020, MOUSEEVENTF_MIDDLEUP = 0x0040;
-    const int MOUSEEVENTF_WHEEL = 0x0800;
+    const uint MOUSEEVENTF_LEFTDOWN = 0x0002, MOUSEEVENTF_LEFTUP = 0x0004;
+    const uint MOUSEEVENTF_RIGHTDOWN = 0x0008, MOUSEEVENTF_RIGHTUP = 0x0010;
+    const uint MOUSEEVENTF_MIDDLEDOWN = 0x0020, MOUSEEVENTF_MIDDLEUP = 0x0040;
+    const uint MOUSEEVENTF_WHEEL = 0x0800;
     const uint KEYEVENTF_KEYUP = 0x0002;
     const uint KEYEVENTF_UNICODE = 0x0004;
 
@@ -59,7 +60,6 @@ static class MrcCua
 
     static int Main(string[] args)
     {
-        try { Console.OutputEncoding = new UTF8Encoding(false); } catch { /* redirected console */ }
         if (args.Length < 1) { Fail("usage: mrc-cua.exe <tool> [--param value ...]"); return 2; }
         string tool = args[0];
         Dictionary<string, string> p = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -85,8 +85,15 @@ static class MrcCua
                 case "focus": result = CmdFocus(p); break;
                 default: Fail("unknown tool '" + tool + "'"); return 2;
             }
-            Console.Out.Write(result);
-            Console.Out.Flush();
+            Emit(result);
+            // Mirrored to a file when the caller asks for it: Bun (and other
+            // pipe readers) can truncate large redirected stdout on Windows,
+            // so the agent passes --out and reads the file instead.
+            string outPath = Param(p, "out");
+            if (outPath.Length > 0)
+            {
+                try { File.WriteAllBytes(outPath, Encoding.UTF8.GetBytes(result)); } catch { /* best effort */ }
+            }
             return 0;
         }
         catch (Exception ex)
@@ -98,8 +105,21 @@ static class MrcCua
 
     static void Fail(string error)
     {
-        Console.Out.Write("{\"ok\":false,\"error\":" + JsonStr(error) + "}");
-        Console.Out.Flush();
+        Emit("{\"ok\":false,\"error\":" + JsonStr(error) + "}");
+    }
+
+    /**
+     * Writes the whole response as raw UTF-8 bytes to the redirected stdout.
+     * Console.Out with a changed OutputEncoding drops the trailing byte under
+     * .NET Framework when stdout is a pipe (observed live: the final `}` of the
+     * JSON never reached the reader), so we bypass the console writer entirely.
+     */
+    static void Emit(string json)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(json);
+        Stream stdout = Console.OpenStandardOutput();
+        stdout.Write(bytes, 0, bytes.Length);
+        stdout.Flush();
     }
 
     static string JsonStr(string value)
@@ -168,6 +188,7 @@ static class MrcCua
                 AutomationElement.AutomationElementInformation c = w.Current;
                 if (c.ProcessId != pid) continue;
                 Rect r = c.BoundingRectangle;
+                if (!RectFinite(r)) continue;
                 long area = (long)r.Width * (long)r.Height;
                 if (area > bestArea) { bestArea = area; best = w; }
             }
@@ -201,8 +222,26 @@ static class MrcCua
           .Append(",\"class\":").Append(JsonStr(c.ClassName == null ? "" : c.ClassName))
           .Append(",\"title\":").Append(JsonStr(c.Name == null ? "" : c.Name))
           .Append(",\"visible\":").Append(IsWindowVisible((IntPtr)c.NativeWindowHandle) ? "true" : "false")
-          .AppendFormat(System.Globalization.CultureInfo.InvariantCulture,
-            ",\"bounds\":{{\"x\":{0:0},\"y\":{1:0},\"width\":{2:0},\"height\":{3:0}}}}}", r.X, r.Y, r.Width, r.Height);
+          .Append(",\"bounds\":{\"x\":").Append(Num(r.X))
+          .Append(",\"y\":").Append(Num(r.Y))
+          .Append(",\"width\":").Append(Num(r.Width))
+          .Append(",\"height\":").Append(Num(r.Height))
+          .Append("}}"); // close bounds obj + close the window record
+    }
+
+    /** UIA hands out Infinity/NaN rects for invisible ghost windows (AnyDesk...). */
+    static bool RectFinite(Rect r)
+    {
+        return !double.IsNaN(r.X) && !double.IsInfinity(r.X)
+            && !double.IsNaN(r.Y) && !double.IsInfinity(r.Y)
+            && !double.IsNaN(r.Width) && !double.IsInfinity(r.Width)
+            && !double.IsNaN(r.Height) && !double.IsInfinity(r.Height);
+    }
+
+    static string Num(double v)
+    {
+        if (double.IsNaN(v) || double.IsInfinity(v)) return "0";
+        return ((long)Math.Round(v)).ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
 
     static string ProcName(int id)
@@ -230,13 +269,16 @@ static class MrcCua
         sb.Append(",\"title\":").Append(JsonStr(c.Name == null ? "" : c.Name));
         sb.Append(",\"class\":").Append(JsonStr(c.ClassName == null ? "" : c.ClassName));
         Rect rc = c.BoundingRectangle;
-        sb.AppendFormat(System.Globalization.CultureInfo.InvariantCulture,
-          ",\"bounds\":{{\"x\":{0:0},\"y\":{1:0},\"width\":{2:0},\"height\":{3:0}}}", rc.X, rc.Y, rc.Width, rc.Height);
+        sb.Append(",\"bounds\":{\"x\":").Append(Num(rc.X));
+        sb.Append(",\"y\":").Append(Num(rc.Y));
+        sb.Append(",\"width\":").Append(Num(rc.Width));
+        sb.Append(",\"height\":").Append(Num(rc.Height));
+        sb.Append("}");
         sb.Append(",\"element_count\":").Append(g_count);
         sb.Append(",\"tree\":\"");
         EscapeInto(sb, string.Join("\n", lines.ToArray()));
         sb.Append("\"");
-        if (Flag(p, "include_screenshot") || Have(p, "screenshot_path"))
+        if ((Flag(p, "include_screenshot") || Have(p, "screenshot_path")) && RectFinite(rc) && rc.Width > 1 && rc.Height > 1)
         {
             string path = Have(p, "screenshot_path") ? p["screenshot_path"] :
                 Path.Combine(Path.GetTempPath(), "mrc-cua-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".png");
@@ -262,6 +304,7 @@ static class MrcCua
 
     static string BoundsText(Rect r)
     {
+        if (!RectFinite(r)) return "screen(?)";
         return string.Format(System.Globalization.CultureInfo.InvariantCulture, "screen({0:0},{1:0} {2:0}x{3:0})", r.X, r.Y, r.Width, r.Height);
     }
 
@@ -350,8 +393,8 @@ static class MrcCua
         bool dbl = Flag(p, "double_click");
         if (!SetCursorPos(x, y)) throw new InvalidOperationException("SetCursorPos failed");
         System.Threading.Thread.Sleep(60);
-        int down = button == "right" ? MOUSEEVENTF_RIGHTDOWN : button == "middle" ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_LEFTDOWN;
-        int up = button == "right" ? MOUSEEVENTF_RIGHTUP : button == "middle" ? MOUSEEVENTF_MIDDLEUP : MOUSEEVENTF_LEFTUP;
+        uint down = button == "right" ? MOUSEEVENTF_RIGHTDOWN : button == "middle" ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_LEFTDOWN;
+        uint up = button == "right" ? MOUSEEVENTF_RIGHTUP : button == "middle" ? MOUSEEVENTF_MIDDLEUP : MOUSEEVENTF_LEFTUP;
         if (dbl)
         {
             mouse_event(down, 0, 0, 0, UIntPtr.Zero); mouse_event(up, 0, 0, 0, UIntPtr.Zero);
@@ -484,7 +527,14 @@ static class MrcCua
         {
             AutomationElement.AutomationElementInformation c = FindTarget(p).Current;
             Rect r = c.BoundingRectangle;
-            ShotRect(new Rectangle((int)r.X, (int)r.Y, (int)r.Width, (int)r.Height), path);
+            if (RectFinite(r) && r.Width > 1 && r.Height > 1)
+            {
+                ShotRect(new Rectangle((int)r.X, (int)r.Y, (int)r.Width, (int)r.Height), path);
+            }
+            else
+            {
+                ShotRect(new Rectangle(0, 0, GetSystemMetrics(0), GetSystemMetrics(1)), path);
+            }
         }
         else
         {
