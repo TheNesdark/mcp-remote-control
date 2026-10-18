@@ -169,6 +169,12 @@ export class FakeAgent {
     this.log(paused ? "presence: paused" : "presence: resumed");
   }
 
+  /** Publish a new capability set (e.g. after Cua Driver provisioning). */
+  setCaps(caps: string[]): void {
+    this.send({ type: "caps", caps });
+    this.log(`caps: ${caps.join(",")}`);
+  }
+
   stop(): void {
     this.clearHeartbeat();
     this.ws?.close(1000, "client stop");

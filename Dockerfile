@@ -48,16 +48,12 @@ RUN bun run build:exe --out /app/agent/rc-agent.exe
 # ---------------------------------------------------------------------------
 FROM oven/bun:1.4.3 AS cua-build
 WORKDIR /app
+COPY package.json bun.lock ./
+COPY shared/package.json ./shared/
 COPY shared/cua-version.ts ./shared/cua-version.ts
-RUN bun -e 'const m = await import("./shared/cua-version.ts");
-const url = `https://github.com/trycua/cua/releases/download/cua-driver-rs-v${m.CUA_DRIVER_VERSION}/cua-driver-rs-${m.CUA_DRIVER_VERSION}-windows-x86_64-binary.zip`;
-const res = await fetch(url);
-if (!res.ok) throw new Error(`Cua Driver download failed: HTTP ${res.status} ${url}`);
-const bytes = new Uint8Array(await res.arrayBuffer());
-const hash = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
-if (hash !== m.CUA_DRIVER_SHA256) throw new Error(`Cua Driver sha256 mismatch: got ${hash}, pinned ${m.CUA_DRIVER_SHA256}`);
-await Bun.write("/app/agent/cua-driver.zip", bytes);
-console.log(`cua-driver ${m.CUA_DRIVER_VERSION} ok (${bytes.length} bytes)`);'
+COPY scripts/fetch-cua-driver.ts ./scripts/fetch-cua-driver.ts
+RUN bun install --frozen-lockfile --production
+RUN mkdir -p /app/agent && bun run scripts/fetch-cua-driver.ts /app/agent
 
 # ---------------------------------------------------------------------------
 # 2) runtime: solo lo necesario para servir (sin sources del agente ni tests)

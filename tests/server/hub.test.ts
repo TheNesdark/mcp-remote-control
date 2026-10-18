@@ -334,3 +334,15 @@ test("the takeover fails in-flight jobs of the replaced connection", async () =>
   expect(outcome.ok).toBe(false);
   expect(outcome.error).toMatch(/replaced by a newer connection/);
 });
+
+test("a caps frame refreshes the agent's published capabilities", async () => {
+  const svc = makeService();
+  const agent = makeAgent({ name: "T-CAPS", caps: ["exec"] });
+  await agent.start();
+
+  expect(svc.hub.list()[0]!.caps).toEqual(["exec"]);
+
+  agent.setCaps(["exec", "cua", "cua/0.36.0"]);
+  await waitFor(() => svc.hub.list()[0]!.caps.includes("cua") ? true : undefined);
+  expect(svc.hub.list()[0]!.caps).toEqual(["exec", "cua", "cua/0.36.0"]);
+});
