@@ -203,10 +203,14 @@ rechaza versiones incompatibles con mensaje explícito.
 | `agent_net_test` | `agent`, `host`, `port?`, `count?`, `dns?`, `ping?` | direcciones resueltas, pings y resultado del connect TCP desde la máquina remota |
 | `agent_power` | `agent`, `action` (`shutdown`\|`restart`\|`logoff`\|`lock`\|`sleep`\|`hibernate`\|`abort`), `delaySeconds?`, `message?`, `force?`, **`confirm`** (salvo lock/abort) | acción programada; la caída del agente tras reiniciar es el éxito |
 | `agent_message` | `agent`, `text`, `title?`, `style?`, `buttons?` | muestra un message box en el escritorio remoto (detached, sin respuesta del usuario) |
+| `agent_software` | `agent`, `filter?`, `scope` (`machine`\|`user`\|`all`, def machine), `top?` | inventario de programas instalados (registro Uninstall 64/32-bit, deduplicado): name, version, publisher, installDate, installLocation |
+| `agent_time` | `agent` | hora local/UTC, zona, desfase contra el reloj del servidor (`offsetFromServerMs`) y estado NTP (servicio W32Time, fuente, última sincronización) |
+| `agent_sessions` | `agent`, `interactiveOnly?` (def true) | sesiones de logon vía CIM (locale-proof): usuario, tipo (interactive/remote-interactive/…), `count`, hora de logon; con `interactiveOnly=false` incluye service/batch/network |
 
 Los wrappers de Windows (`agent_services`, `agent_service_control`, `agent_eventlog`,
 `agent_net_ports`, `agent_net_test`, `agent_power`, `agent_message`, `agent_fs_search`,
-`agent_fs_mkdir`, `agent_fs_move`, `agent_fs_copy`, `agent_fs_delete`) **no requieren
+`agent_fs_mkdir`, `agent_fs_move`, `agent_fs_copy`, `agent_fs_delete`, `agent_software`,
+`agent_time`, `agent_sessions`) **no requieren
 recompilar el agente**: el servidor compone un script PowerShell fijo a partir de los
 argumentos validados y el agente devuelve un único sobre JSON (`{ok, data}` /
 `{ok, error}`), con salida no-ASCII en UTF-8 sin BOM. Fallan rápido con `needs Windows`
@@ -296,6 +300,7 @@ mcp-remote-control/
 - **Actualización 2026-10-17 (primera máquina Windows real conectada — DESKTOP-S7PG32F)**: validado en vivo por túnel: `agent_exec` (cmd + powershell), `agent_info`, `agent_ps_list`, transferencias y screenshot (por fallback manual). Hallazgos corregidos ya: AMSI bloqueaba el script PowerShell del screenshot → **fallback `csc.exe`** (Plan B del plan) implementado y testeado; MCP-HTTP tenía sesión única (el 2º cliente/reconexión recibía 400) → **multi-sesión**; `cwd` UNC heredado del share rompía `cmd.exe` → default a `SystemRoot`. F6 adelantado: **TLS nativo** (`MRC_TLS_CERT/KEY` + `--tls-insecure` en el agente), **self-update OTA** (`agent_restart` + `updatePath`, swap de exe + relanzamiento detached) y **CI** (workflow con job `windows-latest`) + script de named tunnel para URLs estables. Pendiente en esa máquina: reiniciar el agente con el exe nuevo (v0.5.3 en el share) para screenshot automático.
 - Siguiente: **F6** restante (modo servicio, firma de código, servicios Windows, UI automation, multi-monitor).
 - ✅ **Actualización 2026-10-17 (F6 adelantado, 3 lotes de tools, solo servidor — sin recompilar el agente)**: (1) *Windows ops* `agent_services`, `agent_service_control`, `agent_eventlog`, `agent_net_ports`, `agent_net_test`, `agent_fs_hash`; (2) *energía y ficheros* `agent_power`, `agent_message`, `agent_fs_search/mkdir/move/copy/delete`; (3) *jobs asíncronos* `agent_exec_async`, `agent_job_status/list/cancel` con registro retenido en el hub (`MRC_JOB_HISTORY_MAX`, `MRC_JOB_HISTORY_TTL_MS`, salida acotada) y cancelación del árbol remoto. **179 tests + e2e en verde**, typecheck limpio. Todo el texto nuevo (descripciones, errores, docs) en inglés salvo esta bitácora.
+- ✅ **Actualización 2026-10-18 (lote de diagnóstico, solo servidor)**: `GET /health` enriquecido (uptime, contadores de flota/jobs, `lastAgentSeenAt`) sobre `hub.stats()`; tools `agent_software` (inventario desde las claves Uninstall 64/32-bit + HKCU, deduplicado), `agent_time` (reloj/zona + desfase medido contra el servidor + estado W32Time/NTP best-effort) y `agent_sessions` (logones vía CIM `Win32_LogonSession` + asociación `Win32_LoggedOnUser`, locale-proof; por defecto solo interactive/RDP); retención de screenshots `MRC_SCREENSHOT_KEEP` (def 200; poda tras cada guardado y al arrancar, solo `.png/.jpg` regulares del directorio). **192 tests + e2e en verde**, typecheck limpio.
 
 ---
 

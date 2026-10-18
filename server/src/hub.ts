@@ -68,6 +68,14 @@ export interface AgentSummary {
   lastSeen: string | null;
 }
 
+/** Fleet-wide counters for GET /health (cheap, no job involved). */
+export interface HubStats {
+  agents: { total: number; online: number; paused: number };
+  jobs: { running: number; retained: number };
+  /** Most recent heartbeat/connect/disconnect across the fleet, in ms. */
+  lastAgentSeenAt: number | null;
+}
+
 export interface JobOutcome {
   jobId: string;
   ok: boolean;
@@ -784,6 +792,24 @@ export class Hub {
         connectedAt: a.connectedAt ? new Date(a.connectedAt).toISOString() : null,
         lastSeen: a.lastSeen ? new Date(a.lastSeen).toISOString() : null,
       }));
+  }
+
+  /** Counters for GET /health: fleet size, jobs in flight, last agent activity. */
+  stats(): HubStats {
+    let online = 0;
+    let paused = 0;
+    let lastAgentSeenAt: number | null = null;
+    for (const record of this.agents.values()) {
+      if (record.online) online += 1;
+      if (record.paused) paused += 1;
+      const seen = record.lastSeen ?? record.connectedAt;
+      if (seen !== null && (lastAgentSeenAt === null || seen > lastAgentSeenAt)) lastAgentSeenAt = seen;
+    }
+    return {
+      agents: { total: this.agents.size, online, paused },
+      jobs: { running: this.pending.size, retained: this.retained.size },
+      lastAgentSeenAt,
+    };
   }
 
   private sweep(): void {

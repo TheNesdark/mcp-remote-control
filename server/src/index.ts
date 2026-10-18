@@ -57,6 +57,7 @@ if (!noStdio) {
   const mcp = new McpServer({ name: "mcp-remote-control", version: VERSION });
   registerTools(mcp, service.hub, {
     screenshotDir: config.screenshotDir,
+    screenshotKeep: config.screenshotKeep,
     screenshotBaseUrl: screenshotBaseUrl(config),
     audit: service.audit,
   });

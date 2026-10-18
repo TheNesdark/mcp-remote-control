@@ -66,6 +66,7 @@ export function testServerConfig(token: string, overrides: Partial<ServerConfig>
     defaultJobTimeoutMs: 2_000,
     maxJobOutputBytes: 1_000_000,
     screenshotDir: "/tmp/mrc-test-screenshots",
+    screenshotKeep: 0,
     dataDir: "/tmp/mrc-test-data",
     dbPath: ":memory:",
     auditPath: "/tmp/mrc-test-audit.jsonl",

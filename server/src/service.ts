@@ -10,6 +10,7 @@ import { logger, setLogLevel } from "./log.ts";
 import { createMcpHttpHandler, MCP_HTTP_PATH } from "./mcp-http.ts";
 import { createRegistry, type TokenRegistry } from "./registry.ts";
 import { handleScreenshotRequest, SCREENSHOT_HTTP_PREFIX } from "./screenshots-http.ts";
+import { scheduleScreenshotPrune } from "./screenshots-retention.ts";
 import { AgentStore } from "./store.ts";
 
 /** TLS material for Bun.serve; undefined keeps the plain ws://+http:// faces. */
@@ -43,6 +44,7 @@ export interface Service {  server: Server<WsData>;
 
 /** Start the websocket hub that remote agents connect to. */
 export function createService(config: ServerConfig, version = "0.0.0"): Service {
+  const startedAt = Date.now();
   setLogLevel(config.logLevel);
   const store = new AgentStore(config.dbPath);
   const registry = createRegistry(store, {
@@ -89,6 +91,8 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
       : {}),
   });
   hub.start();
+  // Bound the screenshot directory from previous runs before serving anything.
+  scheduleScreenshotPrune(config.screenshotDir, config.screenshotKeep);
 
   if (config.requireDbTokens) {
     logger.info("auth mode: per-agent tokens only (legacy shared token disabled)");
@@ -114,6 +118,18 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
           service: "mcp-remote-control",
           ok: true,
           agents: hub.list().length,
+        });
+      }
+      // Rich health for Docker HEALTHCHECK / monitoring: no jobs, no auth.
+      if (url.pathname === "/health") {
+        const stats = hub.stats();
+        return Response.json({
+          ok: true,
+          version,
+          uptimeSec: Math.round((Date.now() - startedAt) / 1000),
+          agents: stats.agents,
+          jobs: stats.jobs,
+          lastAgentSeenAt: stats.lastAgentSeenAt ? new Date(stats.lastAgentSeenAt).toISOString() : null,
         });
       }
       // Auto-update: hand out the published agent binary (opt-in via
@@ -161,6 +177,7 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
     const handleMcp = createMcpHttpHandler(hub, {
       version,
       screenshotDir: config.screenshotDir,
+      screenshotKeep: config.screenshotKeep,
       screenshotBaseUrl: screenshotBaseUrl(config),
       audit,
       bearerToken: config.token,

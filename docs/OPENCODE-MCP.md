@@ -81,6 +81,7 @@ Tuning knobs (leave unset unless you have a reason):
 | `MRC_DB_PATH` | `<data>/mcp.db` | Override the SQLite registry path. |
 | `MRC_AUDIT_PATH` | `<data>/audit.jsonl` | Override the audit trail path. |
 | `MRC_SCREENSHOT_DIR` | `<data>/screenshots` | Override where `agent_screenshot` saves images. |
+| `MRC_SCREENSHOT_KEEP` | `200` | Newest screenshots to keep on disk; older ones are pruned after each capture and at boot (0 = keep everything). |
 | `MRC_TLS_CERT` / `MRC_TLS_KEY` | _(off)_ | PEM pair: both faces serve `wss://` + `https://`. |
 
 Auto-update (OTA) — no variable needed when the image ships the build:
@@ -267,6 +268,24 @@ To keep the agent from using the tools without asking, restrict them by name:
    running synchronous jobs, and `agent_job_cancel` kills the whole remote
    process tree (the agent confirms; the server gives up after a couple of
    seconds and marks the job failed).
+11. Diagnostics (fixed PowerShell probes, Windows only):
+
+   ```
+   agent_software(agent="PC-01", filter="Office")
+   agent_time(agent="PC-01")
+   agent_sessions(agent="PC-01")
+   ```
+
+   - `agent_software` inventories installed programs from the Add/Remove
+     Programs registry keys (64-bit, 32-bit, optionally per-user), deduplicated
+     and filtered by a case-insensitive substring. Silent installers and
+     portable apps are not listed, same as Settings > Apps.
+   - `agent_time` reads the clock, timezone and NTP health and measures the
+     agent's clock against the server's (`offsetFromServerMs`). Read this first
+     when a machine has Kerberos / domain-logon errors.
+   - `agent_sessions` shows who is logged on (console and RDP by default) via
+     CIM, so it works on any display language; `interactiveOnly=false` adds
+     service/batch/network sessions collapsed per user.
 
 ### Saving a screenshot on the client's machine
 

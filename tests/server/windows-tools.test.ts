@@ -55,6 +55,52 @@ function defaultResponse(msg: JobRequestMsg, command: string): FakeResponse {
   if (msg.jobType === "fs.hash") return { meta: { sha256: "a".repeat(64), size: 4096 } };
   if (command.includes("Get-WinEvent")) return { stdout: json({ log: "System", count: 1, events: [EVENT] }) };
   if (command.includes("Get-NetTCPConnection")) return { stdout: json({ total: 1, connections: [CONNECTION] }) };
+  if (command.includes("Win32_LogonSession")) {
+    return {
+      stdout: json({
+        total: 1,
+        sessions: [
+          {
+            user: "CONTOSO\\paciente",
+            logonId: "123456",
+            logonType: 2,
+            logonTypeLabel: "interactive",
+            count: 1,
+            logonTime: "2026-10-17T08:30:00+02:00",
+            authenticationPackage: "Kerberos",
+          },
+        ],
+      }),
+    };
+  }
+  if (command.includes("Get-TimeZone")) {
+    return {
+      stdout: json({
+        local: "2026-10-17T12:00:01.000+02:00",
+        utc: new Date(Date.now() + 1_500).toISOString(),
+        timezone: "Romance Standard Time",
+        ntp: { service: "Running", source: "time.contoso.local", lastSync: "2026/10/17 10:59:58" },
+      }),
+    };
+  }
+  if (command.includes("CurrentVersion\\Uninstall")) {
+    return {
+      stdout: json({
+        total: 1,
+        scope: "machine",
+        programs: [
+          {
+            name: "Office 16",
+            version: "16.0.14332",
+            publisher: "Microsoft Corporation",
+            installDate: "20260101",
+            installLocation: "C:\\Program Files\\Microsoft Office",
+            scope: "machine",
+          },
+        ],
+      }),
+    };
+  }
   if (command.includes("Test-NetConnection")) {
     return {
       stdout: json({
@@ -162,6 +208,9 @@ test("the Windows helpers and job-history tools are registered", async () => {
     "agent_job_status",
     "agent_job_list",
     "agent_job_cancel",
+    "agent_software",
+    "agent_time",
+    "agent_sessions",
   ]) {
     expect(tools).toContain(name);
   }
@@ -327,4 +376,52 @@ test("agent_exec_async, agent_job_status and agent_job_cancel work over MCP", as
   expect(unknown.data.error).toContain("unknown_job");
 
   expect(started.commands[0]).toBe("backup.cmd");
+});
+
+test("agent_software returns the parsed inventory", async () => {
+  const started = await startWindows();
+  const result = await call("agent_software", { agent: "W-01", filter: "office", scope: "all" });
+  expect(result.isError).toBe(false);
+  expect(result.data).toMatchObject({ total: 1 });
+  expect(result.data.programs[0]).toMatchObject({ name: "Office 16", version: "16.0.14332" });
+
+  const script = started.commands[0]!;
+  expect(script).toContain("CurrentVersion\\Uninstall");
+  expect(script).toContain("$__scope = 'all'");
+  expect(script).toContain("$__filter = 'office'");
+});
+
+test("agent_time reports the clock and the measured offset against the server", async () => {
+  const started = await startWindows();
+  const before = Date.now();
+  const result = await call("agent_time", { agent: "W-01" });
+  expect(result.isError).toBe(false);
+  expect(result.data.timezone).toBe("Romance Standard Time");
+  expect(result.data.ntp).toMatchObject({ service: "Running", source: "time.contoso.local" });
+  // The fake agent's clock is 1.5 s ahead: the offset must come out close to it.
+  expect(result.data.offsetFromServerMs).toBeGreaterThan(500);
+  expect(result.data.offsetFromServerMs).toBeLessThan(Date.now() - before + 5_000);
+  expect(started.commands[0]).toContain("Get-TimeZone");
+});
+
+test("agent_sessions lists interactive logons and honours interactiveOnly", async () => {
+  const started = await startWindows();
+  const result = await call("agent_sessions", { agent: "W-01" });
+  expect(result.isError).toBe(false);
+  expect(result.data.total).toBe(1);
+  expect(result.data.sessions[0]).toMatchObject({ user: "CONTOSO\\paciente", logonTypeLabel: "interactive" });
+  expect(started.commands[0]).toContain("LogonType=2 OR LogonType=10");
+
+  const all = await call("agent_sessions", { agent: "W-01", interactiveOnly: false });
+  expect(all.isError).toBe(false);
+  expect(started.commands[1]).toContain("$__interactiveOnly = $false");
+});
+
+test("the diagnostics tools refuse a POSIX agent", async () => {
+  const started = await startWindows({ os: POSIX_OS });
+  for (const name of ["agent_software", "agent_time", "agent_sessions"]) {
+    const result = await call(name, { agent: "W-01" });
+    expect(result.isError).toBe(true);
+    expect(started.commands.length).toBe(0);
+  }
 });

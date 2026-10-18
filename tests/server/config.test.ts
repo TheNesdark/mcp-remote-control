@@ -16,6 +16,8 @@ test("paths derive from MRC_DATA_DIR", () => {
   expect(config.dbPath).toBe("/app/server/data/mcp.db");
   expect(config.auditPath).toBe("/app/server/data/audit.jsonl");
   expect(config.screenshotDir).toBe("/app/server/data/screenshots");
+  expect(config.screenshotKeep).toBe(200);
+  expect(loadConfig({ MRC_SCREENSHOT_KEEP: "50" }).screenshotKeep).toBe(50);
 });
 
 test("the OTA version comes from the build, not from the environment", () => {

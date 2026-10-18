@@ -22,6 +22,8 @@ export interface ServerConfig {
   maxJobOutputBytes: number;
   /** Where agent_screenshot saves images pulled from remote agents. */
   screenshotDir: string;
+  /** Newest screenshots to keep on disk (MRC_SCREENSHOT_KEEP, 0 = keep everything). */
+  screenshotKeep: number;
   /** Directory holding mcp.db and audit.jsonl (MRC_DATA_DIR). */
   dataDir: string;
   /** SQLite registry path (MRC_DB_PATH, default <dataDir>/mcp.db). */
@@ -112,6 +114,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     defaultJobTimeoutMs: positiveInt(env.MRC_JOB_TIMEOUT_MS, "MRC_JOB_TIMEOUT_MS", 30_000),
     maxJobOutputBytes: MAX_JOB_OUTPUT_BYTES,
     screenshotDir: env.MRC_SCREENSHOT_DIR?.trim() || join(dataDir, "screenshots"),
+    screenshotKeep: positiveInt(env.MRC_SCREENSHOT_KEEP, "MRC_SCREENSHOT_KEEP", 200),
     dataDir,
     dbPath: env.MRC_DB_PATH?.trim() || join(dataDir, "mcp.db"),
     auditPath: env.MRC_AUDIT_PATH?.trim() || join(dataDir, "audit.jsonl"),

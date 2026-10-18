@@ -6,6 +6,7 @@ import { MAX_SCREENSHOT_BASE64_BYTES, SCREENSHOT_FORMATS } from "@mrc/shared";
 import { z } from "zod";
 import { auditToolCall, type AuditLog } from "../audit.ts";
 import type { Hub, JobOutcome } from "../hub.ts";
+import { scheduleScreenshotPrune } from "../screenshots-retention.ts";
 import { SCREENSHOT_HTTP_PREFIX } from "../screenshots-http.ts";
 import { downloadFile } from "../transfers.ts";
 import { toolError } from "./util.ts";
@@ -46,6 +47,7 @@ export function registerAgentScreenshot(
   screenshotDir: string,
   audit: AuditLog,
   screenshotBaseUrl = "",
+  screenshotKeep = 0,
 ): void {
   // Remote clients (MRC_PUBLIC_URL set) fetch the image via downloadUrl instead
   // of receiving it inline: embedding a multi-MB base64 blob in the MCP
@@ -118,6 +120,8 @@ export function registerAgentScreenshot(
         }
 
         const sha256 = createHash("sha256").update(bytes).digest("hex");
+        // Keep the directory bounded: drop everything older than the newest N.
+        scheduleScreenshotPrune(screenshotDir, screenshotKeep);
         const downloadPath = `${SCREENSHOT_HTTP_PREFIX}${basename(localPath)}`;
         const payload = {
           ok: true,

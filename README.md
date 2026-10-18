@@ -71,7 +71,8 @@ Full design and roadmap: [`PLAN.md`](./PLAN.md).
       delete), `agent_info`, `agent_ps_list`, `agent_ps_kill`,
       `agent_screenshot`, Windows operations (`agent_services`,
       `agent_service_control`, `agent_eventlog`, `agent_net_ports`,
-      `agent_net_test`), `agent_power`, `agent_message`
+      `agent_net_test`), `agent_power`, `agent_message`, diagnostics
+      (`agent_software`, `agent_time`, `agent_sessions`), `GET /health`
 - [x] Real agent (`agent/src`) with reconnect/backoff: exec with process-tree
       kill, fs jobs, inventory, process listing/killing, screenshots
 - [x] Chunked file transfers (SHA-256 verified both ways) and screenshots
