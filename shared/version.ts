@@ -1,5 +1,5 @@
 /** Single source of truth for the version of both the server and the agent. */
-export const VERSION = "0.8.3";
+export const VERSION = "0.8.4";
 
 /** "0.5.10" > "0.5.9"; unparsable components count as 0. */
 export function compareVersions(a: string, b: string): number {

@@ -6,12 +6,13 @@
  * the exe path comes from our own directory and the tool name is matched
  * against ^[a-z0-9_]+$ so it cannot smuggle flags), and returns the driver's
  * own stdout/stderr/exit code as the job meta. With `screenshot:true` the
- * image the CLI writes is read back base64 (same channel agent_screenshot
- * uses). `setup` (re)downloads the announced driver; `status` reports the
+ * CLI's `--screenshot-out-file` image is reported as `meta.screenshotPath`
+ * and the hub pulls it via the chunked fs transfer; the agent keeps the PNG
+ * on disk (short-lived shots dir) until the server fetches it, pruning older
+ * files. `setup` (re)downloads the announced driver; `status` reports the
  * local install plus the daemon state.
  */
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { CuaParams } from "@mrc/shared";
 import type { ShortJobResult } from "./job-result.ts";
@@ -60,6 +61,31 @@ export async function runCuaJob(params: CuaParams, bridge: CuaBridge): Promise<S
     }
   }
 
+  /** Per-call shot files live here so the hub can fs.transfer them after the job. */
+  const SHOT_KEEP_MS = 10 * 60_000;
+
+  function shotDirPath(): string {
+    return join(defaultDriverDir(), "shots");
+  }
+
+  function pruneShotDir(): void {
+    const dir = shotDirPath();
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      return; // dir missing is fine
+    }
+    const now = Date.now();
+    for (const name of names) {
+      try {
+        if (now - statSync(join(dir, name)).mtimeMs > SHOT_KEEP_MS) unlinkSync(join(dir, name));
+      } catch {
+        // a racing delete or an unreadable entry is not worth failing the job
+      }
+    }
+  }
+
   // action === "call" from here on
   const exe = driverExePath();
   if (!existsSync(exe)) {
@@ -69,12 +95,14 @@ export async function runCuaJob(params: CuaParams, bridge: CuaBridge): Promise<S
     return { meta: { ok: false, error: `invalid cua tool name '${params.tool ?? ""}'` } };
   }
 
-  const shotDir = params.screenshot ? mkdtempSync(join(tmpdir(), "mrc-cua-")) : null;
-  const shotFile = shotDir ? join(shotDir, "shot.png") : null;
   const args = [exe, "call", params.tool];
-  // pass the path both as a CLI flag and inside the JSON args: the flag writes
-  // the image block to disk, and the JSON field keeps the driver consistent
+  // pass the path as a CLI flag AND inside the JSON args, so either channel
+  // the driver honors produces the same on-disk PNG the hub later transfers
+  const shotFile = params.screenshot
+    ? join(shotDirPath(), `shot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${params.tool}.png`)
+    : null;
   if (shotFile) {
+    mkdirSync(shotDirPath(), { recursive: true });
     args.push("--screenshot-out-file", shotFile);
     params.args = { ...(params.args ?? {}), screenshot_out_file: shotFile };
   }
@@ -94,6 +122,7 @@ export async function runCuaJob(params: CuaParams, bridge: CuaBridge): Promise<S
     if (shotFile && existsSync(shotFile)) {
       meta.screenshotPath = shotFile;
       try { meta.screenshotBytes = Bun.file(shotFile).size; } catch { /* fine */ }
+      pruneShotDir(); // drop shots older than SHOT_KEEP_MS, keep this one
     }
     if (exitCode !== 0) {
       meta.ok = false;
@@ -104,8 +133,6 @@ export async function runCuaJob(params: CuaParams, bridge: CuaBridge): Promise<S
     return { meta };
   } catch (err) {
     return { meta: { ok: false, error: `cua-driver call failed: ${String(err)}` } };
-  } finally {
-    if (shotDir) rmSync(shotDir, { recursive: true, force: true });
   }
 }
 
