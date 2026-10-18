@@ -123,7 +123,9 @@ export async function provisionCuaDriver(
     );
   }
 
-  const zipPath = join(dirname(dir), `cua-driver-${announce.version}.zip`);
+  const parent = dirname(dir);
+  mkdirSync(parent, { recursive: true });
+  const zipPath = join(parent, `cua-driver-${announce.version}.zip`);
   writeFileSync(zipPath, bytes);
   try {
     (deps.unpack ?? unpackDriverZip)(zipPath, dir);
