@@ -13,10 +13,12 @@ import {
   PsListParams as PsListSchema,
   RestartParams as RestartSchema,
   ScreenshotParams as ScreenshotSchema,
+  CuaParams as CuaSchema,
   type AgentMsg,
   type JobCancelMsg,
   type JobRequestMsg,
 } from "@mrc/shared";
+import { runCuaCall } from "./cua.ts";
 import { runExec, type RunningExec } from "./exec.ts";
 import { fsHash, fsList, fsRead, fsWrite } from "./fs.ts";
 import type { ShortJobResult } from "./job-result.ts";
@@ -68,6 +70,7 @@ const SHORT_JOBS: Record<string, ShortJobHandler> = {
   "ps.kill": (params) => killProcesses(parseOrThrow(PsKillSchema, "ps.kill", params)),
   screenshot: (params) => takeScreenshot(parseOrThrow(ScreenshotSchema, "screenshot", params)),
   restart: (params) => restartAgent(parseOrThrow(RestartSchema, "restart", params)),
+  cua: (params) => runCuaCall(parseOrThrow(CuaSchema, "cua", params)),
 };
 
 /** Job types handled by a single async function. */

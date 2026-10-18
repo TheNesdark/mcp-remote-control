@@ -21,6 +21,7 @@ import { registerAgentPsKill } from "./agent-ps-kill.ts";
 import { registerAgentPsList } from "./agent-ps-list.ts";
 import { registerAgentRestart } from "./agent-restart.ts";
 import { registerAgentScreenshot } from "./agent-screenshot.ts";
+import { registerAgentCuaTools } from "./agent-cua.ts";
 import { registerAgentServiceControl, registerAgentServices } from "./agent-services.ts";
 import { registerAgentsList } from "./agents-list.ts";
 
@@ -58,6 +59,7 @@ export function registerTools(server: McpServer, hub: Hub, options: ToolsOptions
   registerAgentPsKill(server, hub, audit);
   registerAgentRestart(server, hub, audit);
   registerAgentScreenshot(server, hub, screenshotDir, audit, screenshotBaseUrl ?? "", screenshotKeep ?? 0);
+  registerAgentCuaTools(server, hub, audit, { screenshotDir, screenshotBaseUrl: screenshotBaseUrl ?? "" });
   registerAgentServices(server, hub, audit);
   registerAgentServiceControl(server, hub, audit);
   registerAgentEventLog(server, hub, audit);

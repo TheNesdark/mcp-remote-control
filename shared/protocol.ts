@@ -28,6 +28,7 @@ export const JOB_TYPES = [
   "ps.kill",
   "screenshot",
   "restart",
+  "cua",
 ] as const;
 export const JobType = z.enum(JOB_TYPES);
 export type JobType = z.infer<typeof JobType>;
@@ -140,6 +141,22 @@ export const RestartParams = z.object({
   args: z.array(z.string().max(4096)).max(64).optional(),
 });
 export type RestartParams = z.infer<typeof RestartParams>;
+// ---------------------------------------------------------------------------
+// Own CUA engine (sidecar mrc-cua.exe, compiled/managed by agent/src/cua.ts)
+// ---------------------------------------------------------------------------
+
+export const CUA_ARG = z.union([z.string().max(4096), z.number(), z.boolean()]);
+export const CUA_ARGS = z.record(z.string().min(1).max(64), CUA_ARG);
+export const CuaParams = z.object({
+  /** Sidecar tool: list_windows, get_window_state, click, type_text, ... */
+  tool: z.string().min(1).max(64),
+  /** Flat string/number/boolean parameters forwarded verbatim to the sidecar CLI. */
+  args: CUA_ARGS.default({}),
+  /** Sidecar process timeout; the job still obeys the hub-level timeout. */
+  timeoutMs: z.number().int().positive().max(120_000).optional(),
+});
+export type CuaParams = z.infer<typeof CuaParams>;
+
 
 // ---------------------------------------------------------------------------
 // Agent -> Server
