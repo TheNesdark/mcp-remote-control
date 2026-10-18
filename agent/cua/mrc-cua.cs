@@ -974,10 +974,15 @@ static class MrcCua
         TextPatternRange hit;
         try
         {
+            // Collapse the clone at the match start, then grow it by the match
+            // length: moving the END endpoint backwards stops at the caret, so
+            // the range is built start-first and extended.
             hit = range.Clone();
             int skipped = hit.MoveEndpointByUnit(TextPatternRangeEndpoint.Start, TextUnit.Character, offset);
-            int take = hit.MoveEndpointByUnit(TextPatternRangeEndpoint.End, TextUnit.Character, -(text.Length - offset - match.Length));
-            if (skipped != offset || take != match.Length) throw new InvalidOperationException("range narrowing off (" + skipped + "/" + take + " of " + text.Length + ")");
+            hit.MoveEndpointByRange(TextPatternRangeEndpoint.End, hit, TextPatternRangeEndpoint.Start);
+            int take = hit.MoveEndpointByUnit(TextPatternRangeEndpoint.End, TextUnit.Character, match.Length);
+            if (skipped != offset || take != match.Length)
+                throw new InvalidOperationException("range narrowing off (" + skipped + "/" + take + " of " + text.Length + ")");
             hit.ScrollIntoView(true);
             System.Threading.Thread.Sleep(150);
         }
