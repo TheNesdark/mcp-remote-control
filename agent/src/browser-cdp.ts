@@ -1,17 +1,23 @@
 /**
  * CDP-based control of the user's LIVE browser (their real profile and tabs).
  *
- * Chrome 136+ does not open a remote-debugging port on the default profile
- * unless the user enables it at chrome://inspect/#remote-debugging ("Allow
- * remote debugging"), which makes Chrome write a DevToolsActivePort file into
- * the profile directory. Newer Chrome also REMOVES the HTTP /json/* endpoints
- * (they answer 404): the only way in is the browser WebSocket at
+ * Chrome 136+ opens a remote-debugging port on the DEFAULT profile only after
+ * the user enables chrome://inspect/#remote-debugging ("Allow remote
+ * debugging"), which writes a DevToolsActivePort file into the profile
+ * directory. Newer Chrome also REMOVES the HTTP /json/* endpoints (they
+ * answer 404): the sole way in is the browser WebSocket at
  *   ws://127.0.0.1:<port>/devtools/browser/<token>
- * with the token from the second line of DevToolsActivePort. Tabs are then
- * enumerated/created/attached through the Target domain (flatten sessions),
- * and page commands ride those sessions. First attach to a tab triggers
- * Chrome's per-tab "Allow debugging?" prompt; the response only resolves once
- * the user accepts, which is why attach has a generous timeout.
+ * with the token from line 2 of DevToolsActivePort. Tabs are enumerated and
+ * created through the Target domain; page commands ride attached sessions.
+ *
+ * CONSENT MODEL (why this file pools): the "Allow debugging?" consent belongs
+ * to the live debug session, NOT to the tab. Reconnecting per command would
+ * re-prompt the user on every call. So the agent keeps ONE browser
+ * connection and leaves tab sessions attached; the user accepts once per tab
+ * and later commands ride the existing session silently. The pool is rebuilt
+ * when Chrome restarts (token changes) or after the idle timeout, and
+ * discarded whenever the connection dies; a stale tab session is dropped and
+ * re-attached once (the only case that can re-prompt).
  *
  * Bun has a native WebSocket: no puppeteer, no CDP library.
  *
@@ -37,18 +43,23 @@ interface TargetInfo {
   title: string;
   url: string;
   attached?: boolean;
-  canAccessOpener?: boolean;
 }
 
 let nextId = 1;
 
-/** Minimal CDP connection: one WebSocket, id-matched responses, sessionId routing. */
+/** One CDP WebSocket: id-matched responses; rejects pending calls when it dies. */
 class Cdp {
-  private readonly ws: WebSocket;
+  readonly ws: WebSocket;
+  closed = false;
   private readonly waiters = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
 
   private constructor(ws: WebSocket) {
     this.ws = ws;
+    const die = () => {
+      this.closed = true;
+      for (const w of this.waiters.values()) w.reject(new Error("CDP connection closed"));
+      this.waiters.clear();
+    };
     ws.addEventListener("message", (ev) => {
       let msg: any;
       try {
@@ -63,9 +74,11 @@ class Cdp {
       if (msg.error) w.reject(new Error(`${msg.error.message ?? JSON.stringify(msg.error)}`));
       else w.resolve(msg.result);
     });
+    ws.addEventListener("close", die);
+    ws.addEventListener("error", die);
   }
 
-  static async connect(endpoint: Endpoint, timeoutMs = 10_000): Promise<Cdp> {
+  static async connect(endpoint: Endpoint, timeoutMs = 15_000): Promise<Cdp> {
     const ws = new WebSocket(`ws://127.0.0.1:${endpoint.port}/devtools/browser/${endpoint.token}`);
     await new Promise<void>((resolve, reject) => {
       const t = setTimeout(() => reject(new Error("CDP browser WebSocket handshake timed out")), timeoutMs);
@@ -82,6 +95,7 @@ class Cdp {
   }
 
   send<T = any>(method: string, params: Record<string, unknown> = {}, sessionId?: string, ms = 30_000): Promise<T> {
+    if (this.closed) return Promise.reject(new Error("CDP connection closed"));
     const id = nextId++;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -103,6 +117,7 @@ class Cdp {
   }
 
   close() {
+    this.closed = true;
     try {
       this.ws.close();
     } catch {
@@ -149,7 +164,44 @@ function requireEndpoint(p: BrowserParams): Endpoint {
 }
 
 // ---------------------------------------------------------------------------
-// target helpers (browser-level Target domain)
+// pooled browser connection (keeps tab sessions => keeps consent)
+// ---------------------------------------------------------------------------
+
+const IDLE_DISPOSE_MS = 30 * 60_000;
+
+interface Pool {
+  ep: Endpoint;
+  cdp: Cdp;
+  /** targetId -> flattened session id */
+  sessions: Map<string, string>;
+  lastUsed: number;
+}
+
+let pool: Pool | null = null;
+
+function disposePool(p: Pool | null) {
+  if (!p) return;
+  p.sessions.clear();
+  p.cdp.close();
+  if (pool === p) pool = null;
+}
+
+async function getPool(ep: Endpoint): Promise<Pool> {
+  if (pool) {
+    const sameToken = pool.ep.token === ep.token && pool.ep.port === ep.port && pool.ep.browserName === ep.browserName;
+    if (sameToken && !pool.cdp.closed && Date.now() - pool.lastUsed < IDLE_DISPOSE_MS) {
+      pool.lastUsed = Date.now();
+      return pool;
+    }
+    disposePool(pool);
+  }
+  const cdp = await Cdp.connect(ep);
+  pool = { ep, cdp, sessions: new Map(), lastUsed: Date.now() };
+  return pool;
+}
+
+// ---------------------------------------------------------------------------
+// session helpers
 // ---------------------------------------------------------------------------
 
 async function pageTargets(cdp: Cdp): Promise<TargetInfo[]> {
@@ -175,20 +227,57 @@ interface Attached {
   target: TargetInfo;
 }
 
-/** Attach (flatten) to the picked tab; enables Page+Runtime. Closes cdp on throw. */
-async function attach(p: BrowserParams, ep: Endpoint, mustExist = true): Promise<Attached> {
-  const cdp = await Cdp.connect(ep);
-  try {
-    const pages = await pageTargets(cdp);
-    const target = mustExist ? pickPage(pages, p.target_id) : pages[0]!;
-    const { sessionId } = await cdp.send<{ sessionId: string }>("Target.attachToTarget", { targetId: target.targetId, flatten: true }, undefined, 90_000);
-    await cdp.send("Page.enable", {}, sessionId);
-    await cdp.send("Runtime.enable", {}, sessionId);
-    return { cdp, sessionId, target };
-  } catch (e) {
-    cdp.close();
-    throw e;
+/** Attach to the picked tab, reusing the pooled session when alive. */
+async function attachToTab(p: BrowserParams, ep: Endpoint): Promise<Attached> {
+  const active = await getPool(ep);
+  const pages = await pageTargets(active.cdp);
+  const target = pickPage(pages, p.target_id);
+  let sessionId = active.sessions.get(target.targetId);
+  if (!sessionId) {
+    // First attach to this tab: Chrome asks "Allow debugging?"; the response
+    // only resolves once the user accepts, hence the long budget.
+    const res = await active.cdp.send<{ sessionId: string }>("Target.attachToTarget", { targetId: target.targetId, flatten: true }, undefined, 120_000);
+    sessionId = res.sessionId;
+    await active.cdp.send("Page.enable", {}, sessionId);
+    await active.cdp.send("Runtime.enable", {}, sessionId);
+    active.sessions.set(target.targetId, sessionId);
   }
+  return { cdp: active.cdp, sessionId, target };
+}
+
+const SESSION_STALE = /no session|session with given id|cannot find context|target closed|detached|no target with id/i;
+const CONNECTION_DEAD = /connection closed|closed unexpectedly|ready state/i;
+
+/** Run fn with the tab attached, healing stale sessions and dead connections. */
+async function withTab<T>(p: BrowserParams, fn: (a: Attached) => Promise<T>): Promise<T> {
+  const ep = requireEndpoint(p);
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let active: Pool;
+    try {
+      active = await getPool(ep);
+    } catch (e) {
+      lastErr = e;
+      continue;
+    }
+    try {
+      const a = await attachToTab(p, ep);
+      return await fn(a);
+    } catch (e) {
+      lastErr = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (CONNECTION_DEAD.test(msg) || active.cdp.closed) {
+        disposePool(active);
+        continue;
+      }
+      if (SESSION_STALE.test(msg)) {
+        active.sessions.clear();
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
 async function evaluate(a: Attached, expression: string, ms = 30_000): Promise<unknown> {
@@ -205,43 +294,46 @@ async function evaluate(a: Attached, expression: string, ms = 30_000): Promise<u
 
 async function opState(p: BrowserParams): Promise<Record<string, unknown>> {
   const ep = requireEndpoint(p);
-  const a = await attach(p, ep);
-  try {
-    const snap = await evaluate(a, `JSON.stringify({url:location.href,page_title:document.title,ready:document.readyState,text_head:((document.body&&document.body.innerText)||'').slice(0,600)})`);
+  return withTab(p, async (a) => {
+    const snap = await evaluate(a, "JSON.stringify({url:location.href,page_title:document.title,ready:document.readyState,text_head:((document.body&&document.body.innerText)||'').slice(0,600)})");
     return { browser: ep.browserName, target_id: a.target.targetId, ...JSON.parse(String(snap)) };
-  } finally {
-    a.cdp.close();
-  }
+  });
 }
 
 async function opTabs(p: BrowserParams): Promise<Record<string, unknown>> {
   const ep = requireEndpoint(p);
-  const cdp = await Cdp.connect(ep);
+  const active = await getPool(ep);
   try {
-    const pages = await pageTargets(cdp);
+    const pages = await pageTargets(active.cdp);
     return {
       browser: ep.browserName,
       tab_count: pages.length,
       tabs: pages.map((t) => ({ target_id: t.targetId, title: t.title, url: t.url, attached: t.attached === true })),
     };
-  } finally {
-    cdp.close();
+  } catch (e) {
+    if (active.cdp.closed) disposePool(active);
+    throw e;
   }
 }
 
 async function opOpen(p: BrowserParams): Promise<Record<string, unknown>> {
   const ep = requireEndpoint(p);
-  const cdp = await Cdp.connect(ep);
-  try {
-    const { targetId } = await cdp.send<{ targetId: string }>("Target.createTarget", { url: p.url! }, undefined, 30_000);
-    // Attaching forces the first "Allow debugging?" prompt; if the user does
-    // not answer within 20s report that the tab exists but is not driven yet.
+  // No withTab: creating a tab must not attach to (or prompt on) the CURRENT
+  // one; the attach below happens on the brand-new target instead.
+  const run = async (): Promise<Record<string, unknown>> => {
+    const active = await getPool(ep);
+    const { targetId } = await active.cdp.send<{ targetId: string }>("Target.createTarget", { url: p.url! }, undefined, 30_000);
+    // Attach now so the consent prompt fires while the user watches this call
+    // (20 s budget); later ops ride the session without prompting.
     let firstAccess = true;
     try {
-      await cdp.send("Target.attachToTarget", { targetId, flatten: true }, undefined, 20_000);
+      const res = await active.cdp.send<{ sessionId: string }>("Target.attachToTarget", { targetId, flatten: true }, undefined, 20_000);
+      await active.cdp.send("Page.enable", {}, res.sessionId);
+      await active.cdp.send("Runtime.enable", {}, res.sessionId);
+      active.sessions.set(targetId, res.sessionId);
       firstAccess = false;
     } catch {
-      // prompt still open
+      // prompt still open: the tab exists, next call will complete the attach
     }
     return {
       browser: ep.browserName,
@@ -250,15 +342,24 @@ async function opOpen(p: BrowserParams): Promise<Record<string, unknown>> {
       first_access_prompt: firstAccess,
       hint: firstAccess ? "Chrome is asking 'Allow debugging?' on the new tab; accept it, then call again" : undefined,
     };
-  } finally {
-    cdp.close();
+  };
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await run();
+    } catch (e) {
+      lastErr = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (CONNECTION_DEAD.test(msg) || SESSION_STALE.test(msg)) disposePool(pool);
+      else throw e;
+    }
   }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
 async function opNavigate(p: BrowserParams): Promise<Record<string, unknown>> {
   const ep = requireEndpoint(p);
-  const a = await attach(p, ep);
-  try {
+  return withTab(p, async (a) => {
     const res = await a.cdp.send<{ errorText?: string }>("Page.navigate", { url: p.url! }, a.sessionId, 30_000);
     if (res.errorText) throw new Error(`navigate failed: ${res.errorText}`);
     let url = p.url!;
@@ -271,15 +372,12 @@ async function opNavigate(p: BrowserParams): Promise<Record<string, unknown>> {
       }
     }
     return { browser: ep.browserName, target_id: a.target.targetId, navigated: true, url };
-  } finally {
-    a.cdp.close();
-  }
+  });
 }
 
 async function opText(p: BrowserParams): Promise<Record<string, unknown>> {
   const ep = requireEndpoint(p);
-  const a = await attach(p, ep);
-  try {
+  return withTab(p, async (a) => {
     const max = p.max_chars ?? 8_000;
     const parsed = JSON.parse(
       String(await evaluate(a, "JSON.stringify({url:location.href,title:document.title,text:((document.body&&document.body.innerText)||'')})")),
@@ -292,15 +390,12 @@ async function opText(p: BrowserParams): Promise<Record<string, unknown>> {
       text: parsed.text.slice(0, max),
       truncated: parsed.text.length > max,
     };
-  } finally {
-    a.cdp.close();
-  }
+  });
 }
 
 async function opClick(p: BrowserParams): Promise<Record<string, unknown>> {
   const ep = requireEndpoint(p);
-  const a = await attach(p, ep);
-  try {
+  return withTab(p, async (a) => {
     const match = JSON.stringify(p.match!);
     const nth = p.nth ?? 0;
     const expr = `(() => {
@@ -319,9 +414,7 @@ async function opClick(p: BrowserParams): Promise<Record<string, unknown>> {
     const res = JSON.parse(String(await evaluate(a, expr))) as Record<string, unknown>;
     if (res.error) throw new Error(String(res.error));
     return { browser: ep.browserName, target_id: a.target.targetId, ...res };
-  } finally {
-    a.cdp.close();
-  }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -353,5 +446,5 @@ export async function runBrowserCall(params: BrowserParams): Promise<ShortJobRes
   return { meta: { ok: true, ...out } };
 }
 
-/** Test seam: the pure discovery helper. */
-export const __test = { discoverEndpoint };
+/** Test seam: discovery + pool introspection. */
+export const __test = { discoverEndpoint, poolInfo: () => (pool ? { token: pool.ep.token, sessions: pool.sessions.size } : null), disposePool };
