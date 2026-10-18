@@ -21,6 +21,7 @@ server/data
 # Tests y utilidades de desarrollo (el runtime no los importa)
 tests
 scripts
+!scripts/fetch-cua-driver.ts
 bunfig.toml
 
 # El agente se compila en una stage separada del Dockerfile; se excluyen del
