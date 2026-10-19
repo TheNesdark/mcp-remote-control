@@ -40,8 +40,47 @@ public static class AutoUpdate
         _ = Task.Run(() => RunAsync(welcome));
     }
 
+    /// <summary>
+    /// Crash-loop guard: count attempts to reach one target version in a small
+    /// state file, so a build that cannot be applied (locked file, bad share)
+    /// does not restart the machine in a loop. Bounded, and an operator can
+    /// delete the file to retry.
+    /// </summary>
+    private static bool TooManyAttempts(string targetVersion)
+    {
+        try
+        {
+            var file = Path.Combine(Settings.LocalDir(), "auto-update-attempts.json");
+            var state = File.Exists(file)
+                ? System.Text.Json.JsonSerializer.Deserialize<AttemptState>(File.ReadAllText(file)) ?? new AttemptState()
+                : new AttemptState();
+            if (state.Version != targetVersion) state = new AttemptState { Version = targetVersion };
+            if (state.Count >= 3)
+            {
+                Log.Warn("auto-update: giving up on this version after repeated failures",
+                    new { version = targetVersion, attempts = state.Count, hint = "delete auto-update-attempts.json to retry" });
+                return true;
+            }
+            state.Count += 1;
+            File.WriteAllText(file, System.Text.Json.JsonSerializer.Serialize(state));
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("auto-update: attempt file unreadable", new { error = ex.Message });
+            return false;
+        }
+    }
+
+    private sealed class AttemptState
+    {
+        public string Version { get; set; } = "";
+        public int Count { get; set; }
+    }
+
     private static async Task RunAsync(WelcomeMsg welcome)
     {
+        if (TooManyAttempts(welcome.LatestAgentVersion ?? "")) return;
         var execPath = Environment.ProcessPath ?? "";
         if (string.IsNullOrEmpty(execPath)) return;
         // Stage on the LOCAL disk, never next to a network-launched exe: running

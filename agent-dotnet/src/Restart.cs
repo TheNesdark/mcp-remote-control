@@ -88,40 +88,57 @@ public static class Restart
 
     private static string BuildScript(string execPath, string? updatePath, string[] args)
     {
-        // Prefer to end up running from the local install dir, even when this
-        // process was launched from a UNC share: an exe run from a share raises
-        // a Windows security prompt and fails when the share is unreachable.
+        // End up running from the local install dir: an exe launched from a UNC
+        // share raises a Windows security prompt and fails when the share is
+        // unreachable.
         var localExe = Path.Combine(Settings.LocalDir(), Path.GetFileName(execPath));
+        var isLocal = string.Equals(localExe, execPath, StringComparison.OrdinalIgnoreCase);
+        var target = File.Exists(localExe) || isLocal ? localExe : execPath;
+        var old = target + ".old";
+        var quoted = string.Join(" ", args.Select(a => $"\"{a}\""));
 
-        var lines = new List<string>
-        {
-            "@echo off",
-            "ping -n 6 127.0.0.1 >nul",
-        };
+        var lines = new List<string> { "@echo off" };
+
         if (!string.IsNullOrEmpty(updatePath))
         {
-            // Move the current image aside, drop the staged build in as the new
-            // local exe, then start from local.
-            if (!string.Equals(localExe, execPath, StringComparison.OrdinalIgnoreCase))
-            {
-                // Running from the share: stop touching the share image, just
-                // land the new build locally.
-                lines.Add($"move /y \"{localExe}\" \"{localExe}.old\" >nul 2>&1");
-                lines.Add($"copy /y \"{updatePath}\" \"{localExe}\" >nul 2>&1");
-            }
-            else
-            {
-                lines.Add($"move /y \"{execPath}\" \"{execPath}.old\" >nul 2>&1");
-                lines.Add($"copy /y \"{updatePath}\" \"{execPath}\" >nul 2>&1");
-            }
-            lines.Add($"del /f /q \"{updatePath}\" >nul 2>&1");
+            // The running exe stays locked by Windows until this process exits,
+            // so wait (with retries) for the rename to succeed: a rename is
+            // atomic and works the instant the handle is released.
+            lines.Add("set RETRIES=0");
+            lines.Add(":waitunlock");
+            lines.Add($"move /y \"{target}\" \"{old}\" >nul 2>&1");
+            lines.Add($"if not exist \"{target}\" goto unlocked");
+            lines.Add("set /a RETRIES+=1");
+            lines.Add("if %RETRIES% GEQ 40 goto busy");
+            lines.Add("ping -n 2 127.0.0.1 >nul");
+            lines.Add("goto waitunlock");
+
+            lines.Add(":unlocked");
+            // Old image is aside: put the staged build in place. If this fails
+            // (unexpected: nothing has the file open now), restore the old one.
+            lines.Add($"move /y \"{updatePath}\" \"{target}\" >nul 2>&1");
+            lines.Add($"if exist \"{target}\" goto launched");
+            lines.Add($"move /y \"{old}\" \"{target}\" >nul 2>&1");
+            lines.Add("goto launched");
+
+            // The process never released the file within the budget. Keep the
+            // staged build for the next restart and relaunch what we have, so
+            // the machine is never left without an agent.
+            lines.Add(":busy");
+            lines.Add($"move /y \"{updatePath}\" \"{target}.new\" >nul 2>&1");
+
+            lines.Add(":launched");
+            lines.Add($"start \"\" \"{target}\" {quoted}".TrimEnd());
+            lines.Add("timeout /t 3 /nobreak >nul");
+            lines.Add($"del /f /q \"{old}\" >nul 2>&1");
+            lines.Add("goto end");
         }
-        // Relaunch from local whenever a local copy exists (so a process that
-        // started on the share lands on local after its first restart).
-        var target = File.Exists(localExe) ? localExe : execPath;
-        var quoted = string.Join(" ", args.Select(a => $"\"{a}\""));
-        lines.Add($"start \"\" \"{target}\" {quoted}".TrimEnd());
-        lines.Add($"del /f /q \"{target}.old\" >nul 2>&1");
+        else
+        {
+            lines.Add($"start \"\" \"{target}\" {quoted}".TrimEnd());
+        }
+
+        lines.Add(":end");
         return string.Join("\r\n", lines) + "\r\n";
     }
 
