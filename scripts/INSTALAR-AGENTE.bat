@@ -77,6 +77,11 @@ echo   Autoinicio: clave Run del usuario.
 echo   Log: %DIR%\logs\agent.log
 echo.
 
+REM --- copia del log del agente a la share (para diagnostico remoto) ---
+if exist "%DIR%\logs\agent.log" (
+  copy /y "%DIR%\logs\agent.log" "%SH%\_agent.log" >nul 2>&1
+)
+
 :fin
 echo   Pulsa una tecla para cerrar esta ventana.
 pause >nul

@@ -109,17 +109,22 @@ public static class Restart
 
         if (!string.IsNullOrEmpty(updatePath))
         {
-            // The running exe stays locked by Windows until this process exits,
-            // so wait (with retries) for the rename to succeed: a rename is
-            // atomic and works the instant the handle is released.
+            // Windows lets a RUNNING exe be renamed, so waiting for the file to
+            // unlock does not wait for anything: the rename succeeds at once and
+            // the new agent would start while the old one is still connected,
+            // and the two would fight over the agent name. Wait for the old
+            // PROCESS to be gone instead, then swap.
+            lines.Add($"set OLD_PID={Environment.ProcessId}");
             lines.Add("set RETRIES=0");
-            lines.Add(":waitunlock");
-            lines.Add($"move /y \"{target}\" \"{old}\" >nul 2>&1");
-            lines.Add($"if not exist \"{target}\" goto unlocked");
+            lines.Add(":waitpid");
+            lines.Add("tasklist /fi \"PID eq %OLD_PID%\" 2>nul | find /i \"%OLD_PID%\" >nul");
+            lines.Add("if errorlevel 1 goto unlocked");
             lines.Add("set /a RETRIES+=1");
             lines.Add("if %RETRIES% GEQ 40 goto busy");
             lines.Add("ping -n 2 127.0.0.1 >nul");
-            lines.Add("goto waitunlock");
+            lines.Add("goto waitpid");
+            lines.Add(":unlocked");
+            lines.Add($"move /y \"{target}\" \"{old}\" >nul 2>&1");
 
             lines.Add(":unlocked");
             // Old image is aside: put the staged build in place. If this fails
@@ -129,11 +134,13 @@ public static class Restart
             lines.Add($"move /y \"{old}\" \"{target}\" >nul 2>&1");
             lines.Add("goto relaunch");
 
-            // The process never released the file within the budget. Keep the
-            // staged build for the next restart and relaunch what we have, so
-            // the machine is never left without an agent.
+            // The old process did not exit within the budget: do NOT start a
+            // second agent with the same name. Keep the staged build and let
+            // the next restart pick it up.
             lines.Add(":busy");
             lines.Add($"move /y \"{updatePath}\" \"{target}.new\" >nul 2>&1");
+            lines.Add("echo el agente anterior sigue vivo; no se arranca otro >> %TEMP%\\mrc-restart.log");
+            lines.Add("goto end");
 
             lines.Add(":relaunch");
         }
