@@ -516,21 +516,33 @@ public static class Cua
     {
         RequireConfirm(p, "clipboard_set");
         var text = Fs.ReadString(p, "text") ?? throw new InvalidOperationException("clipboard_set requires 'text'");
-        var attempts = 0;
-        while (true)
+        // The clipboard is an OLE/COM object and needs an STA thread even
+        // though the agent runs its jobs on the thread pool.
+        Dictionary<string, object?>? result = null;
+        Exception? captured = null;
+        var thread = new Thread(() =>
         {
-            try
+            var attempts = 0;
+            while (true)
             {
-                System.Windows.Forms.Clipboard.SetText(text);
-                return new Dictionary<string, object?> { ["ok"] = true, ["chars"] = text.Length };
+                try
+                {
+                    System.Windows.Forms.Clipboard.SetText(text);
+                    result = new Dictionary<string, object?> { ["ok"] = true, ["chars"] = text.Length };
+                    return;
+                }
+                catch (Exception ex) when (attempts++ < 5)
+                {
+                    Thread.Sleep(120);
+                    if (attempts >= 5) { captured = new InvalidOperationException($"the clipboard is busy: {ex.Message}"); return; }
+                }
             }
-            catch (Exception ex) when (attempts++ < 5)
-            {
-                // The clipboard can be locked briefly by another process.
-                Thread.Sleep(120);
-                if (attempts >= 5) throw new InvalidOperationException($"the clipboard is busy: {ex.Message}");
-            }
-        }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+        if (captured is not null) throw captured;
+        return result!;
     }
 
     /// <summary>
@@ -539,28 +551,39 @@ public static class Cua
     /// </summary>
     private static Dictionary<string, object?> ClipboardGet()
     {
-        var attempts = 0;
-        while (true)
+        Dictionary<string, object?>? result = null;
+        Exception? captured = null;
+        var thread = new Thread(() =>
         {
-            try
+            var attempts = 0;
+            while (true)
             {
-                var text = System.Windows.Forms.Clipboard.ContainsText()
-                    ? System.Windows.Forms.Clipboard.GetText()
-                    : "";
-                return new Dictionary<string, object?>
+                try
                 {
-                    ["ok"] = true,
-                    ["has_text"] = text.Length > 0,
-                    ["chars"] = text.Length,
-                    ["text"] = text,
-                };
+                    var text = System.Windows.Forms.Clipboard.ContainsText()
+                        ? System.Windows.Forms.Clipboard.GetText()
+                        : "";
+                    result = new Dictionary<string, object?>
+                    {
+                        ["ok"] = true,
+                        ["has_text"] = text.Length > 0,
+                        ["chars"] = text.Length,
+                        ["text"] = text,
+                    };
+                    return;
+                }
+                catch (Exception ex) when (attempts++ < 5)
+                {
+                    Thread.Sleep(120);
+                    if (attempts >= 5) { captured = new InvalidOperationException($"the clipboard is busy: {ex.Message}"); return; }
+                }
             }
-            catch (Exception ex) when (attempts++ < 5)
-            {
-                Thread.Sleep(120);
-                if (attempts >= 5) throw new InvalidOperationException($"the clipboard is busy: {ex.Message}");
-            }
-        }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+        if (captured is not null) throw captured;
+        return result!;
     }
 
     /// <summary>window: close / minimize / maximize / restore / move / resize by hwnd.</summary>
