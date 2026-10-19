@@ -265,4 +265,35 @@ public static class ScheduledTask
         }
         return null;
     }
+
+    /// <summary>
+    /// Rewrites the task's command line. The task is what keeps the agent
+    /// alive, and it carries the settings on its command line: leaving the old
+    /// ones there would silently undo a settings change.
+    /// </summary>
+    public static bool UpdateCommand(string task, string exe, string name, string server, string token)
+    {
+        try
+        {
+            var command = $"\"{exe}\" --name {name} --server {server} --token {token}";
+            using var proc = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("schtasks",
+                $"/change /tn {task} /tr \"{command}\"")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            });
+            if (proc is null) return false;
+            proc.StandardOutput.ReadToEnd();
+            proc.StandardError.ReadToEnd();
+            proc.WaitForExit(8000);
+            return proc.ExitCode == 0;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("could not update the scheduled task", new { task, error = ex.Message });
+            return false;
+        }
+    }
 }

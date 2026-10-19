@@ -40,7 +40,7 @@ public sealed class SettingsForm : Form
         Configure(_token, string.Empty, 16, 170);
         _token.UseSystemPasswordChar = true;
 
-        _hint.Text = "Los cambios se aplican al reiniciar el agente.";
+        _hint.Text = "Token: dejalo vacio para conservar el actual. Los cambios se aplican al reiniciar.";
         _hint.AutoSize = true;
         _hint.ForeColor = Color.DimGray;
         _hint.Location = new Point(16, 212);
@@ -87,19 +87,31 @@ public sealed class SettingsForm : Form
             MessageBox.Show("El servidor debe empezar por ws:// o wss://", "rc-agent", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
-        if (token.Length == 0)
-        {
-            MessageBox.Show("El token no puede estar vacio.", "rc-agent", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
         var file = Settings.ReadConfigFile();
         file.Name = name;
         file.Server = server;
-        file.TokenProtected = Dpapi.Protect(token);
-        file.Token = null;
+        if (token.Length > 0)
+        {
+            file.TokenProtected = Dpapi.Protect(token);
+            file.Token = null;
+        }
+        // An empty token keeps the stored one: it is DPAPI-protected and
+        // showing it in clear text would be a downgrade for no reason.
         Settings.Save(file);
         Log.Info("settings changed from the tray", new { name, server });
+
+        // The scheduled task that keeps the agent alive carries the old values
+        // on its command line, and those would win over the config file on
+        // every restart. Rewrite it with the new ones.
+        var task = ScheduledTask.GetTaskName();
+        if (task is not null)
+        {
+            var exe = Environment.ProcessPath ?? "";
+            if (exe.Length > 0 && ScheduledTask.UpdateCommand(task, exe, name, server, token))
+                Log.Info("the scheduled task was updated with the new settings", new { task });
+            else
+                Log.Warn("the scheduled task still carries the old settings", new { task });
+        }
 
         DialogResult = DialogResult.OK;
         Close();
