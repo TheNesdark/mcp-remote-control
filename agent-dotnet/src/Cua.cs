@@ -362,6 +362,11 @@ public static class Cua
                             ["x"] = node.X + node.Width / 2,
                             ["y"] = node.Y + node.Height / 2,
                         },
+                        // Java components often have an empty accessible name
+                        // (a text field is named by the label next to it), so
+                        // the tree index is the reliable handle.
+                        ["index"] = node.Index,
+                        ["text"] = node.Text,
                     };
                 }
             }
@@ -401,7 +406,11 @@ public static class Cua
         {
             var jabName = Fs.ReadString(p, "name");
             var jabClass = Fs.ReadString(p, "class_name");
-            if (JavaAccessBridge.Invoke(javaWindow, jabName, jabClass))
+            var jabIndex = Fs.ReadInt(p, "jab_index");
+            var jabDone = jabIndex is not null
+                ? JavaAccessBridge.InvokeByIndex(javaWindow, jabIndex.Value)
+                : JavaAccessBridge.Invoke(javaWindow, jabName, jabClass);
+            if (jabDone)
             {
                 return new Dictionary<string, object?>
                 {
@@ -465,13 +474,18 @@ public static class Cua
             valuePattern.SetValue(value);
             return new Dictionary<string, object?> { ["ok"] = true, ["via"] = "value-pattern", ["chars"] = value.Length };
         }
-        // Java text fields: write through the Java Access Bridge.
+        // Java text fields: write through the Java Access Bridge. Prefer the
+        // tree index (Java fields have no accessible name of their own).
         var jabWindow = new IntPtr(target.Properties.NativeWindowHandle.ValueOrDefault.ToInt64());
         if (jabWindow != IntPtr.Zero)
         {
+            var jabIndex = Fs.ReadInt(p, "jab_index");
             var jabName = Fs.ReadString(p, "name");
             var jabClass = Fs.ReadString(p, "class_name");
-            if (JavaAccessBridge.SetText(jabWindow, jabName, jabClass, value))
+            var done = jabIndex is not null
+                ? JavaAccessBridge.SetTextByIndex(jabWindow, jabIndex.Value, value)
+                : JavaAccessBridge.SetText(jabWindow, jabName, jabClass, value);
+            if (done)
                 return new Dictionary<string, object?> { ["ok"] = true, ["via"] = "jab", ["chars"] = value.Length };
         }
         throw new InvalidOperationException("the element does not accept a value (no TextBox or ValuePattern)");

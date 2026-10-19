@@ -53,11 +53,17 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
   });
   const audit = new AuditLog(config.auditPath);
 
-  // Auto-update: if a binary path is given but no sha256, compute it from the
-  // file so agents can still verify the download (useful when the binary is
-  // rebuilt on every deploy and the hash is not known ahead of time).
-  let agentBinarySha256 = config.agentBinarySha256;
-  if (config.agentBinaryPath && !agentBinarySha256) {
+  // Auto-update, HTTP route: the hub serves the binary itself, so it can hash
+  // it and let the agent verify the download.
+  //
+  // Auto-update, UNC route: the build lives on a share the hub cannot read,
+  // so no hash is published here. A stale MRC_AGENT_BINARY_SHA256 would make
+  // the agent reject every real build, so it is only honoured when it comes
+  // from the file the hub actually serves. Agents verify the UNC download by
+  // the version stamped in the binary instead.
+  const servesBinary = Boolean(config.agentBinaryPath);
+  let agentBinarySha256 = servesBinary ? config.agentBinarySha256 : "";
+  if (servesBinary && !agentBinarySha256) {
     try {
       const buf = readFileSync(config.agentBinaryPath);
       agentBinarySha256 = createHash("sha256").update(buf).digest("hex");
@@ -65,6 +71,11 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
     } catch (err) {
       logger.warn("could not read agent binary for sha256", { path: config.agentBinaryPath, error: String(err) });
     }
+  }
+  if (!servesBinary && config.agentBinarySha256) {
+    logger.warn("ignoring MRC_AGENT_BINARY_SHA256: the hub does not serve the binary, so the hash cannot be verified", {
+      sha256: config.agentBinarySha256,
+    });
   }
 
   const hub = new Hub({
@@ -82,7 +93,7 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
       ? {
           update: {
             latestVersion: config.agentLatestVersion,
-            ...(config.agentBinaryUrl || config.agentBinaryPath
+            ...(servesBinary || config.agentBinaryUrl
               ? { binaryUrl: config.agentBinaryUrl || "/agent/latest.exe" }
               : {}),
             ...(config.agentBinaryUnc ? { binaryUnc: config.agentBinaryUnc } : {}),

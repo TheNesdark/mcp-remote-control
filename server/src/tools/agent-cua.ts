@@ -266,12 +266,23 @@ export function registerAgentCuaTools(
     control_type: z.string().max(64).optional().describe("Exact UIA control type (e.g. Button, Edit, DataItem)."),
     nth: z.number().int().min(0).max(50).optional().describe("Which match to use (default 0)."),
     whole_desktop: z.boolean().optional().describe("Search the whole desktop instead of one window."),
+    jab_index: z
+      .number()
+      .int()
+      .min(0)
+      .max(4000)
+      .optional()
+      .describe(
+        "Index in the Java Access Bridge tree (from agent_cua_get_window_state on a Java app, or the 'index' " +
+          "field of a Java match). Java text fields carry no accessible name of their own, so this is the " +
+          "reliable handle for them.",
+      ),
   };
   const criteriaError = (args: object): string | null => {
     const a = args as Record<string, unknown>;
-    return a.name || a.automation_id || a.class_name || a.control_type
+    return a.name || a.automation_id || a.class_name || a.control_type || a.jab_index !== undefined
       ? null
-      : "provide at least one of name, automation_id, class_name, control_type";
+      : "provide at least one of name, automation_id, class_name, control_type, jab_index";
   };
 
   registerCuaJobTool(server, hub, audit, {
@@ -320,7 +331,8 @@ export function registerAgentCuaTools(
     description:
       "Sets the value of a field without stealing focus or clicking it (TextBox.Text, or the generic " +
       "ValuePattern). More reliable than typing character by character. Selects the element with the same " +
-      "criteria as agent_cua_find_element. Requires confirm: true.",
+      "criteria as agent_cua_find_element. Java components are activated through the Java Access Bridge " +
+      "(pass jab_index for them). Requires confirm: true.",
     inputSchema: {
       agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
       value: z.string().max(4096).describe("Value to write."),

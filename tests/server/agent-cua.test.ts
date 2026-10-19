@@ -83,6 +83,8 @@ function sidecarMeta(msg: JobRequestMsg): Record<string, unknown> {
           enabled: true, offscreen: false, pid: 20, bounds: { x: 40, y: 50, width: 80, height: 24 },
         },
         click_point: { x: 80, y: 62 },
+        index: 0,
+        via: "uia",
       };
     case "invoke":
       return { via: "invoke", element: { name: "Guardar", control_type: "Button", bounds: { x: 40, y: 50, width: 80, height: 24 } } };
@@ -509,6 +511,28 @@ test("agent_cua_browser validates url scheme and click match", async () => {
   const noQuery = await call("agent_cua_browser", { agent: "W-CUA-01", operation: "search", confirm: true });
   expect(noQuery.isError).toBe(true);
   expect(noQuery.text + JSON.stringify(noQuery.data ?? "")).toMatch(/match/);
+  expect(started.jobs.length).toBe(0);
+});
+
+test("agent_cua_set_value accepts a jab_index for Java fields", async () => {
+  const started = await start();
+  const result = await call("agent_cua_set_value", {
+    agent: "W-CUA-01",
+    jab_index: 3,
+    value: "hola",
+    confirm: true,
+  });
+  expect(result.isError).toBe(false);
+  const params = (started.jobs[0]?.params ?? {}) as { tool?: string; args?: Record<string, unknown> };
+  expect(params.tool).toBe("set_value");
+  expect(params.args).toMatchObject({ jab_index: 3, value: "hola" });
+});
+
+test("agent_cua_find_element needs some criteria to locate a control", async () => {
+  const started = await start();
+  const result = await call("agent_cua_find_element", { agent: "W-CUA-01" });
+  expect(result.isError).toBe(true);
+  expect(result.text + JSON.stringify(result.data ?? "")).toMatch(/name|automation_id|class_name|control_type|jab_index/);
   expect(started.jobs.length).toBe(0);
 });
 

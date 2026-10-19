@@ -116,7 +116,20 @@ public static class AutoUpdate
 
             await File.WriteAllBytesAsync(staged, bytes).ConfigureAwait(false);
             ClearZoneIdentifier(staged);
-            Log.Info("auto-update: staged", new { staged, bytes = bytes.Length, sha256 });
+
+            // The version baked into the binary must match what the hub
+            // announced. The hub cannot hash the share, so this is what catches
+            // a half-copied file or a stale "latest" build.
+            var got = ReadFileVersion(staged);
+            var want = welcome.LatestAgentVersion ?? "";
+            if (want.Length > 0 && got.Length > 0 && Versions.Compare(got, want) != 0)
+            {
+                TryDelete(staged);
+                throw new InvalidOperationException(
+                    $"auto-update rejected: the build on the share is {got}, the hub announced {want}");
+            }
+
+            Log.Info("auto-update: staged", new { staged, bytes = bytes.Length, sha256, version = got });
 
             var outcome = await Restart.JobRestart(
                 System.Text.Json.JsonSerializer.SerializeToElement(new { updatePath = staged }),
@@ -128,6 +141,31 @@ public static class AutoUpdate
         {
             Log.Error("auto-update failed", new { error = ex.Message });
         }
+    }
+
+    /// <summary>
+    /// The version stamped into the build's file metadata (set at publish
+    /// time), used to prove the download is the build the hub announced.
+    /// </summary>
+    private static string ReadFileVersion(string path)
+    {
+        try
+        {
+            var info = System.Diagnostics.FileVersionInfo.GetVersionInfo(path);
+            var raw = info.FileVersion ?? "";
+            // "1.0.8.0" -> "1.0.8"
+            var parts = raw.Split('.');
+            return parts.Length > 3 ? string.Join('.', parts.Take(3)) : raw;
+        }
+        catch (Exception)
+        {
+            return "";
+        }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try { File.Delete(path); } catch { /* best effort */ }
     }
 
     /// <summary>

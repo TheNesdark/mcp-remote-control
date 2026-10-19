@@ -247,6 +247,93 @@ public static class JavaAccessBridge
     [DllImport(DllName)]
     private static extern bool doAccessibleActions(long vmId, long context, IntPtr actionsToDo, ref int failure);
 
+    /// <summary>Writes text into the Java component at a given tree index.</summary>
+    public static bool SetTextByIndex(IntPtr hwnd, int index, string value)
+    {
+        if (!Connect(hwnd)) return false;
+        lock (Gate)
+        {
+            if (!getAccessibleContextFromHWND(hwnd, out var vmId, out var root)) return false;
+            return SetTextAt(vmId, root, index, value, 0);
+        }
+    }
+
+    private static bool SetTextAt(long vmId, long context, int target, string value, int depth)
+    {
+        if (depth > 12) return false;
+        getAccessibleContextInfo(vmId, context, _info);
+        var role = ReadWide(OffRoleEn, 256);
+        if (role.Length == 0) role = ReadWide(OffRole, 256);
+        if (target == 0)
+        {
+            var isField = role.Contains("text", StringComparison.OrdinalIgnoreCase)
+                || role.Contains("editable", StringComparison.OrdinalIgnoreCase)
+                || role.Contains("password", StringComparison.OrdinalIgnoreCase);
+            if (isField) return setTextContents(vmId, context, value);
+        }
+        var count = getVisibleChildrenCount(vmId, context);
+        if (count <= 0) return false;
+        var seen = 0;
+        for (var start = 0; start < count; start += 256)
+        {
+            if (!getVisibleChildren(vmId, context, start, _visible)) break;
+            var returned = Marshal.ReadInt32(_visible, 0);
+            for (var i = 0; i < returned; i++)
+            {
+                var child = Marshal.ReadInt64(_visible, VisibleChildrenOffset + i * 8);
+                if (child == 0) continue;
+                seen++;
+                if (seen == target) return SetTextAt(vmId, child, 0, value, depth + 1);
+            }
+            if (returned < 256) break;
+        }
+        return false;
+    }
+
+    /// <summary>Invokes the Java component at a given tree index.</summary>
+    public static bool InvokeByIndex(IntPtr hwnd, int index)
+    {
+        if (!Connect(hwnd)) return false;
+        lock (Gate)
+        {
+            if (!getAccessibleContextFromHWND(hwnd, out var vmId, out var root)) return false;
+            return InvokeAt(vmId, root, index, 0);
+        }
+    }
+
+    private static bool InvokeAt(long vmId, long context, int target, int depth)
+    {
+        if (depth > 12) return false;
+        getAccessibleContextInfo(vmId, context, _info);
+        if (target == 0)
+        {
+            var actions = getAccessibleActionsCount(vmId, context);
+            for (var i = 0; i < actions; i++)
+            {
+                var action = getAccessibleActionName(vmId, context, i);
+                if (string.IsNullOrEmpty(action) || !IsActivatable(action)) continue;
+                if (DoAction(vmId, context, action)) return true;
+            }
+        }
+        var count = getVisibleChildrenCount(vmId, context);
+        if (count <= 0) return false;
+        var seen = 0;
+        for (var start = 0; start < count; start += 256)
+        {
+            if (!getVisibleChildren(vmId, context, start, _visible)) break;
+            var returned = Marshal.ReadInt32(_visible, 0);
+            for (var i = 0; i < returned; i++)
+            {
+                var child = Marshal.ReadInt64(_visible, VisibleChildrenOffset + i * 8);
+                if (child == 0) continue;
+                seen++;
+                if (seen == target) return InvokeAt(vmId, child, 0, depth + 1);
+            }
+            if (returned < 256) break;
+        }
+        return false;
+    }
+
     // ---- internals -------------------------------------------------------
 
     private sealed record Node(long Context, long VmId, string Role, string Name, int X, int Y, int W, int H, int Depth);
@@ -263,7 +350,9 @@ public static class JavaAccessBridge
         var y = Marshal.ReadInt32(_info, OffY);
         var w = Marshal.ReadInt32(_info, OffWidth);
         var h = Marshal.ReadInt32(_info, OffHeight);
-        outNodes.Add(new JabNode(role, name, description, x, y, w, h, depth));
+        var index = outNodes.Count;
+        var text = ReadNodeText(vmId, context, role);
+        outNodes.Add(new JabNode(role, name, description, x, y, w, h, depth, index, text));
 
         var count = getVisibleChildrenCount(vmId, context);
         if (count <= 0) return;
@@ -278,6 +367,19 @@ public static class JavaAccessBridge
             }
             if (returned < 256) break;
         }
+    }
+
+    /// <summary>
+    /// The text a Java component holds. The text handle is not exposed by the
+    /// native DLL, so this reports the component's description (Swing puts the
+    /// value of a text field there often enough to be useful) and the caller
+    /// falls back to focus+copy for the real value.
+    /// </summary>
+    private static string ReadNodeText(long vmId, long context, string role)
+    {
+        var description = ReadWide(OffDescription, 1024);
+        if (description.Length > 0) return description;
+        return "";
     }
 
     private static string ReadWide(int offset, int chars)
@@ -352,13 +454,77 @@ public static class JavaAccessBridge
         return null;
     }
 
+    /// <summary>
+    /// Turns the Java Access Bridge on for the current user, so the NEXT launch
+    /// of a Java app exposes its component tree. It cannot help an app that is
+    /// already running: the JVM reads the property file at startup.
+    /// </summary>
+    private static void EnsureBridgeEnabled()
+    {
+        try
+        {
+            var props = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".accessibility.properties");
+            if (File.Exists(props))
+            {
+                var text = File.ReadAllText(props);
+                if (text.Contains("com.sun.java.accessibility.AccessBridge", StringComparison.Ordinal)) return;
+            }
+            foreach (var jabswitch in FindJabswitch())
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo(jabswitch, "-enable")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+                using var proc = System.Diagnostics.Process.Start(psi);
+                proc?.WaitForExit(5000);
+                Log.Info("jab: enabled the Java Access Bridge; restart the Java app to expose its tree",
+                    new { jabswitch, properties = props });
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("jab: could not enable the bridge", new { error = ex.Message });
+        }
+    }
+
+    /// <summary>The jabswitch tool of the installed JREs (JDK-only tool).</summary>
+    private static IEnumerable<string> FindJabswitch()
+    {
+        foreach (var root in new[]
+                 {
+                     Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                     Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+                 })
+        {
+            if (string.IsNullOrEmpty(root)) continue;
+            var javaDir = Path.Combine(root, "Java");
+            if (!Directory.Exists(javaDir)) continue;
+            string[] jres;
+            try { jres = Directory.GetDirectories(javaDir); }
+            catch (Exception) { continue; }
+            foreach (var jre in jres)
+            {
+                var candidate = Path.Combine(jre, "bin", "jabswitch.exe");
+                if (File.Exists(candidate)) yield return candidate;
+            }
+        }
+    }
+
     private static bool EnsureLoaded()
     {
         lock (Gate)
         {
             if (_dll != IntPtr.Zero) return true;
             var path = FindBridgeLibrary();
-            if (path is null) return false;
+            if (path is null)
+            {
+                EnsureBridgeEnabled();
+                return false;
+            }
             var dll = LoadLibrary(path);
             if (dll == IntPtr.Zero) return false;
             // The AT needs its own status dialog: the JVM answers the hello that
@@ -421,7 +587,17 @@ public static class JavaAccessBridge
 }
 
 /// <summary>One node of a Java component tree.</summary>
-public sealed record JabNode(string Role, string Name, string Description, int X, int Y, int Width, int Height, int Depth)
+public sealed record JabNode(
+    string Role,
+    string Name,
+    string Description,
+    int X,
+    int Y,
+    int Width,
+    int Height,
+    int Depth,
+    int Index,
+    string Text)
 {
     /// <summary>UIA-ish control type derived from the JAB role.</summary>
     public string ControlType => Role switch
