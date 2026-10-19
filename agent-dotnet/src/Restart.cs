@@ -33,13 +33,14 @@ public static class Restart
         }
 
         var args = ReadArgs(p) ?? (Environment.GetCommandLineArgs().Skip(1).ToArray());
+        var useTask = ScheduledTask.GetTaskName() is not null;
         // Always write the script on the local disk: a script next to a
         // network-launched exe would live on the share, where it is slower and
         // can be blocked (and the relaunch itself must be a local path).
         var script = Path.Combine(Settings.LocalDir(), $"mrc-restart-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.bat");
         try
         {
-            File.WriteAllText(script, BuildScript(execPath, updatePath, args));
+            File.WriteAllText(script, BuildScript(execPath, updatePath, args, useTask));
         }
         catch (Exception ex)
         {
@@ -71,6 +72,7 @@ public static class Restart
             ["platform"] = "windows",
             ["execPath"] = execPath,
             ["updating"] = !string.IsNullOrEmpty(updatePath),
+            ["relaunch"] = useTask ? "scheduled-task" : "direct",
             ["script"] = script,
             ["exiting"] = true,
         }));
@@ -86,7 +88,7 @@ public static class Restart
             .ToArray();
     }
 
-    private static string BuildScript(string execPath, string? updatePath, string[] args)
+    private static string BuildScript(string execPath, string? updatePath, string[] args, bool useTask)
     {
         // End up running from the local install dir: an exe launched from a UNC
         // share raises a Windows security prompt and fails when the share is
@@ -96,6 +98,7 @@ public static class Restart
         var target = File.Exists(localExe) || isLocal ? localExe : execPath;
         var old = target + ".old";
         var quoted = string.Join(" ", args.Select(a => $"\"{a}\""));
+        var task = ScheduledTask.GetTaskName() ?? "";
 
         var lines = new List<string> { "@echo off" };
 
@@ -117,9 +120,9 @@ public static class Restart
             // Old image is aside: put the staged build in place. If this fails
             // (unexpected: nothing has the file open now), restore the old one.
             lines.Add($"move /y \"{updatePath}\" \"{target}\" >nul 2>&1");
-            lines.Add($"if exist \"{target}\" goto launched");
+            lines.Add($"if exist \"{target}\" goto relaunch");
             lines.Add($"move /y \"{old}\" \"{target}\" >nul 2>&1");
-            lines.Add("goto launched");
+            lines.Add("goto relaunch");
 
             // The process never released the file within the budget. Keep the
             // staged build for the next restart and relaunch what we have, so
@@ -127,15 +130,34 @@ public static class Restart
             lines.Add(":busy");
             lines.Add($"move /y \"{updatePath}\" \"{target}.new\" >nul 2>&1");
 
-            lines.Add(":launched");
+            lines.Add(":relaunch");
+        }
+
+        // Relaunch: prefer the scheduled task (Windows supervises the process
+        // and relaunches it fully detached), else start the exe directly. Only
+        // one of the two must run, or two agents would race for the name.
+        if (useTask)
+        {
+            lines.Add($"schtasks /end /tn \"{task}\" >nul 2>&1");
+            lines.Add("ping -n 2 127.0.0.1 >nul");
+            lines.Add($"schtasks /run /tn \"{task}\" >nul 2>&1");
+            // If the task did not start it (removed, policy), fall back to a
+            // direct start so the machine is never left without an agent.
+            lines.Add("ping -n 3 127.0.0.1 >nul");
+            lines.Add($"tasklist /fi \"imagename eq {Path.GetFileName(target)}\" 2>nul | find /i \"{Path.GetFileName(target)}\" >nul");
+            lines.Add($"if not errorlevel 1 goto checked");
             lines.Add($"start \"\" \"{target}\" {quoted}".TrimEnd());
-            lines.Add("timeout /t 3 /nobreak >nul");
-            lines.Add($"del /f /q \"{old}\" >nul 2>&1");
-            lines.Add("goto end");
+            lines.Add(":checked");
         }
         else
         {
             lines.Add($"start \"\" \"{target}\" {quoted}".TrimEnd());
+        }
+
+        if (!string.IsNullOrEmpty(updatePath))
+        {
+            lines.Add("timeout /t 3 /nobreak >nul");
+            lines.Add($"del /f /q \"{old}\" >nul 2>&1");
         }
 
         lines.Add(":end");
@@ -202,5 +224,45 @@ public static class Restart
             Log.Error("detached relaunch failed", new { error = ex.Message });
             return false;
         }
+    }
+}
+
+/// <summary>
+/// The Windows scheduled task that keeps the agent alive: INSTALAR-AGENTE.bat
+/// creates it ONLOGON pointing at the local exe. When it exists, auto-update
+/// swaps the file and asks the task to relaunch, instead of starting the exe
+/// from a batch that would die with the agent process.
+/// </summary>
+public static class ScheduledTask
+{
+    /// <summary>The task name, or null when no known task is registered.</summary>
+    public static string? GetTaskName()
+    {
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return null;
+        foreach (var candidate in new[] { "MRC-Agent" })
+        {
+            try
+            {
+                using var probe = Process.Start(new ProcessStartInfo("schtasks", $"/query /tn {candidate}")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                });
+                if (probe is not null)
+                {
+                    probe.StandardOutput.ReadToEnd();
+                    probe.StandardError.ReadToEnd();
+                    probe.WaitForExit(4000);
+                    if (probe.ExitCode == 0) return candidate;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("scheduled task probe failed", new { task = candidate, error = ex.Message });
+            }
+        }
+        return null;
     }
 }
