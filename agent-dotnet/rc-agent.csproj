@@ -14,6 +14,18 @@
     installed on the machine (the SDK install provides it).
   -->
   <PropertyGroup>
+    <!-- Version comes from the repo's single source of truth so hello/info
+         match the hub. -->
+    <RepoVersionFile>$(MSBuildThisFileDirectory)../shared/version.ts</RepoVersionFile>
+    <RepoVersionRaw Condition="Exists('$(RepoVersionFile)')">$([System.IO.File]::ReadAllText('$([System.IO.Path]::GetFullPath('$(RepoVersionFile)'))'))</RepoVersionRaw>
+    <RepoVersion>$([System.Text.RegularExpressions.Regex]::Match('$(RepoVersionRaw)', 'VERSION\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"').Groups[1].Value)</RepoVersion>
+    <Version Condition="'$(RepoVersion)' != ''">$(RepoVersion)</Version>
+    <InformationalVersion Condition="'$(RepoVersion)' != ''">$(RepoVersion)</InformationalVersion>
+    <FileVersion Condition="'$(RepoVersion)' != ''">$(RepoVersion).0</FileVersion>
+    <AssemblyVersion Condition="'$(RepoVersion)' != ''">$(RepoVersion).0</AssemblyVersion>
+  </PropertyGroup>
+
+  <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
@@ -70,20 +82,5 @@
     <PackageReference Include="FlaUI.UIA3" Version="5.0.0" />
   </ItemGroup>
 
-
-  <Target Name="StampVersion" BeforeTargets="CoreCompile">
-    <!-- Keep hello/info versions in step with the repo's single source of truth
-         (shared/version.ts). Read the whole file and pull the first version out
-         with a regex, so this works on Linux and Windows alike. -->
-    <PropertyGroup>
-      <RepoVersionRaw Condition="Exists('../shared/version.ts')">$([System.IO.File]::ReadAllText('$([System.IO.Path]::GetFullPath("../shared/version.ts"))'))</RepoVersionRaw>
-      <RepoVersion>$([System.Text.RegularExpressions.Regex]::Match('$(RepoVersionRaw)', 'VERSION\s*=\s*&quot;([0-9]+\.[0-9]+\.[0-9]+)&quot;').Groups[1].Value)</RepoVersion>
-    </PropertyGroup>
-    <Message Importance="high" Text="Stamping agent version $(RepoVersion) from shared/version.ts" Condition="'$(RepoVersion)' != ''" />
-    <PropertyGroup Condition="'$(RepoVersion)' != ''">
-      <Version>$(RepoVersion)</Version>
-      <InformationalVersion>$(RepoVersion)</InformationalVersion>
-    </PropertyGroup>
-  </Target>
 
 </Project>
