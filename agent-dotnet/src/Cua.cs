@@ -120,6 +120,23 @@ public static class Cua
     }
 
     /// <summary>ControlView tree with role, name, automation id, pid and screen rect.</summary>
+    /// <summary>
+    /// True for a Java (AWT/Swing) window. Those expose nothing through
+    /// UIA3, so they are read through the Java Access Bridge instead.
+    /// </summary>
+    private static bool IsJavaWindow(AutomationElement window)
+    {
+        try
+        {
+            var className = window.ClassName ?? "";
+            return className.StartsWith("SunAwt", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
     private static Dictionary<string, object?> WindowState(JsonElement p)
     {
         var maxElements = Fs.ReadInt(p, "max_elements") ?? 80;
@@ -156,7 +173,7 @@ public static class Cua
         // Java (Swing/AWT) apps expose nothing through UIA3, but they do
         // through the Java Access Bridge: read that tree instead.
         var hwnd = new IntPtr(window.Properties.NativeWindowHandle.ValueOrDefault.ToInt64());
-        var jab = JavaAccessBridge.ReadTree(hwnd);
+        var jab = IsJavaWindow(window) ? JavaAccessBridge.ReadTree(hwnd) : new List<JabNode>();
         if (jab.Count > 0)
         {
             foreach (var node in jab)
@@ -329,7 +346,7 @@ public static class Cua
             var jabRoot = Fs.ReadBool(p, "whole_desktop")
                 ? IntPtr.Zero
                 : new IntPtr(ResolveWindow(p).Properties.NativeWindowHandle.ValueOrDefault.ToInt64());
-            if (jabRoot != IntPtr.Zero)
+            if (jabRoot != IntPtr.Zero && IsJavaWindow(root))
             {
                 var jabMatches = JavaAccessBridge.Find(jabRoot, name, className, controlType, Fs.ReadInt(p, "max_results") ?? 20);
                 if (jabMatches.Count > 0)

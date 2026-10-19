@@ -134,6 +134,11 @@ public static class JavaAccessBridge
         }
     }
 
+    /// <summary>
+    /// Writes text into the first field that matches. The tree index follows the
+    /// same numbering as the tree walk (the node itself counts), so the
+    /// jab_index the caller saw is the one used here.
+    /// </summary>
     private static bool SetTextDeep(long vmId, long context, string? name, string? className, string value, int depth)
     {
         if (depth > 12) return false;
@@ -253,26 +258,32 @@ public static class JavaAccessBridge
         lock (Gate)
         {
             if (!getAccessibleContextFromHWND(hwnd, out var vmId, out var root)) return false;
-            return SetTextAt(vmId, root, index, value, 0);
+            var counter = 0;
+            return SetTextAt(vmId, root, index, value, 0, ref counter);
         }
     }
 
-    private static bool SetTextAt(long vmId, long context, int target, string value, int depth)
+    /// <summary>
+    /// Walks the tree with the SAME numbering the tree walk uses (the node
+    /// itself is index 0), so the index reported by find_element addresses
+    /// exactly this node.
+    /// </summary>
+    private static bool SetTextAt(long vmId, long context, int target, string value, int depth, ref int counter)
     {
-        if (depth > 12) return false;
+        if (depth > 24) return false;
+        var index = counter++;
         getAccessibleContextInfo(vmId, context, _info);
         var role = ReadWide(OffRoleEn, 256);
         if (role.Length == 0) role = ReadWide(OffRole, 256);
-        if (target == 0)
+        if (index == target)
         {
             var isField = role.Contains("text", StringComparison.OrdinalIgnoreCase)
                 || role.Contains("editable", StringComparison.OrdinalIgnoreCase)
                 || role.Contains("password", StringComparison.OrdinalIgnoreCase);
-            if (isField) return setTextContents(vmId, context, value);
+            return isField && setTextContents(vmId, context, value);
         }
         var count = getVisibleChildrenCount(vmId, context);
         if (count <= 0) return false;
-        var seen = 0;
         for (var start = 0; start < count; start += 256)
         {
             if (!getVisibleChildren(vmId, context, start, _visible)) break;
@@ -281,8 +292,7 @@ public static class JavaAccessBridge
             {
                 var child = Marshal.ReadInt64(_visible, VisibleChildrenOffset + i * 8);
                 if (child == 0) continue;
-                seen++;
-                if (seen == target) return SetTextAt(vmId, child, 0, value, depth + 1);
+                if (SetTextAt(vmId, child, target, value, depth + 1, ref counter)) return true;
             }
             if (returned < 256) break;
         }
@@ -296,15 +306,17 @@ public static class JavaAccessBridge
         lock (Gate)
         {
             if (!getAccessibleContextFromHWND(hwnd, out var vmId, out var root)) return false;
-            return InvokeAt(vmId, root, index, 0);
+            var counter = 0;
+            return InvokeAt(vmId, root, index, 0, ref counter);
         }
     }
 
-    private static bool InvokeAt(long vmId, long context, int target, int depth)
+    private static bool InvokeAt(long vmId, long context, int target, int depth, ref int counter)
     {
-        if (depth > 12) return false;
+        if (depth > 24) return false;
+        var index = counter++;
         getAccessibleContextInfo(vmId, context, _info);
-        if (target == 0)
+        if (index == target)
         {
             var actions = getAccessibleActionsCount(vmId, context);
             for (var i = 0; i < actions; i++)
@@ -316,7 +328,6 @@ public static class JavaAccessBridge
         }
         var count = getVisibleChildrenCount(vmId, context);
         if (count <= 0) return false;
-        var seen = 0;
         for (var start = 0; start < count; start += 256)
         {
             if (!getVisibleChildren(vmId, context, start, _visible)) break;
@@ -325,8 +336,7 @@ public static class JavaAccessBridge
             {
                 var child = Marshal.ReadInt64(_visible, VisibleChildrenOffset + i * 8);
                 if (child == 0) continue;
-                seen++;
-                if (seen == target) return InvokeAt(vmId, child, 0, depth + 1);
+                if (InvokeAt(vmId, child, target, depth + 1, ref counter)) return true;
             }
             if (returned < 256) break;
         }
@@ -404,12 +414,14 @@ public static class JavaAccessBridge
         if (!EnsureLoaded()) return false;
         if (isJavaWindow(hwnd)) return true;
 
-        // The AT thread broadcasts on its own; just wait for the JVM to answer.
-        for (var attempt = 0; attempt < 20; attempt++)
+        // The AT thread broadcasts the hello on its own every second, so the
+        // JVM answers as soon as it is ready. Wait a few seconds for it: the
+        // caller's job should not hang on a bridge that is still coming up.
+        for (var attempt = 0; attempt < 8; attempt++)
         {
-            for (var wait = 0; wait < 10; wait++)
+            for (var wait = 0; wait < 5; wait++)
             {
-                Thread.Sleep(120);
+                Thread.Sleep(100);
                 if (isJavaWindow(hwnd))
                 {
                     Log.Info("jab: connected to the Java application", new { hwnd = hwnd.ToInt64(), attempt });
