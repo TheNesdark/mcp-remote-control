@@ -235,6 +235,140 @@ export function registerAgentCuaTools(
     sidecarTool: "focus",
     validate: targetError,
   });
+
+  // -- element-oriented (FlaUI): find/invoke/set_value/wait_for/table_read -----
+
+  const elementCriteria = {
+    name: z.string().max(256).optional().describe("Substring of the element name (case-insensitive)."),
+    automation_id: z.string().max(256).optional().describe("Substring of the AutomationId."),
+    class_name: z.string().max(256).optional().describe("Substring of the window class name."),
+    control_type: z.string().max(64).optional().describe("Exact UIA control type (e.g. Button, Edit, DataItem)."),
+    nth: z.number().int().min(0).max(50).optional().describe("Which match to use (default 0)."),
+    whole_desktop: z.boolean().optional().describe("Search the whole desktop instead of one window."),
+  };
+  const criteriaError = (args: object): string | null => {
+    const a = args as Record<string, unknown>;
+    return a.name || a.automation_id || a.class_name || a.control_type
+      ? null
+      : "provide at least one of name, automation_id, class_name, control_type";
+  };
+
+  registerCuaJobTool(server, hub, audit, {
+    name: "agent_cua_find_element",
+    title: "Find a UI element and return its rect (CUA engine)",
+    description:
+      "Locates a control by name / automation id / class name / control type and returns its identity, " +
+      "bounds and centre click point. Use it instead of guessing coordinates: the returned click_point feeds " +
+      "agent_cua_click directly, and the identity feeds agent_cua_invoke / agent_cua_set_value. Searches one " +
+      "window (window_id/pid) or the whole desktop with whole_desktop.",
+    inputSchema: {
+      agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
+      ...elementCriteria,
+      max_results: z.number().int().min(1).max(200).optional().describe("Match cap (default 20)."),
+      window_id: windowIdSchema,
+      pid: pidSchema,
+      timeoutMs: timeoutSchema,
+    },
+    sidecarTool: "find_element",
+    validate: criteriaError,
+  });
+
+  registerCuaJobTool(server, hub, audit, {
+    name: "agent_cua_invoke",
+    title: "Activate a UI element through UIA (CUA engine)",
+    description:
+      "Activates a control through its UIA pattern (InvokePattern) instead of clicking a point, so it keeps " +
+      "working when the window moved or scrolled. Falls back to a real click on the element centre when the " +
+      "control exposes no InvokePattern. Selects the element with the same criteria as agent_cua_find_element. " +
+      "Requires confirm: true.",
+    inputSchema: {
+      agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
+      ...elementCriteria,
+      window_id: windowIdSchema,
+      pid: pidSchema,
+      confirm: confirmSchema,
+      timeoutMs: timeoutSchema,
+    },
+    sidecarTool: "invoke",
+    validate: (args) => criteriaError(args) ?? (args.confirm ? null : "requires confirm: true"),
+  });
+
+  registerCuaJobTool(server, hub, audit, {
+    name: "agent_cua_set_value",
+    title: "Write a value into a UI field through UIA (CUA engine)",
+    description:
+      "Sets the value of a field without stealing focus or clicking it (TextBox.Text, or the generic " +
+      "ValuePattern). More reliable than typing character by character. Selects the element with the same " +
+      "criteria as agent_cua_find_element. Requires confirm: true.",
+    inputSchema: {
+      agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
+      value: z.string().max(4096).describe("Value to write."),
+      ...elementCriteria,
+      window_id: windowIdSchema,
+      pid: pidSchema,
+      confirm: confirmSchema,
+      timeoutMs: timeoutSchema,
+    },
+    sidecarTool: "set_value",
+    validate: (args) => criteriaError(args) ?? (args.confirm ? null : "requires confirm: true"),
+  });
+
+  registerCuaJobTool(server, hub, audit, {
+    name: "agent_cua_wait_for",
+    title: "Wait for a UI element to appear or disappear (CUA engine)",
+    description:
+      "Blocks until an element matching the criteria appears (default) or disappears (until_gone: true), " +
+      "polling until timeout_ms. Replaces fixed sleeps: wait for the dialog, the row, the 'Ready' label. " +
+      "Read-only.",
+    inputSchema: {
+      agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
+      ...elementCriteria,
+      timeout_ms: z.number().int().min(200).max(120_000).optional().describe("Wait budget in ms (default 15000)."),
+      until_gone: z.boolean().optional().describe("Wait for the element to disappear instead."),
+      poll_ms: z.number().int().min(50).max(5000).optional().describe("Poll interval (default 250)."),
+      window_id: windowIdSchema,
+      pid: pidSchema,
+      timeoutMs: timeoutSchema,
+    },
+    sidecarTool: "wait_for",
+    validate: criteriaError,
+  });
+
+  registerCuaJobTool(server, hub, audit, {
+    name: "agent_cua_table_read",
+    title: "Read a table/grid as rows of cells (CUA engine)",
+    description:
+      "Reads a grid or list as rows of cell strings. Uses the UIA GridPattern when the app exposes it " +
+      "(Excel, most datagrids) and falls back to walking DataItem/ListItem children for ListView-style " +
+      "tables. Point it at the table with window_id/pid or narrow it with the element criteria. Read-only.",
+    inputSchema: {
+      agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
+      ...elementCriteria,
+      max_rows: z.number().int().min(1).max(5000).optional().describe("Row cap (default 200)."),
+      max_cells: z.number().int().min(1).max(50_000).optional().describe("Cell cap (default 5000)."),
+      window_id: windowIdSchema,
+      pid: pidSchema,
+      timeoutMs: timeoutSchema,
+    },
+    sidecarTool: "table_read",
+  });
+
+  registerCuaJobTool(server, hub, audit, {
+    name: "agent_cua_clipboard_set",
+    title: "Put text on the clipboard (CUA engine)",
+    description:
+      "Preloads the clipboard with text so a paste (Ctrl+V) — the most reliable desktop input path — can be " +
+      "used instead of typing character by character. Pair with agent_cua_press_key key=ctrl+v. Requires " +
+      "confirm: true.",
+    inputSchema: {
+      agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
+      text: z.string().max(100_000).describe("Text to place on the clipboard."),
+      confirm: confirmSchema,
+      timeoutMs: timeoutSchema,
+    },
+    sidecarTool: "clipboard_set",
+    validate: (args) => (args.confirm ? null : "requires confirm: true"),
+  });
 }
 
 /**

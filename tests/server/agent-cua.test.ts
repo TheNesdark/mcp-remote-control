@@ -75,6 +75,28 @@ function sidecarMeta(msg: JobRequestMsg): Record<string, unknown> {
       return { scrolled: { x: 40, y: 50, delta: -240 } };
     case "focus":
       return { focused_hwnd: 101 };
+    case "find_element":
+      return {
+        matches: 2,
+        element: {
+          name: "Guardar", automation_id: "btnSave", class_name: "Button", control_type: "Button",
+          enabled: true, offscreen: false, pid: 20, bounds: { x: 40, y: 50, width: 80, height: 24 },
+        },
+        click_point: { x: 80, y: 62 },
+      };
+    case "invoke":
+      return { via: "invoke", element: { name: "Guardar", control_type: "Button", bounds: { x: 40, y: 50, width: 80, height: 24 } } };
+    case "set_value":
+      return { via: "textbox", chars: 9 };
+    case "wait_for":
+      return { present: true, waited_ms: 420, element: { name: "Guardar", control_type: "Button" } };
+    case "table_read":
+      return {
+        via: "grid-pattern", row_count: 3, column_count: 2, returned_rows: 2, truncated: true,
+        rows: [["Cabecera A", "Cabecera B"], ["dato 1", "dato 2"]],
+      };
+    case "clipboard_set":
+      return { chars: 12 };
     case "screenshot":
       return { path: "C:\\Users\\SERVER-RX\\AppData\\Local\\Temp\\mrc-cua-shot.png", bytes: FAKE_PNG.length };
     case "record":
@@ -312,6 +334,66 @@ test("agent_cua_screenshot fails cleanly when the sidecar has no path", async ()
   client.close();
   agent.stop();
   service.close();
+});
+
+// ---------------------------------------------------- element-oriented tools
+
+test("agent_cua_find_element routes criteria and returns the click point", async () => {
+  const started = await start();
+  const result = await call("agent_cua_find_element", {
+    agent: "W-CUA-01", name: "Guardar", window_id: 101, max_results: 5,
+  });
+  expect(result.isError).toBe(false);
+  expect(result.data.matches).toBe(2);
+  expect(result.data.click_point).toEqual({ x: 80, y: 62 });
+  expect(started.jobs[0]).toMatchObject({
+    jobType: "cua",
+    params: { tool: "find_element", args: { name: "Guardar", window_id: 101, max_results: 5 } },
+  });
+});
+
+test("agent_cua_find_element requires at least one criterion", async () => {
+  const started = await start();
+  const result = await call("agent_cua_find_element", { agent: "W-CUA-01", window_id: 101 });
+  expect(result.isError).toBe(true);
+  expect(result.text + JSON.stringify(result.data ?? "")).toMatch(/name, automation_id, class_name, control_type/);
+  expect(started.jobs.length).toBe(0);
+});
+
+test("agent_cua_invoke and agent_cua_set_value are confirm-gated", async () => {
+  const started = await start();
+  for (const call_ of [
+    { name: "agent_cua_invoke", args: { name: "Guardar" } },
+    { name: "agent_cua_set_value", args: { name: "Total", value: "1234" } },
+    { name: "agent_cua_clipboard_set", args: { text: "hola mundo" } },
+  ]) {
+    const result = await call(call_.name, { agent: "W-CUA-01", window_id: 101, ...call_.args });
+    expect(result.isError).toBe(true);
+    expect(result.text + JSON.stringify(result.data ?? "")).toMatch(/confirm/i);
+  }
+  expect(started.jobs.length).toBe(0);
+});
+
+test("agent_cua_invoke with confirm activates the element through UIA", async () => {
+  const started = await start();
+  const result = await call("agent_cua_invoke", { agent: "W-CUA-01", name: "Guardar", window_id: 101, confirm: true });
+  expect(result.isError).toBe(false);
+  expect(result.data.via).toBe("invoke");
+  expect(started.jobs[0]).toMatchObject({ params: { tool: "invoke", args: { name: "Guardar", confirm: true } } });
+});
+
+test("agent_cua_wait_for and agent_cua_table_read are read-only", async () => {
+  const started = await start();
+  const waited = await call("agent_cua_wait_for", { agent: "W-CUA-01", name: "Guardar", window_id: 101, timeout_ms: 5000 });
+  expect(waited.isError).toBe(false);
+  expect(waited.data.present).toBe(true);
+
+  const table = await call("agent_cua_table_read", { agent: "W-CUA-01", window_id: 101, max_rows: 2 });
+  expect(table.isError).toBe(false);
+  expect(table.data.via).toBe("grid-pattern");
+  expect(table.data.rows[1]).toEqual(["dato 1", "dato 2"]);
+
+  expect(started.jobs.map((job) => (job.params as { tool: string }).tool)).toEqual(["wait_for", "table_read"]);
 });
 
 // ------------------------------------------------------------- browser tools

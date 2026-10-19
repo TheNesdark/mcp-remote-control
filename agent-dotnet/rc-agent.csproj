@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    rc-agent (C# port of the TypeScript agent).
+
+    net8.0-windows + UseWindowsForms is what brings in the desktop APIs the
+    port needs: System.Windows.Automation (UIA) for window/element trees,
+    NotifyIcon for the tray, and System.Drawing for screen capture. Windows is
+    also the only place this can be built: the WindowsDesktop runtime does not
+    exist for Linux, so `dotnet publish` must run on the agent machine (or a
+    Windows builder).
+
+    SelfContained=false keeps the binary ~2 MB and relies on the .NET 8 runtime
+    installed on the machine (the SDK install provides it).
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>rc-agent</AssemblyName>
+    <RootNamespace>Mrc.Agent</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- The tray/desktop bits make the SDK emit a windowed app; keep stderr. -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Drawing.Common" Version="8.0.10" />
+    <!-- WMI: System.Management is not in the BCL on .NET (it was on Framework). -->
+    <PackageReference Include="System.Management" Version="8.0.0" />
+    <!-- UIA: FlaUI replaces our hand-rolled mrc-cua.cs engine (which needed a
+         runtime csc compile on the target). Pure NuGet, so no sidecar, no
+         compiled-in-source, no .sha marker. -->
+    <PackageReference Include="FlaUI.UIA3" Version="5.0.0" />
+  </ItemGroup>
+
+
+  <Target Name="StampVersion" BeforeTargets="CoreCompile">
+    <!-- Keep hello/info versions in step with the repo's single source of truth. -->
+    <Exec Command="grep -oE '[0-9]+\.[0-9]+\.[0-9]+' ../shared/version.ts | head -1"
+          ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="Low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="RepoVersion" />
+    </Exec>
+    <PropertyGroup>
+      <Version Condition="'$(RepoVersion)' != ''">$(RepoVersion)</Version>
+      <InformationalVersion Condition="'$(RepoVersion)' != ''">$(RepoVersion)</InformationalVersion>
+    </PropertyGroup>
+  </Target>
+
+</Project>

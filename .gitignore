@@ -9,3 +9,7 @@ run/
 .env.local
 pilot/
 recordings/
+
+# .NET agent port build output
+agent-dotnet/bin/
+agent-dotnet/obj/

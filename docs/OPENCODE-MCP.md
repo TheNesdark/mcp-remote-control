@@ -286,23 +286,48 @@ To keep the agent from using the tools without asking, restrict them by name:
    - `agent_sessions` shows who is logged on (console and RDP by default) via
      CIM, so it works on any display language; `interactiveOnly=false` adds
      service/batch/network sessions collapsed per user.
-12. Computer use (own C# sidecar, Windows only; the same engine drives all of
-    these — see `agent/cua/mrc-cua.cs`):
+ 12. Computer use (Windows only, UIA through **FlaUI** inside the agent binary;
+     the CUA engine used to be a separate sidecar compiled on the target - that
+     is gone, there is one `rc-agent.exe`):
 
     ```
-    agent_cua_list_windows(agent="SRV-RX")                          # hwnd/pid/title per window
-    agent_cua_get_window_state(agent="SRV-RX", window_id=262414)    # UIA tree with element rects
-    agent_cua_screenshot(agent="SRV-RX", window_id=262414)          # PNG pulled to the hub
+    agent_cua_list_windows(agent="SRV-RX")                            # hwnd/pid/title per window
+    agent_cua_get_window_state(agent="SRV-RX", window_id=262414)      # UIA tree with element rects
+    agent_cua_screenshot(agent="SRV-RX", window_id=262414)            # PNG pulled to the hub
     agent_cua_click(agent="SRV-RX", x=820, y=460, window_id=262414, confirm=true)
     agent_cua_type_text(agent="SRV-RX", text="hola", window_id=262414, confirm=true)
     agent_cua_press_key(agent="SRV-RX", key="enter", window_id=262414, confirm=true)
     agent_cua_scroll(agent="SRV-RX", x=820, y=460, ticks=-3, confirm=true)
+    agent_cua_focus(agent="SRV-RX", window_id=262414)
     ```
 
     - Coordinates come from the element rects of `agent_cua_get_window_state`;
       `window_id` is the HWND in decimal. Every input tool steals the target
-      window's foreground first and needs `confirm=true` (the sidecar refuses
+      window's foreground first and needs `confirm=true` (the engine refuses
       runs without it).
+
+    Element-oriented tools - prefer these over coordinate arithmetic, they keep
+    working when a window moves or scrolls:
+
+    ```
+    agent_cua_find_element(agent="SRV-RX", window_id=262414, name="Guardar")         # rect + click_point
+    agent_cua_invoke(agent="SRV-RX", window_id=262414, name="Guardar", confirm=true) # UIA InvokePattern
+    agent_cua_set_value(agent="SRV-RX", window_id=262414, name="Total", value="1234", confirm=true)
+    agent_cua_wait_for(agent="SRV-RX", window_id=262414, name="Listo", timeout_ms=20000)
+    agent_cua_table_read(agent="SRV-RX", window_id=262414, max_rows=200)             # rows of cells
+    agent_cua_clipboard_set(agent="SRV-RX", text="hola", confirm=true)               # + press_key ctrl+v
+    ```
+
+    - Criteria (`name`, `automation_id`, `class_name`, `control_type`) are
+      substring matches except `control_type`, which is exact; `nth` picks among
+      several matches and `whole_desktop` searches every window.
+    - `invoke` uses the UIA pattern and falls back to a real click when the
+      control exposes none. `set_value` writes without stealing focus.
+      `wait_for` removes the need for fixed sleeps (`until_gone` waits for a
+      dialog to close). `table_read` uses GridPattern when the app has it and
+      otherwise walks DataItem/ListItem rows.
+    - `find_element`/`wait_for`/`table_read` are read-only; `invoke`,
+      `set_value` and `clipboard_set` need `confirm=true`.
 
     Native browser control (`agent_cua_browser`) drives the browser the USER
     already runs — their real profile, tabs and logins — over its DevTools
