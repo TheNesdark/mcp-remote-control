@@ -411,9 +411,14 @@ public static class JavaAccessBridge
             for (var wait = 0; wait < 12; wait++)
             {
                 Thread.Sleep(120);
-                if (isJavaWindow(hwnd)) return true;
+                if (isJavaWindow(hwnd))
+                {
+                    Log.Info("jab: connected to the Java application", new { hwnd = hwnd.ToInt64(), attempt });
+                    return true;
+                }
             }
         }
+        Log.Info("jab: the Java application did not answer the bridge handshake", new { hwnd = hwnd.ToInt64() });
         return false;
     }
 
@@ -523,13 +528,19 @@ public static class JavaAccessBridge
             if (path is null)
             {
                 EnsureBridgeEnabled();
+                Log.Info("jab: the Java Access Bridge library was not found", new { hint = "install a JRE with jabswitch and enable the bridge" });
                 return false;
             }
             var dll = LoadLibrary(path);
-            if (dll == IntPtr.Zero) return false;
+            if (dll == IntPtr.Zero)
+            {
+                Log.Info("jab: the bridge library could not be loaded", new { path, error = Marshal.GetLastWin32Error() });
+                return false;
+            }
             // The AT needs its own status dialog: the JVM answers the hello that
             // Windows_run() broadcasts from that window.
-            CreateDialogParam(dll, DialogTemplate, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+            var dialog = CreateDialogParam(dll, DialogTemplate, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+            Log.Info("jab: bridge loaded", new { path, dialog = dialog.ToInt64(), error = dialog == IntPtr.Zero ? Marshal.GetLastWin32Error() : 0 });
             _dll = dll;
             _info = Marshal.AllocHGlobal(InfoSize);
             _visible = Marshal.AllocHGlobal(VisibleChildrenSize);
