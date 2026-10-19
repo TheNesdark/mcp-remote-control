@@ -818,11 +818,16 @@ public static class Cua
                 if (results.Count >= max) break;
                 try
                 {
-                    if (name is not null && !Contains(element.Name, name)) continue;
-                    if (automationId is not null && !Contains(element.AutomationId, automationId)) continue;
-                    if (className is not null && !Contains(element.ClassName, className)) continue;
+                    string? elName = null, elAutoId = null, elClass = null, elCtrl = null;
+                    try { elName = element.Name; } catch { }
+                    try { elAutoId = element.AutomationId; } catch { }
+                    try { elClass = element.ClassName; } catch { }
+                    try { elCtrl = element.ControlType.ToString(); } catch { }
+                    if (name is not null && !Contains(elName, name)) continue;
+                    if (automationId is not null && !Contains(elAutoId, automationId)) continue;
+                    if (className is not null && !Contains(elClass, className)) continue;
                     if (controlType is not null &&
-                        !string.Equals(element.ControlType.ToString(), controlType, StringComparison.OrdinalIgnoreCase)) continue;
+                        !string.Equals(elCtrl, controlType, StringComparison.OrdinalIgnoreCase)) continue;
                     results.Add(element);
                 }
                 catch (Exception)
@@ -833,7 +838,10 @@ public static class Cua
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"element search failed: {ex.Message}");
+            // Some UIA providers throw while enumerating (e.g. when they
+            // cannot answer a property query). Return whatever we collected
+            // instead of failing the whole search.
+            Log.Warn("FindAll enumeration error", new { error = ex.Message });
         }
         return results;
     }
@@ -841,17 +849,30 @@ public static class Cua
     private static bool Contains(string? value, string needle) =>
         value is not null && value.Contains(needle, StringComparison.OrdinalIgnoreCase);
 
-    private static Dictionary<string, object?> Describe(AutomationElement element, System.Drawing.Rectangle rect) => new()
+    private static Dictionary<string, object?> Describe(AutomationElement element, System.Drawing.Rectangle rect)
     {
-        ["name"] = element.Name,
-        ["automation_id"] = element.AutomationId,
-        ["class_name"] = element.ClassName,
-        ["control_type"] = element.ControlType.ToString(),
-        ["enabled"] = element.IsEnabled,
-        ["offscreen"] = element.IsOffscreen,
-        ["pid"] = element.Properties.ProcessId.ValueOrDefault,
-        ["bounds"] = Bounds(rect),
-    };
+        string? name = null, automationId = null, className = null, controlType = null;
+        bool enabled = false, offscreen = false;
+        try { name = element.Name; } catch { }
+        try { automationId = element.AutomationId; } catch { }
+        try { className = element.ClassName; } catch { }
+        try { controlType = element.ControlType.ToString(); } catch { }
+        try { enabled = element.IsEnabled; } catch { }
+        try { offscreen = element.IsOffscreen; } catch { }
+        int pid = 0;
+        try { pid = element.Properties.ProcessId.ValueOrDefault; } catch { }
+        return new Dictionary<string, object?>
+        {
+            ["name"] = name ?? "",
+            ["automation_id"] = automationId ?? "",
+            ["class_name"] = className ?? "",
+            ["control_type"] = controlType ?? "",
+            ["enabled"] = enabled,
+            ["offscreen"] = offscreen,
+            ["pid"] = pid,
+            ["bounds"] = Bounds(rect),
+        };
+    }
 
     // --------------------------------------------------------------- helpers
 
