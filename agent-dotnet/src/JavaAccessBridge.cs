@@ -48,9 +48,8 @@ public static class JavaAccessBridge
     private static IntPtr _info;
     private static IntPtr _visible;
     private static IntPtr _message;
-    private static Thread? _pump;
-    private static volatile bool _pumpRun;
-    private static bool _announced;
+    private static Thread? _atThread;
+    private static volatile bool _atRun;
 
     // ---- native interop -------------------------------------------------
 
@@ -405,10 +404,10 @@ public static class JavaAccessBridge
         if (!EnsureLoaded()) return false;
         if (isJavaWindow(hwnd)) return true;
 
-        for (var attempt = 0; attempt < 4; attempt++)
+        // The AT thread broadcasts on its own; just wait for the JVM to answer.
+        for (var attempt = 0; attempt < 20; attempt++)
         {
-            Announce();
-            for (var wait = 0; wait < 12; wait++)
+            for (var wait = 0; wait < 10; wait++)
             {
                 Thread.Sleep(120);
                 if (isJavaWindow(hwnd))
@@ -519,6 +518,55 @@ public static class JavaAccessBridge
         }
     }
 
+    /// <summary>
+    /// The bridge needs three things on ONE thread: its status dialog, the
+    /// hello broadcast and the message pump. Windows delivers a window's
+    /// messages to the thread that created it, so doing the broadcast from a
+    /// job thread (busy waiting) while the dialog lives elsewhere means the
+    /// JVM's answer is queued where nobody pumps it and the handshake never
+    /// completes. This thread owns all three.
+    /// </summary>
+    private static void AtThread()
+    {
+        var path = FindBridgeLibrary();
+        if (path is null)
+        {
+            EnsureBridgeEnabled();
+            Log.Info("jab: the Java Access Bridge library was not found",
+                new { hint = "install a JRE with jabswitch and enable the bridge" });
+            return;
+        }
+        var dll = LoadLibrary(path);
+        if (dll == IntPtr.Zero)
+        {
+            Log.Info("jab: the bridge library could not be loaded", new { path, error = Marshal.GetLastWin32Error() });
+            return;
+        }
+        var dialog = CreateDialogParam(dll, DialogTemplate, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        Log.Info("jab: bridge loaded", new { path, dialog = dialog.ToInt64(), error = dialog == IntPtr.Zero ? Marshal.GetLastWin32Error() : 0 });
+
+        while (_atRun)
+        {
+            try
+            {
+                // Broadcast the hello from this thread, so the dialog the JVM
+                // answers to belongs to the thread that pumps messages.
+                Windows_run();
+                var until = Environment.TickCount64 + 1000;
+                while (Environment.TickCount64 < until)
+                {
+                    while (PeekMessage(_message, IntPtr.Zero, 0, 0, 1)) DispatchMessage(_message);
+                    Thread.Sleep(20);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("jab: the bridge thread hit an error", new { error = ex.Message });
+                Thread.Sleep(500);
+            }
+        }
+    }
+
     private static bool EnsureLoaded()
     {
         lock (Gate)
@@ -528,72 +576,20 @@ public static class JavaAccessBridge
             if (path is null)
             {
                 EnsureBridgeEnabled();
-                Log.Info("jab: the Java Access Bridge library was not found", new { hint = "install a JRE with jabswitch and enable the bridge" });
+                Log.Info("jab: the Java Access Bridge library was not found",
+                    new { hint = "install a JRE with jabswitch and enable the bridge" });
                 return false;
             }
-            var dll = LoadLibrary(path);
-            if (dll == IntPtr.Zero)
-            {
-                Log.Info("jab: the bridge library could not be loaded", new { path, error = Marshal.GetLastWin32Error() });
-                return false;
-            }
-            // The AT needs its own status dialog: the JVM answers the hello that
-            // Windows_run() broadcasts from that window.
-            var dialog = CreateDialogParam(dll, DialogTemplate, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
-            Log.Info("jab: bridge loaded", new { path, dialog = dialog.ToInt64(), error = dialog == IntPtr.Zero ? Marshal.GetLastWin32Error() : 0 });
-            _dll = dll;
             _info = Marshal.AllocHGlobal(InfoSize);
             _visible = Marshal.AllocHGlobal(VisibleChildrenSize);
             _message = Marshal.AllocHGlobal(64);
-            StartPump();
-            return true;
+            _atRun = true;
+            _atThread = new Thread(AtThread) { IsBackground = true, Name = "jab-at" };
+            _atThread.Start();
+            // The thread loads the DLL; wait a moment for it to be ready.
+            for (var i = 0; i < 50 && _dll == IntPtr.Zero; i++) Thread.Sleep(100);
+            return _dll != IntPtr.Zero;
         }
-    }
-
-    /// <summary>Broadcasts the hello again so a JVM that was busy can answer.</summary>
-    private static void Announce()
-    {
-        lock (Gate)
-        {
-            if (_dll == IntPtr.Zero) return;
-            if (!_announced)
-            {
-                Windows_run();
-                _announced = true;
-            }
-            else
-            {
-                // A second Windows_run re-creates the dialog and re-broadcasts.
-                Windows_run();
-            }
-        }
-    }
-
-    /// <summary>Pumps Windows messages so the bridge can complete its handshake.</summary>
-    private static void StartPump()
-    {
-        if (_pump is not null) return;
-        _pumpRun = true;
-        _pump = new Thread(() =>
-        {
-            while (_pumpRun)
-            {
-                try
-                {
-                    while (PeekMessage(_message, IntPtr.Zero, 0, 0, 1)) DispatchMessage(_message);
-                }
-                catch (Exception)
-                {
-                    // ignore
-                }
-                Thread.Sleep(10);
-            }
-        })
-        {
-            IsBackground = true,
-            Name = "jab-pump",
-        };
-        _pump.Start();
     }
 }
 
