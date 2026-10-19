@@ -839,9 +839,9 @@ public static class Cua
         catch (Exception ex)
         {
             // Some UIA providers throw while enumerating (e.g. when they
-            // cannot answer a property query). Return whatever we collected
-            // instead of failing the whole search.
-            Log.Warn("FindAll enumeration error", new { error = ex.Message });
+            // cannot answer a property query). Surface the error instead of
+            // silently returning an empty result.
+            throw new InvalidOperationException($"element enumeration failed: {ex.GetType().Name}: {ex.Message}", ex);
         }
         return results;
     }
