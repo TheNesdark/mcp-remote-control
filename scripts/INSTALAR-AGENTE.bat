@@ -45,8 +45,23 @@ powershell -NoProfile -Command "Unblock-File -Path '%EXE%' -ErrorAction Silently
 for /f "tokens=3 delims=." %%a in ('powershell -NoProfile -Command "(Get-Item '%EXE%').VersionInfo.FileVersion" 2^>nul') do echo        version instalada: %%a.%%b.%%c
 
 REM --- 3) autoinicio al iniciar sesion (clave Run del usuario) ---
+REM     Si el equipo ya tiene un agente configurado, se arranca SIN argumentos:
+REM     el agente lee su config (nombre, servidor, token) y asi no se crea un
+REM     agente nuevo con otro nombre. Solo en una instalacion nueva (sin
+REM     config) se pasan los argumentos.
+set "CFG=%APPDATA%\mcp-remote-control\agent.json"
+set "AGENTARGS="
+if not exist "%CFG%" (
+  set "AGENTARGS=--name %NAME% --server %SERVER% --token %TOKEN%"
+  echo        (instalacion nueva: se usara %NAME%)
+) else (
+  echo        (config existente: se respeta su nombre y servidor)
+)
+
 echo [3/4] Registrando el autoinicio...
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "mcp-remote-control" /t REG_SZ /d "\"%EXE%\"" /f >nul 2>&1
+set "RUNCMD=\"%EXE%\""
+if defined AGENTARGS set "RUNCMD=\"%EXE%\" %AGENTARGS%"
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "mcp-remote-control" /t REG_SZ /d "%RUNCMD%" /f >nul 2>&1
 if errorlevel 1 (
   echo        AVISO: no se pudo registrar el autoinicio.
 ) else (
@@ -55,7 +70,7 @@ if errorlevel 1 (
 
 REM --- 4) arrancar ---
 echo [4/4] Arrancando el agente...
-start "" "%EXE%" --name %NAME% --server %SERVER% --token %TOKEN%
+start "" "%EXE%" %AGENTARGS%
 timeout /t 8 /nobreak >nul
 tasklist /fi "imagename eq rc-agent.exe" 2>nul | find /i "rc-agent.exe" >nul
 if errorlevel 1 (
