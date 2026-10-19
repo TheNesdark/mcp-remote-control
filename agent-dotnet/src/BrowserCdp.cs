@@ -132,6 +132,7 @@ public static class BrowserCdp
                 "navigate" => await NavigateAsync(p, preferred, ct).ConfigureAwait(false),
                 "text" => await TextAsync(p, preferred, ct).ConfigureAwait(false),
                 "click" => await ClickAsync(p, preferred, ct).ConfigureAwait(false),
+                "search" => await SearchAsync(p, preferred, ct).ConfigureAwait(false),
                 _ => throw new InvalidOperationException($"unknown browser operation: {operation}"),
             };
             return JobOutcome.Success(meta);
@@ -444,6 +445,78 @@ public static class BrowserCdp
                 ["text"] = root.GetProperty("text").GetString(),
                 ["matches"] = root.GetProperty("matches").GetInt32(),
                 ["via"] = "dom",
+            };
+        }, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// search: type a query into the page's search box and submit it. The
+    /// keystrokes are dispatched one by one so the page's own autocomplete runs
+    /// and a screen recording shows the query being typed.
+    /// </summary>
+    private static async Task<Dictionary<string, object?>> SearchAsync(JsonElement p, string? preferred, CancellationToken ct)
+    {
+        var query = Fs.ReadString(p, "match") ?? Fs.ReadString(p, "query")
+            ?? throw new InvalidOperationException("search requires 'match'");
+        var endpoint = Require(preferred);
+        return await WithTabAsync(p, preferred, async attached =>
+        {
+            // Find the search input, focus it, and clear whatever is there.
+            var find = """
+            (() => {
+              const cands = Array.from(document.querySelectorAll("input[type=search],input[name=q],input[name=search_query],input[type=text],input:not([type])"));
+              const vis = cands.filter(e => e.offsetParent !== null && !e.disabled && !e.readOnly);
+              const el = vis[0];
+              if (!el) return JSON.stringify({ error: "no visible search input on this page" });
+              el.scrollIntoView({ block: "center" });
+              el.focus();
+              if (el.select) el.select();
+              const r = el.getBoundingClientRect();
+              return JSON.stringify({ ok: true, name: el.name || "", x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), w: Math.round(r.width), h: Math.round(r.height) });
+            })()
+            """;
+            using var found = JsonDocument.Parse(await EvalStringAsync(attached, find, ct).ConfigureAwait(false));
+            var info = found.RootElement;
+            if (info.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String)
+                throw new InvalidOperationException(error.GetString());
+
+            // Type character by character so autocomplete fires and the query
+            // is visible in a recording.
+            foreach (var ch in query)
+            {
+                var chLiteral = JsonSerializer.Serialize(ch.ToString());
+                await EvalStringAsync(attached, $"(() => {{ const el = document.activeElement; if (!el) return 'no-focus'; el.value += {chLiteral}; el.dispatchEvent(new Event('input', {{bubbles:true}})); return el.value; }})()", ct).ConfigureAwait(false);
+                await Task.Delay(120, ct).ConfigureAwait(false);
+            }
+
+            // Submit with a real Enter keydown (some pages ignore form.submit()).
+            var submit = """
+            (() => {
+              const el = document.activeElement;
+              if (!el) return "no-focus";
+              for (const type of ["keydown","keypress","keyup"]) el.dispatchEvent(new KeyboardEvent(type, { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+              return "keydown";
+            })()
+            """;
+            var via = await EvalStringAsync(attached, submit, ct).ConfigureAwait(false);
+
+            var url = "";
+            for (var i = 0; i < 24; i++)
+            {
+                await Task.Delay(500, ct).ConfigureAwait(false);
+                url = await EvalStringAsync(attached, "location.href", ct).ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(url) && url.Contains("search", StringComparison.OrdinalIgnoreCase)) break;
+            }
+
+            return new Dictionary<string, object?>
+            {
+                ["browser"] = endpoint.BrowserName,
+                ["target_id"] = attached.TargetId,
+                ["query"] = query,
+                ["typed"] = query.Length,
+                ["submitted"] = via,
+                ["input_name"] = info.TryGetProperty("name", out var nameProp) ? nameProp.GetString() : "",
+                ["url"] = url,
             };
         }, ct).ConfigureAwait(false);
     }

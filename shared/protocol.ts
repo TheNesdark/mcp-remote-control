@@ -176,7 +176,7 @@ export type RecordParams = z.infer<typeof RecordParams>;
 // ---------------------------------------------------------------------------
 
 export const BrowserParams = z.object({
-  operation: z.enum(["state", "open", "navigate", "text", "tabs", "click"]),
+  operation: z.enum(["state", "open", "navigate", "text", "tabs", "click", "search"]),
   browser: z.enum(["chrome", "msedge"]).optional(),
   url: z.string().max(2048).optional(),
   max_chars: z.number().int().min(200).max(40_000).optional(),

@@ -138,6 +138,8 @@ function browserMeta(msg: JobRequestMsg): Record<string, unknown> {
       return { browser: "chrome", tab_count: 1, tabs: [{ target_id: "A1B2", title: "Example Domain", url: "https://example.com/" }] };
     case "click":
       return { browser: "chrome", target_id: "A1B2", clicked: { x: 10, y: 20, w: 100, h: 20 }, tag: "a", text: "More information...", matches: 1, via: "dom" };
+    case "search":
+      return { browser: "chrome", target_id: "A1B2", query: "test", typed: 4, submitted: "keydown", input_name: "search_query", url: "https://example.com/results?search_query=test" };
     default:
       return { unexpectedOperation: params.operation };
   }
@@ -495,7 +497,26 @@ test("agent_cua_browser validates url scheme and click match", async () => {
   const noMatch = await call("agent_cua_browser", { agent: "W-CUA-01", operation: "click", confirm: true });
   expect(noMatch.isError).toBe(true);
   expect(noMatch.text + JSON.stringify(noMatch.data ?? "")).toMatch(/match/);
+  const noQuery = await call("agent_cua_browser", { agent: "W-CUA-01", operation: "search", confirm: true });
+  expect(noQuery.isError).toBe(true);
+  expect(noQuery.text + JSON.stringify(noQuery.data ?? "")).toMatch(/match/);
   expect(started.jobs.length).toBe(0);
+});
+
+test("agent_cua_browser search types the query and submits it", async () => {
+  const started = await start();
+  const result = await call("agent_cua_browser", {
+    agent: "W-CUA-01",
+    operation: "search",
+    match: "test",
+    confirm: true,
+  });
+  expect(result.isError).toBe(false);
+  expect(result.data.query).toBe("test");
+  expect(result.data.typed).toBe(4);
+  expect(result.data.submitted).toBe("keydown");
+  const params = (started.jobs[0]?.params ?? {}) as Record<string, unknown>;
+  expect(params).toMatchObject({ operation: "search", match: "test" });
 });
 
 test("agent_cua_browser click with confirm drives a browser click job", async () => {

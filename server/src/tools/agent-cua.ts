@@ -820,7 +820,7 @@ function registerAgentCuaRecord(
 function registerAgentCuaBrowser(server: McpServer, hub: Hub, audit: AuditLog): void {
   interface Args {
     agent: string;
-    operation: "state" | "open" | "navigate" | "text" | "tabs" | "click";
+    operation: "state" | "open" | "navigate" | "text" | "tabs" | "click" | "search";
     browser?: "chrome" | "msedge";
     url?: string;
     max_chars?: number;
@@ -830,7 +830,7 @@ function registerAgentCuaBrowser(server: McpServer, hub: Hub, audit: AuditLog): 
     confirm?: boolean;
     timeoutMs?: number;
   }
-  const MUTATING = new Set(["open", "navigate", "click"]);
+  const MUTATING = new Set(["open", "navigate", "click", "search"]);
 
   registerJobTool<Args>(server, hub, audit, {
     name: "agent_cua_browser",
@@ -845,7 +845,7 @@ function registerAgentCuaBrowser(server: McpServer, hub: Hub, audit: AuditLog): 
       "confirm: true.",
     inputSchema: {
       agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
-      operation: z.enum(["state", "open", "navigate", "text", "tabs", "click"]).describe("Browser operation to run."),
+      operation: z.enum(["state", "open", "navigate", "text", "tabs", "click", "search"]).describe("Browser operation to run."),
       browser: z.enum(["chrome", "msedge"]).optional().describe("Which browser to attach to (default: the one with debugging enabled)."),
       url: z.string().max(2048).optional().describe("http(s) or file:// URL for open/navigate."),
       max_chars: z.number().int().min(200).max(40_000).optional().describe("text: page text cap (default 8000)."),
@@ -865,6 +865,7 @@ function registerAgentCuaBrowser(server: McpServer, hub: Hub, audit: AuditLog): 
           return `${args.operation} requires a full http(s):// or file:// url`;
         }
         if (args.operation === "click" && !args.match) return "click requires 'match' (substring of a link/button text)";
+        if (args.operation === "search" && !args.match) return "search requires 'match' (the query to type)";
         return null;
       },
       timeoutMs: (args) => args.timeoutMs,
