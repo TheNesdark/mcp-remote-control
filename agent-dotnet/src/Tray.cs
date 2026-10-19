@@ -43,6 +43,7 @@ public sealed class Tray : IDisposable
         menu.Items.Add(_pauseItem);
         menu.Items.Add(new ToolStripMenuItem("Reconectar", null, (_, _) => _connection.ReconnectNow()));
         menu.Items.Add(new ToolStripMenuItem("Abrir logs", null, (_, _) => OpenLogs()));
+        menu.Items.Add(new ToolStripMenuItem("Ajustes...", null, (_, _) => OpenSettings()));
         menu.Items.Add(new ToolStripSeparator());
         _autostartItem = new ToolStripMenuItem("Iniciar con Windows", null, (_, _) => ToggleAutostart())
         {
@@ -83,17 +84,48 @@ public sealed class Tray : IDisposable
         Refresh();
     }
 
+    /// <summary>
+    /// Opens a console window with the agent's log, following it as it grows.
+    /// A folder is less useful than the log itself: the operator wants to read
+    /// what the agent is doing right now.
+    /// </summary>
     private void OpenLogs()
     {
-        var dir = Path.GetDirectoryName(Settings.Current.LogFile ?? Settings.DefaultLogFile()) ?? Settings.DataDir();
+        var file = Settings.Current.LogFile ?? Settings.DefaultLogFile();
         try
         {
-            Directory.CreateDirectory(dir);
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer", $"\"{dir}\"") { UseShellExecute = true });
+            var dir = Path.GetDirectoryName(file);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            if (!File.Exists(file)) File.WriteAllText(file, "");
+            // cmd /k keeps the window open, and the tail -Wait follows the file
+            // as the agent appends to it.
+            var ps = "Get-Content -Path '" + file + "' -Tail 40 -Wait";
+            var psi = new System.Diagnostics.ProcessStartInfo("powershell.exe",
+                "-NoProfile -NoExit -Command \"" + ps + "\"")
+            {
+                UseShellExecute = true,
+                CreateNoWindow = false,
+                WindowStyle = System.Diagnostics.ProcessWindowStyle.Normal,
+            };
+            System.Diagnostics.Process.Start(psi);
         }
         catch (Exception ex)
         {
-            Log.Error("could not open the log folder", new { dir, error = ex.Message });
+            Log.Error("could not open the log window", new { file, error = ex.Message });
+        }
+    }
+
+    /// <summary>Opens the settings form (name / server / token).</summary>
+    private void OpenSettings()
+    {
+        try
+        {
+            using var form = new SettingsForm();
+            form.ShowDialog();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("could not open the settings form", new { error = ex.Message });
         }
     }
 

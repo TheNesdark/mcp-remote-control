@@ -23,6 +23,8 @@ public sealed class CliArgs
     public bool TrayRequested => Flag("tray") == true;
     public bool NoAutoUpdate => Flag("no-auto-update") == true;
     public bool TlsInsecure => Flag("tls-insecure") == true;
+    /// <summary>Attach to the parent console (debugging); otherwise stay detached.</summary>
+    public bool Console => Flag("console") == true;
 
     public static CliArgs Parse(string[] argv)
     {

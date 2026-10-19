@@ -21,12 +21,38 @@ public static class Program
         var args = CliArgs.Parse(argv);
         Log.SetLevel(args.LogLevel ?? Environment.GetEnvironmentVariable("MRC_LOG_LEVEL") ?? "info");
 
-        // WinExe has no console by default: attach to the parent's when one
-        // exists (bat launch, interactive run) so logs land in agent-stderr.txt.
-        if (!AttachConsole(-1)) AllocConsole();
+        // WinExe has no console of its own. Attaching to the parent's console
+        // kept the launching .bat's CMD window open for as long as the agent
+        // ran, so the agent stays detached and the logs live in the log file
+        // (the tray's "Abrir logs" shows them). --console re-attaches for
+        // anyone debugging from a terminal.
+        if (args.Console)
+        {
+            if (!AttachConsole(-1)) AllocConsole();
+        }
 
         var settings = Settings.Load(args);
         Log.SetFile(settings.LogFile);
+
+        // First run with nothing configured: ask for name / server / token
+        // before connecting, the same three things the tray's form asks for.
+        if (Settings.NeedsFirstRun(args) && RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            try
+            {
+                using var firstRun = new SettingsForm();
+                firstRun.Text = "rc-agent · Primer arranque";
+                if (firstRun.ShowDialog() == DialogResult.OK)
+                {
+                    settings = Settings.Load(args);
+                    Log.SetFile(settings.LogFile);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error("the first-run form could not be shown", new { error = ex.Message });
+            }
+        }
         Log.Info("rc-agent starting", new { version = Versions.Current, name = settings.Name, server = settings.ServerUrl });
         if (settings.UsingDefaultToken) Log.Warn("using the default dev token; pass --token or set MRC_TOKEN");
 
@@ -59,6 +85,21 @@ public static class Program
         {
             tray = new Tray(connection);
             tray.OnExitRequested += () => Environment.Exit(0);
+            // New settings only take effect on a fresh process: restart in place.
+            SettingsForm.RestartRequested += () =>
+            {
+                try
+                {
+                    Restart.JobRestart(
+                        System.Text.Json.JsonSerializer.SerializeToElement(new { }),
+                        new JobContext("settings", _ => { }),
+                        CancellationToken.None).GetAwaiter().GetResult();
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("could not restart after the settings changed", new { error = ex.Message });
+                }
+            };
         }
 
         using var shutdown = new ManualResetEventSlim(false);

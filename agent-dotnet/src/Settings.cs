@@ -69,6 +69,17 @@ public static class Settings
 
     public static string DefaultLogFile() => Path.Combine(LocalDir(), "logs", "agent.log");
 
+    /// <summary>True when nothing configured the agent yet (first run).</summary>
+    public static bool NeedsFirstRun(CliArgs args)
+    {
+        if (args.Name is not null || args.Server is not null || args.Token is not null) return false;
+        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MRC_NAME"))) return false;
+        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MRC_SERVER"))) return false;
+        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MRC_TOKEN"))) return false;
+        var path = args.Config ?? Path.Combine(DataDir(), "agent.json");
+        return !File.Exists(path);
+    }
+
     /// <summary>Resolves the layered settings and returns them (also cached).</summary>
     public static AgentSettings Load(CliArgs args)
     {
@@ -132,6 +143,21 @@ public static class Settings
             }
         }
         return file.Token;
+    }
+
+    /// <summary>Reads agent.json as it is on disk (for the settings form).</summary>
+    public static ConfigFile ReadConfigFile()
+    {
+        try
+        {
+            return File.Exists(_configPath)
+                ? JsonSerializer.Deserialize<ConfigFile>(File.ReadAllText(_configPath)) ?? new ConfigFile()
+                : new ConfigFile();
+        }
+        catch (Exception)
+        {
+            return new ConfigFile();
+        }
     }
 
     /// <summary>Rewrites agent.json (id assignment from welcome, settings dialog).</summary>
