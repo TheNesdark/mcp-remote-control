@@ -683,12 +683,34 @@ function registerAgentCuaRecord(
           auditCall(false, err instanceof Error ? err.message : String(err));
           return toolError(err);
         }
-        // Background: once the agent finishes encoding, pull the file and
-        // attach its local path / sha256 to the retained job outcome so the
-        // client sees them when polling agent_jobs.
+        // Background: the agent's `record` job may return while encoding is
+        // still running (split mode). Poll `record.status` until done, then
+        // pull the finished file and attach its local path / sha256 to the
+        // retained job outcome so the client sees them when polling agent_jobs.
         void handle.promise.then(async (outcome) => {
           if (!outcome.ok) return;
-          const meta = (outcome.meta ?? {}) as { path?: unknown; encoder?: unknown; frames?: unknown; fps?: unknown };
+          // Poll until encoding finishes (split mode). Short clips already
+          // return done=true from `record`, so this loop exits immediately.
+          let statusOutcome = outcome;
+          let meta = (statusOutcome.meta ?? {}) as { path?: unknown; done?: unknown; status?: unknown; encoder?: unknown; frames?: unknown; fps?: unknown };
+          const deadline = Date.now() + 300_000;
+          while (meta.done !== true && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 1_500));
+            try {
+              const polled = await hub.request(args.agent, "record.status", {}, args.timeoutMs, {
+                op: "agent_cua_record",
+                params: args,
+                internal: true,
+              });
+              if (!polled.ok) break;
+              statusOutcome = polled;
+              meta = (statusOutcome.meta ?? {}) as { path?: unknown; done?: unknown; status?: unknown; encoder?: unknown; frames?: unknown; fps?: unknown };
+            } catch {
+              break;
+            }
+          }
+          if (meta.done !== true) return; // still encoding; client keeps polling
+
           const remotePath = typeof meta.path === "string" ? meta.path : "";
           if (!remotePath) return;
           const ext = remotePath.toLowerCase().endsWith(".mp4") ? ".mp4" : ".avi";
@@ -704,9 +726,10 @@ function registerAgentCuaRecord(
             const sha256 = createHash("sha256").update(bytes).digest("hex");
             const downloadPath = `${SCREENSHOT_HTTP_PREFIX}${basename(localPath)}`;
             hub.updateRetainedOutcome(handle.jobId, {
-              ...outcome,
+              ...statusOutcome,
               meta: {
-                ...(outcome.meta ?? {}),
+                ...(statusOutcome.meta ?? {}),
+                ...meta,
                 localPath,
                 sha256,
                 downloadPath,
@@ -725,7 +748,7 @@ function registerAgentCuaRecord(
           agent: args.agent,
           jobId: handle.jobId,
           state: "running",
-          note: "recording in progress; poll with agent_jobs (status) until state becomes 'ok', then read meta.localPath / meta.downloadPath",
+          note: "recording in progress; poll with agent_jobs (status). When meta.downloaded is true, read meta.localPath / meta.downloadPath / meta.sha256.",
         });
       }
 
