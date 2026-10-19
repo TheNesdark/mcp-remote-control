@@ -35,6 +35,27 @@ interface CuaArgsBag {
   window_id?: number;
   pid?: number;
   confirm?: boolean;
+  /** Element-oriented tools (FlaUI criteria). */
+  name?: string;
+  automation_id?: string;
+  class_name?: string;
+  control_type?: string;
+  nth?: number;
+  whole_desktop?: boolean;
+  value?: string;
+  text?: string;
+  keys?: string;
+  action?: string;
+  x?: number;
+  y?: number;
+  from_x?: number;
+  from_y?: number;
+  to_x?: number;
+  to_y?: number;
+  from_name?: string;
+  from_automation_id?: string;
+  to_name?: string;
+  to_automation_id?: string;
 }
 
 /** Strip the routing fields: the remaining args go verbatim to the sidecar CLI. */
@@ -368,6 +389,120 @@ export function registerAgentCuaTools(
     },
     sidecarTool: "clipboard_set",
     validate: (args) => (args.confirm ? null : "requires confirm: true"),
+  });
+
+  registerCuaJobTool(server, hub, audit, {
+    name: "agent_cua_clipboard_get",
+    title: "Read the clipboard (CUA engine)",
+    description:
+      "Returns the text currently on the clipboard. This is the extraction path for apps that expose no " +
+      "usable UIA tree: select everything and copy inside the app, then read the content here. Read-only.",
+    inputSchema: {
+      agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
+      timeoutMs: timeoutSchema,
+    },
+    sidecarTool: "clipboard_get",
+  });
+
+  registerCuaJobTool(server, hub, audit, {
+    name: "agent_cua_window",
+    title: "Control a window by handle (CUA engine)",
+    description:
+      "Closes, minimizes, maximizes, restores or moves/resizes a window identified by window_id. Useful to " +
+      "put windows in a reproducible layout before clicking or recording, and to dismiss windows that expose " +
+      "no usable UIA tree. move takes x/y and optional width/height (current size when omitted). Requires " +
+      "confirm: true.",
+    inputSchema: {
+      agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
+      action: z.enum(["close", "minimize", "maximize", "restore", "move"]).describe("What to do with the window."),
+      window_id: z.number().int().positive().describe("HWND in decimal, from agent_cua_list_windows."),
+      x: z.number().int().optional().describe("move: target X."),
+      y: z.number().int().optional().describe("move: target Y."),
+      width: z.number().int().positive().optional().describe("move: width (keeps current when omitted)."),
+      height: z.number().int().positive().optional().describe("move: height (keeps current when omitted)."),
+      confirm: confirmSchema,
+      timeoutMs: timeoutSchema,
+    },
+    sidecarTool: "window",
+    validate: (args) => {
+      if (!args.confirm) return "requires confirm: true";
+      if (args.action === "move" && (args.x === undefined || args.y === undefined)) return "move requires x and y";
+      return null;
+    },
+  });
+
+  registerCuaJobTool(server, hub, audit, {
+    name: "agent_cua_send_hotkey",
+    title: "Send a keyboard shortcut in one step (CUA engine)",
+    description:
+      "Presses an atomic chord such as ctrl+s, alt+f4 or ctrl+shift+t: modifiers are held while the final " +
+      "key goes down and released after, which is what menus expect. Optionally focuses a window first with " +
+      "window_id/pid. Requires confirm: true.",
+    inputSchema: {
+      agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
+      keys: z.string().min(1).max(64).describe("Chord, e.g. \"ctrl+s\" or \"ctrl+shift+t\"."),
+      window_id: windowIdSchema,
+      pid: pidSchema,
+      confirm: confirmSchema,
+      timeoutMs: timeoutSchema,
+    },
+    sidecarTool: "send_hotkey",
+    validate: (args) => (args.confirm ? null : "requires confirm: true"),
+  });
+
+  registerCuaJobTool(server, hub, audit, {
+    name: "agent_cua_drag",
+    title: "Drag between two points or elements (CUA engine)",
+    description:
+      "Presses, moves and releases the mouse between two points - sliders, reordering rows, selecting text, " +
+      "dragging files. Each end is either from_x/from_y and to_x/to_y, or an element named by " +
+      "from_name/from_automation_id and to_name/to_automation_id, which resolves to that element's centre. " +
+      "Requires confirm: true.",
+    inputSchema: {
+      agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
+      from_x: z.number().int().optional(),
+      from_y: z.number().int().optional(),
+      to_x: z.number().int().optional(),
+      to_y: z.number().int().optional(),
+      from_name: z.string().max(256).optional().describe("Start element name (alternative to from_x/from_y)."),
+      from_automation_id: z.string().max(256).optional(),
+      to_name: z.string().max(256).optional().describe("End element name (alternative to to_x/to_y)."),
+      to_automation_id: z.string().max(256).optional(),
+      button: z.enum(["left", "right", "middle"]).optional().describe("Default left."),
+      whole_desktop: z.boolean().optional().describe("Resolve element names on the whole desktop."),
+      window_id: windowIdSchema,
+      pid: pidSchema,
+      confirm: confirmSchema,
+      timeoutMs: timeoutSchema,
+    },
+    sidecarTool: "drag",
+    validate: (args) => {
+      if (!args.confirm) return "requires confirm: true";
+      const hasFrom = (args.from_x !== undefined && args.from_y !== undefined) || args.from_name || args.from_automation_id;
+      const hasTo = (args.to_x !== undefined && args.to_y !== undefined) || args.to_name || args.to_automation_id;
+      if (!hasFrom || !hasTo) return "drag requires from_/to_ coordinates or element names at both ends";
+      return null;
+    },
+  });
+
+  registerCuaJobTool(server, hub, audit, {
+    name: "agent_cua_element_screenshot",
+    title: "Capture a single UI element (CUA engine)",
+    description:
+      "Captures one control (a panel, a table, a chart) to a PNG/JPEG on the agent and returns its path " +
+      "(fetch it with agent_fs_download). Scoped evidence instead of a full-monitor screenshot. Selects the " +
+      "element with the same criteria as agent_cua_find_element. Read-only.",
+    inputSchema: {
+      agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
+      ...elementCriteria,
+      format: z.enum(["png", "jpeg"]).optional().describe("Default png."),
+      quality: z.number().int().min(1).max(100).optional().describe("JPEG quality (default 85)."),
+      window_id: windowIdSchema,
+      pid: pidSchema,
+      timeoutMs: timeoutSchema,
+    },
+    sidecarTool: "element_screenshot",
+    validate: criteriaError,
   });
 }
 

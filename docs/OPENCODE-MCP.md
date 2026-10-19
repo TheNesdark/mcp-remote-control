@@ -329,6 +329,27 @@ To keep the agent from using the tools without asking, restrict them by name:
     - `find_element`/`wait_for`/`table_read` are read-only; `invoke`,
       `set_value` and `clipboard_set` need `confirm=true`.
 
+    Desktop control and extraction:
+
+    ```
+    agent_cua_clipboard_set(agent="SRV-RX", text="hola", confirm=true)               # then press ctrl+v
+    agent_cua_clipboard_get(agent="SRV-RX")                                         # read what was copied
+    agent_cua_window(agent="SRV-RX", action="maximize", window_id=262414, confirm=true)
+    agent_cua_window(agent="SRV-RX", action="move", window_id=262414, x=0, y=0, width=1280, height=720, confirm=true)
+    agent_cua_send_hotkey(agent="SRV-RX", keys="ctrl+s", window_id=262414, confirm=true)
+    agent_cua_drag(agent="SRV-RX", from_name="Fila 3", to_name="Fila 1", window_id=262414, confirm=true)
+    agent_cua_element_screenshot(agent="SRV-RX", window_id=262414, name="Factura")   # one control only
+    ```
+
+    - `clipboard_get` is the extraction path for apps with no usable UIA tree:
+      select-all + copy inside the app, then read here. `window` takes
+      close/minimize/maximize/restore/move. `send_hotkey` presses a whole chord
+      atomically. `drag` accepts either coordinates (`from_x/from_y`,
+      `to_x/to_y`) or element names at both ends, and `element_screenshot`
+      captures a single control (fetch the path with `agent_fs_download`).
+    - `clipboard_get`, `element_screenshot` (and the criteria tools above) are
+      read-only; `window`, `send_hotkey` and `drag` need `confirm=true`.
+
     Native browser control (`agent_cua_browser`) drives the browser the USER
     already runs — their real profile, tabs and logins — over its DevTools
     Protocol port:

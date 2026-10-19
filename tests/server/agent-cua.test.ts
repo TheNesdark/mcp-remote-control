@@ -97,6 +97,16 @@ function sidecarMeta(msg: JobRequestMsg): Record<string, unknown> {
       };
     case "clipboard_set":
       return { chars: 12 };
+    case "clipboard_get":
+      return { has_text: true, chars: 21, text: "FACT-2026-0001  |  1250.00" };
+    case "window":
+      return { action: "maximize", hwnd: 101 };
+    case "send_hotkey":
+      return { keys: "ctrl+s" };
+    case "drag":
+      return { from: { x: 10, y: 20 }, to: { x: 300, y: 400 }, button: "left" };
+    case "element_screenshot":
+      return { path: "C:\\Users\\SERVER-RX\\AppData\\Local\\Temp\\mrc-cua-elem.png", bytes: 4096, format: "png", bounds: { x: 1, y: 2, width: 30, height: 40 } };
     case "screenshot":
       return { path: "C:\\Users\\SERVER-RX\\AppData\\Local\\Temp\\mrc-cua-shot.png", bytes: FAKE_PNG.length };
     case "record":
@@ -394,6 +404,55 @@ test("agent_cua_wait_for and agent_cua_table_read are read-only", async () => {
   expect(table.data.rows[1]).toEqual(["dato 1", "dato 2"]);
 
   expect(started.jobs.map((job) => (job.params as { tool: string }).tool)).toEqual(["wait_for", "table_read"]);
+});
+
+test("agent_cua_clipboard_get is read-only and returns the text", async () => {
+  const started = await start();
+  const result = await call("agent_cua_clipboard_get", { agent: "W-CUA-01" });
+  expect(result.isError).toBe(false);
+  expect(result.data.has_text).toBe(true);
+  expect(result.data.text).toContain("FACT-2026-0001");
+  expect(started.jobs[0]).toMatchObject({ params: { tool: "clipboard_get" } });
+});
+
+test("agent_cua_window validates the action and the move coordinates", async () => {
+  const started = await start();
+  const noCoords = await call("agent_cua_window", { agent: "W-CUA-01", action: "move", window_id: 101, confirm: true });
+  expect(noCoords.isError).toBe(true);
+  expect(noCoords.text + JSON.stringify(noCoords.data ?? "")).toMatch(/x and y/);
+
+  const noConfirm = await call("agent_cua_window", { agent: "W-CUA-01", action: "close", window_id: 101 });
+  expect(noConfirm.isError).toBe(true);
+  expect(noConfirm.text + JSON.stringify(noConfirm.data ?? "")).toMatch(/confirm/i);
+  expect(started.jobs.length).toBe(0);
+
+  const ok = await call("agent_cua_window", { agent: "W-CUA-01", action: "maximize", window_id: 101, confirm: true });
+  expect(ok.isError).toBe(false);
+  expect(ok.data.action).toBe("maximize");
+});
+
+test("agent_cua_send_hotkey, agent_cua_drag and agent_cua_element_screenshot route their tools", async () => {
+  const started = await start();
+
+  const hotkey = await call("agent_cua_send_hotkey", { agent: "W-CUA-01", keys: "ctrl+s", window_id: 101, confirm: true });
+  expect(hotkey.isError).toBe(false);
+  expect(hotkey.data.keys).toBe("ctrl+s");
+
+  const badDrag = await call("agent_cua_drag", { agent: "W-CUA-01", from_x: 10, from_y: 20, confirm: true });
+  expect(badDrag.isError).toBe(true);
+
+  const drag = await call("agent_cua_drag", {
+    agent: "W-CUA-01", from_x: 10, from_y: 20, to_x: 300, to_y: 400, confirm: true,
+  });
+  expect(drag.isError).toBe(false);
+  expect(drag.data.to).toEqual({ x: 300, y: 400 });
+
+  const shot = await call("agent_cua_element_screenshot", { agent: "W-CUA-01", window_id: 101, name: "Factura" });
+  expect(shot.isError).toBe(false);
+  expect(shot.data.path).toContain("mrc-cua-elem");
+
+  const tools = started.jobs.map((job) => (job.params as { tool: string }).tool);
+  expect(tools).toEqual(["send_hotkey", "drag", "element_screenshot"]);
 });
 
 // ------------------------------------------------------------- browser tools

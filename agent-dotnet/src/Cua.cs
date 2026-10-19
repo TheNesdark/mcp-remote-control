@@ -37,25 +37,35 @@ public static class Cua
     {
         var tool = Fs.ReadString(p, "tool");
         if (string.IsNullOrEmpty(tool)) return JobOutcome.Failure("invalid cua params: tool: Required");
+        // The hub wraps the tool parameters in `args` (the sidecar CLI shape);
+        // unwrap once here so every handler reads a flat object.
+        var args = p.ValueKind == JsonValueKind.Object && p.TryGetProperty("args", out var bag) && bag.ValueKind == JsonValueKind.Object
+            ? bag
+            : p;
         try
         {
             var meta = tool switch
             {
                 "version" => Version(),
                 "list_windows" => ListWindows(),
-                "get_window_state" => WindowState(p),
-                "click" => Click(p),
-                "type_text" => TypeText(p),
-                "press_key" => PressKey(p),
-                "scroll" => Scroll(p),
-                "screenshot" => Capture(p),
-                "focus" => FocusJob(p),
-                "find_element" => FindElement(p),
-                "invoke" => InvokeElement(p),
-                "set_value" => SetValue(p),
-                "wait_for" => await WaitForAsync(p, ct),
-                "table_read" => TableRead(p),
-                "clipboard_set" => ClipboardSet(p),
+                "get_window_state" => WindowState(args),
+                "click" => Click(args),
+                "type_text" => TypeText(args),
+                "press_key" => PressKey(args),
+                "scroll" => Scroll(args),
+                "screenshot" => Capture(args),
+                "focus" => FocusJob(args),
+                "find_element" => FindElement(args),
+                "invoke" => InvokeElement(args),
+                "set_value" => SetValue(args),
+                "wait_for" => await WaitForAsync(args, ct),
+                "table_read" => TableRead(args),
+                "clipboard_set" => ClipboardSet(args),
+                "clipboard_get" => ClipboardGet(),
+                "window" => WindowControl(args),
+                "send_hotkey" => SendHotkey(args),
+                "drag" => Drag(args),
+                "element_screenshot" => ElementScreenshot(args),
                 _ => throw new InvalidOperationException($"unknown tool '{tool}'"),
             };
             return JobOutcome.Success(meta);
@@ -523,6 +533,238 @@ public static class Cua
         }
     }
 
+    /// <summary>
+    /// clipboard_get: read the clipboard. This is the extraction path for apps
+    /// that expose no usable UIA tree (select-all + copy, then read here).
+    /// </summary>
+    private static Dictionary<string, object?> ClipboardGet()
+    {
+        var attempts = 0;
+        while (true)
+        {
+            try
+            {
+                var text = System.Windows.Forms.Clipboard.ContainsText()
+                    ? System.Windows.Forms.Clipboard.GetText()
+                    : "";
+                return new Dictionary<string, object?>
+                {
+                    ["ok"] = true,
+                    ["has_text"] = text.Length > 0,
+                    ["chars"] = text.Length,
+                    ["text"] = text,
+                };
+            }
+            catch (Exception ex) when (attempts++ < 5)
+            {
+                Thread.Sleep(120);
+                if (attempts >= 5) throw new InvalidOperationException($"the clipboard is busy: {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>window: close / minimize / maximize / restore / move / resize by hwnd.</summary>
+    private static Dictionary<string, object?> WindowControl(JsonElement p)
+    {
+        var action = (Fs.ReadString(p, "action") ?? "").ToLowerInvariant();
+        if (action.Length == 0)
+            throw new InvalidOperationException("window requires 'action' (close, minimize, maximize, restore, move)");
+        RequireConfirm(p, "window");
+
+        // Hwnd targeting is mandatory: a window may be off-screen or have no
+        // usable tree, and those are exactly the cases this tool exists for.
+        var hwnd = Fs.ReadInt(p, "window_id")
+                   ?? throw new InvalidOperationException("window requires window_id (from agent_cua_list_windows)");
+
+        switch (action)
+        {
+            case "close":
+                if (!PostMessage((IntPtr)hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero))
+                    throw new InvalidOperationException($"WM_CLOSE failed for hwnd {hwnd}");
+                return new Dictionary<string, object?> { ["ok"] = true, ["action"] = "close", ["hwnd"] = hwnd };
+
+            case "minimize":
+                ShowWindow((IntPtr)hwnd, SW_MINIMIZE);
+                return new Dictionary<string, object?> { ["ok"] = true, ["action"] = "minimize", ["hwnd"] = hwnd };
+
+            case "maximize":
+                ShowWindow((IntPtr)hwnd, SW_MAXIMIZE);
+                return new Dictionary<string, object?> { ["ok"] = true, ["action"] = "maximize", ["hwnd"] = hwnd };
+
+            case "restore":
+                ShowWindow((IntPtr)hwnd, SW_RESTORE);
+                return new Dictionary<string, object?> { ["ok"] = true, ["action"] = "restore", ["hwnd"] = hwnd };
+
+            case "move":
+            {
+                var x = Fs.ReadInt(p, "x") ?? throw new InvalidOperationException("window move requires x and y");
+                var y = Fs.ReadInt(p, "y") ?? throw new InvalidOperationException("window move requires x and y");
+                var width = Fs.ReadInt(p, "width") ?? 0;
+                var height = Fs.ReadInt(p, "height") ?? 0;
+                if (width <= 0 || height <= 0)
+                {
+                    if (!GetWindowRect((IntPtr)hwnd, out var current))
+                        throw new InvalidOperationException($"could not read the current bounds of hwnd {hwnd}");
+                    width = width <= 0 ? current.Right - current.Left : width;
+                    height = height <= 0 ? current.Bottom - current.Top : height;
+                }
+                if (!MoveWindow((IntPtr)hwnd, x, y, width, height, true))
+                    throw new InvalidOperationException($"MoveWindow failed for hwnd {hwnd}");
+                return new Dictionary<string, object?>
+                {
+                    ["ok"] = true, ["action"] = "move", ["hwnd"] = hwnd,
+                    ["bounds"] = new Dictionary<string, object?> { ["x"] = x, ["y"] = y, ["width"] = width, ["height"] = height },
+                };
+            }
+
+            default:
+                throw new InvalidOperationException($"unknown window action '{action}' (close, minimize, maximize, restore, move)");
+        }
+    }
+
+    /// <summary>
+    /// send_hotkey: one atomic shortcut (ctrl+s, alt+f4, ctrl+shift+t). A
+    /// "+"-separated chord is pressed and released together, which is what
+    /// menus and apps expect.
+    /// </summary>
+    private static Dictionary<string, object?> SendHotkey(JsonElement p)
+    {
+        RequireConfirm(p, "send_hotkey");
+        var combo = Fs.ReadString(p, "keys") ?? throw new InvalidOperationException("send_hotkey requires 'keys' (e.g. \"ctrl+s\")");
+        var parts = combo.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0) throw new InvalidOperationException("send_hotkey requires at least one key");
+
+        if (Fs.ReadInt(p, "window_id") is not null || Fs.ReadInt(p, "pid") is not null)
+            StealForeground(ResolveWindow(p));
+
+        var modifiers = new List<VirtualKeyShort>();
+        VirtualKeyShort? final = null;
+        foreach (var part in parts)
+        {
+            switch (part.ToLowerInvariant())
+            {
+                case "ctrl": case "control": modifiers.Add(VirtualKeyShort.CONTROL); break;
+                case "shift": modifiers.Add(VirtualKeyShort.SHIFT); break;
+                case "alt": modifiers.Add(VirtualKeyShort.ALT); break;
+                case "win": modifiers.Add(VirtualKeyShort.LWIN); break;
+                default:
+                    var key = VirtualKeyOf(part.ToLowerInvariant());
+                    if (key is null && part.Length == 1) key = (VirtualKeyShort)char.ToUpperInvariant(part[0]);
+                    if (key is null) throw new InvalidOperationException($"unknown key '{part}' in '{combo}'");
+                    final = key;
+                    break;
+            }
+        }
+        if (final is null) throw new InvalidOperationException($"'{combo}' has no final key (only modifiers)");
+
+        foreach (var modifier in modifiers) Keyboard.Press(modifier);
+        Keyboard.Press(final.Value);
+        Keyboard.Release(final.Value);
+        for (var i = modifiers.Count - 1; i >= 0; i--) Keyboard.Release(modifiers[i]);
+
+        return new Dictionary<string, object?> { ["ok"] = true, ["keys"] = combo };
+    }
+
+    /// <summary>
+    /// drag: press, move and release between two points (or two elements) - the
+    /// gesture for sliders, reordering, selecting text and dragging files.
+    /// Stepped moves keep apps from dropping the drag.
+    /// </summary>
+    private static Dictionary<string, object?> Drag(JsonElement p)
+    {
+        RequireConfirm(p, "drag");
+        var (fromX, fromY) = ResolveDragPoint(p, "from");
+        var (toX, toY) = ResolveDragPoint(p, "to");
+
+        var button = (Fs.ReadString(p, "button") ?? "left").ToLowerInvariant();
+        if (Fs.ReadInt(p, "window_id") is not null || Fs.ReadInt(p, "pid") is not null)
+            StealForeground(ResolveWindow(p));
+
+        var mouseButton = button switch
+        {
+            "right" => FlaUI.Core.Input.MouseButton.Right,
+            "middle" => FlaUI.Core.Input.MouseButton.Middle,
+            _ => FlaUI.Core.Input.MouseButton.Left,
+        };
+
+        Mouse.Position = new System.Drawing.Point(fromX, fromY);
+        Thread.Sleep(60);
+        Mouse.Down(mouseButton);
+        for (var step = 1; step <= 8; step++)
+        {
+            var x = fromX + (toX - fromX) * step / 8;
+            var y = fromY + (toY - fromY) * step / 8;
+            Mouse.Position = new System.Drawing.Point(x, y);
+            Thread.Sleep(30);
+        }
+        Mouse.Up(mouseButton);
+
+        return new Dictionary<string, object?>
+        {
+            ["ok"] = true,
+            ["from"] = new Dictionary<string, object?> { ["x"] = fromX, ["y"] = fromY },
+            ["to"] = new Dictionary<string, object?> { ["x"] = toX, ["y"] = toY },
+            ["button"] = button,
+        };
+    }
+
+    /// <summary>Accepts "from"/"to" either as an x/y pair or as element criteria.</summary>
+    private static (int X, int Y) ResolveDragPoint(JsonElement p, string prefix)
+    {
+        var x = Fs.ReadInt(p, $"{prefix}_x");
+        var y = Fs.ReadInt(p, $"{prefix}_y");
+        if (x is not null && y is not null) return (x.Value, y.Value);
+
+        var name = Fs.ReadString(p, $"{prefix}_name");
+        var automationId = Fs.ReadString(p, $"{prefix}_automation_id");
+        if (name is null && automationId is null)
+            throw new InvalidOperationException($"drag requires {prefix}_x/{prefix}_y or {prefix}_name/{prefix}_automation_id");
+
+        var root = Fs.ReadBool(p, "whole_desktop") ? Automation.GetDesktop() : ResolveWindow(p);
+        var matches = FindAll(root, name, automationId, null, null, 1);
+        if (matches.Count == 0) throw new InvalidOperationException($"no element matched the {prefix} criteria");
+        var rect = matches[0].BoundingRectangle;
+        return ((int)(rect.X + rect.Width / 2), (int)(rect.Y + rect.Height / 2));
+    }
+
+    /// <summary>
+    /// element_screenshot: capture a single control to a file and return its
+    /// path, so the evidence stays scoped to what matters.
+    /// </summary>
+    private static Dictionary<string, object?> ElementScreenshot(JsonElement p)
+    {
+        var target = ResolveElement(p);
+        var rect = target.BoundingRectangle;
+        if (rect.Width < 1 || rect.Height < 1)
+            throw new InvalidOperationException("the element has no on-screen rect (hidden or scrolled away)");
+
+        var format = (Fs.ReadString(p, "format") ?? "png").ToLowerInvariant();
+        var quality = Math.Clamp(Fs.ReadInt(p, "quality") ?? 85, 1, 100);
+        var path = Path.Combine(Path.GetTempPath(),
+            $"mrc-cua-elem-{DateTime.Now:yyyyMMdd-HHmmss}.{(format == "jpeg" ? "jpg" : "png")}");
+
+        using (var bitmap = new System.Drawing.Bitmap((int)rect.Width, (int)rect.Height, PixelFormat.Format24bppRgb))
+        {
+            using (var graphics = System.Drawing.Graphics.FromImage(bitmap))
+            {
+                graphics.CopyFromScreen((int)rect.X, (int)rect.Y, 0, 0, bitmap.Size, CopyPixelOperation.SourceCopy);
+            }
+            bitmap.Save(path, format == "jpeg" ? ImageFormat.Jpeg : ImageFormat.Png);
+        }
+        _ = quality;
+
+        return new Dictionary<string, object?>
+        {
+            ["ok"] = true,
+            ["path"] = path,
+            ["bytes"] = new FileInfo(path).Length,
+            ["format"] = format,
+            ["bounds"] = Bounds(rect),
+            ["name"] = target.Name,
+            ["control_type"] = target.ControlType.ToString(),
+        };
+    }
+
     /// <summary>Resolves the target element from explicit criteria or the whole window.</summary>
     private static AutomationElement ResolveElement(JsonElement p)
     {
@@ -694,4 +936,30 @@ public static class Cua
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int cmdShow);
+
+    [DllImport("user32.dll")]
+    private static extern bool MoveWindow(IntPtr hWnd, int x, int y, int width, int height, bool repaint);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect rect);
+
+    private const uint WM_CLOSE = 0x0010;
+    private const int SW_MINIMIZE = 6;
+    private const int SW_MAXIMIZE = 3;
+    private const int SW_RESTORE = 9;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
 }

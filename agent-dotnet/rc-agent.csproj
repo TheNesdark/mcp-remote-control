@@ -20,6 +20,11 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>false</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
+    <!-- WPF is never touched: dropping it keeps the self-contained build lean.
+         Trimming stays OFF: the SDK refuses to trim with WinForms enabled (it
+         is reflection-heavy) and a trimmed tray/UIA build would be a runtime
+         gamble on the target machine. -->
+    <UseWPF>false</UseWPF>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
@@ -30,6 +35,30 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- We never touch WPF, but the WindowsDesktop runtime pack ships its
+         native DLLs anyway; drop them so the self-contained build stays lean. -->
+    <None Include="$(PublishDir)**\*wpf*" />
+  </ItemGroup>
+
+  <Target Name="DropWpfNativeDlls" AfterTargets="Publish">
+    <ItemGroup>
+      <WpfJunk Include="$(PublishDir)wpfgfx_cor3.dll" />
+      <WpfJunk Include="$(PublishDir)PresentationNative_cor3.dll" />
+      <WpfJunk Include="$(PublishDir)PenImc_cor3.dll" />
+      <WpfJunk Include="$(PublishDir)D3DCompiler_47_cor3.dll" />
+    </ItemGroup>
+    <Delete Files="@(WpfJunk)" ContinueOnError="true" />
+    <Message Importance="high" Text="Dropped unused WPF native dlls from $(PublishDir)" />
+  </Target>
+
+  <ItemGroup>
+    <!-- FlaUI/UIA use COM interop and reflection: keep those assemblies whole. -->
+    <TrimmerRootAssembly Include="FlaUI.Core" />
+    <TrimmerRootAssembly Include="FlaUI.UIA3" />
+    <TrimmerRootAssembly Include="Interop.UIAutomationClient" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="System.Drawing.Common" Version="8.0.10" />
@@ -43,14 +72,17 @@
 
 
   <Target Name="StampVersion" BeforeTargets="CoreCompile">
-    <!-- Keep hello/info versions in step with the repo's single source of truth. -->
-    <Exec Command="grep -oE '[0-9]+\.[0-9]+\.[0-9]+' ../shared/version.ts | head -1"
-          ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="Low">
-      <Output TaskParameter="ConsoleOutput" PropertyName="RepoVersion" />
-    </Exec>
+    <!-- Keep hello/info versions in step with the repo's single source of truth
+         (shared/version.ts). Read the whole file and pull the first version out
+         with a regex, so this works on Linux and Windows alike. -->
     <PropertyGroup>
-      <Version Condition="'$(RepoVersion)' != ''">$(RepoVersion)</Version>
-      <InformationalVersion Condition="'$(RepoVersion)' != ''">$(RepoVersion)</InformationalVersion>
+      <RepoVersionRaw Condition="Exists('../shared/version.ts')">$([System.IO.File]::ReadAllText('$([System.IO.Path]::GetFullPath("../shared/version.ts"))'))</RepoVersionRaw>
+      <RepoVersion>$([System.Text.RegularExpressions.Regex]::Match('$(RepoVersionRaw)', 'VERSION\s*=\s*&quot;([0-9]+\.[0-9]+\.[0-9]+)&quot;').Groups[1].Value)</RepoVersion>
+    </PropertyGroup>
+    <Message Importance="high" Text="Stamping agent version $(RepoVersion) from shared/version.ts" Condition="'$(RepoVersion)' != ''" />
+    <PropertyGroup Condition="'$(RepoVersion)' != ''">
+      <Version>$(RepoVersion)</Version>
+      <InformationalVersion>$(RepoVersion)</InformationalVersion>
     </PropertyGroup>
   </Target>
 
