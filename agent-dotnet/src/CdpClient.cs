@@ -26,18 +26,25 @@ public sealed class CdpClient : IDisposable
 
     public bool Closed => _closed;
 
+    /// <summary>
+    /// Connects the browser WebSocket. On the first connection Chrome 136+
+    /// holds the handshake open until the user accepts its "Allow debugging?"
+    /// prompt, so the budget is generous (the caller's token, else 120s): a
+    /// short one would abort before a human can answer.
+    /// </summary>
     public static async Task<CdpClient> ConnectAsync(BrowserCdpEndpointLike endpoint, CancellationToken ct)
     {
         var ws = new ClientWebSocket();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(15_000);
+        timeout.CancelAfter(120_000);
         try
         {
             await ws.ConnectAsync(new Uri($"ws://127.0.0.1:{endpoint.Port}/devtools/browser/{endpoint.Token}"), timeout.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            throw new InvalidOperationException("CDP browser WebSocket handshake timed out");
+            throw new InvalidOperationException(
+                "CDP browser WebSocket handshake timed out (accept Chrome's \"Allow debugging?\" prompt, then retry)");
         }
         catch (WebSocketException)
         {
