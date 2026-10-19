@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 
 namespace Mrc.Agent;
@@ -138,6 +139,12 @@ public static class Restart
         // one of the two must run, or two agents would race for the name.
         if (useTask)
         {
+            // The task runs run-agent.cmd, which detaches the agent, so the
+            // task does not track it: make sure the old instance is gone
+            // before starting the new one (it usually already exited, which is
+            // what released the file lock we waited for above).
+            lines.Add($"taskkill /f /im {Path.GetFileName(target)} >nul 2>&1");
+            lines.Add("ping -n 2 127.0.0.1 >nul");
             lines.Add($"schtasks /end /tn \"{task}\" >nul 2>&1");
             lines.Add("ping -n 2 127.0.0.1 >nul");
             lines.Add($"schtasks /run /tn \"{task}\" >nul 2>&1");
@@ -267,32 +274,32 @@ public static class ScheduledTask
     }
 
     /// <summary>
-    /// Rewrites the task's command line. The task is what keeps the agent
-    /// alive, and it carries the settings on its command line: leaving the old
-    /// ones there would silently undo a settings change.
+    /// The .cmd the scheduled task runs. It holds the start command with the
+    /// settings, so a change has to be written here (the task itself only
+    /// points at this file, which keeps the task definition quote-free).
+    /// </summary>
+    public static string RunScriptPath(string exe) =>
+        Path.Combine(Settings.LocalDir(), "run-agent.cmd");
+
+    /// <summary>
+    /// Rewrites the start command the task runs. The task keeps the agent
+    /// alive, and the command carries the settings: leaving the old ones there
+    /// would silently undo a settings change.
     /// </summary>
     public static bool UpdateCommand(string task, string exe, string name, string server, string token)
     {
         try
         {
-            var command = $"\"{exe}\" --name {name} --server {server} --token {token}";
-            using var proc = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("schtasks",
-                $"/change /tn {task} /tr \"{command}\"")
-            {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            });
-            if (proc is null) return false;
-            proc.StandardOutput.ReadToEnd();
-            proc.StandardError.ReadToEnd();
-            proc.WaitForExit(8000);
-            return proc.ExitCode == 0;
+            var script = RunScriptPath(exe);
+            var body = "@echo off\r\n" +
+                        $"start \"\" \"{exe}\" --name {name} --server {server} --token {token}\r\n";
+            File.WriteAllText(script, body, Encoding.UTF8);
+            Log.Info("the start command was rewritten", new { script, name, server });
+            return true;
         }
         catch (Exception ex)
         {
-            Log.Debug("could not update the scheduled task", new { task, error = ex.Message });
+            Log.Debug("could not update the start command", new { task, error = ex.Message });
             return false;
         }
     }

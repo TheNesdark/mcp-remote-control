@@ -4,14 +4,18 @@ setlocal EnableDelayedExpansion
 REM ---------------------------------------------------------------
 REM  rc-agent (C# / .NET 8, un solo exe self-contained)
 REM  1) instala el exe en %LOCALAPPDATA%\mrc-remote-control
-REM  2) crea una tarea programada MRC-Agent (al iniciar sesion) que lo
-REM     arranca y lo mantiene vivo: asi el auto-update solo tiene que
-REM     sustituir el exe y disparar la tarea, sin relanzarse a si mismo.
+REM  2) escribe run-agent.cmd (el comando de arranque) y crea la tarea
+REM     programada MRC-Agent que lo arranca al iniciar sesion: asi el
+REM     auto-update solo tiene que sustituir el exe y disparar la tarea.
+REM
+REM  Este .bat NO deja ninguna ventana de consola abierta: termina solo
+REM  (la pausa queda solo cuando hay un error que hay que leer).
 REM ---------------------------------------------------------------
 
 set "SH=\\192.168.1.191\Hermes"
 set "DIR=%LOCALAPPDATA%\mrc-remote-control"
 set "EXE=%DIR%\rc-agent.exe"
+set "RUN=%DIR%\run-agent.cmd"
 set "SRC=%SH%\rc-agent.exe"
 set "TASK=MRC-Agent"
 set "NAME=SERVER-RX"
@@ -34,7 +38,7 @@ timeout /t 2 /nobreak >nul
 REM --- 2) copiar el exe nuevo desde el share ---
 echo [2/6] Copiando desde el share (154 MB, tarda un poco)...
 if not exist "%DIR%" mkdir "%DIR%"
-copy /y "%SRC%" "%EXE%"
+copy /y "%SRC%" "%EXE%" >nul
 if errorlevel 1 (
   echo.
   echo ERROR: no se pudo copiar "%SRC%".
@@ -47,27 +51,32 @@ REM --- 3) quitar la marca de red (Zone.Identifier) ---
 echo [3/6] Quitando la marca de red del exe...
 powershell -NoProfile -Command "Unblock-File -Path '%EXE%' -ErrorAction SilentlyContinue" >nul 2>&1
 
-REM --- 4) crear/actualizar la tarea programada (al iniciar sesion) ---
-echo [4/6] Creando la tarea programada "%TASK%" (al iniciar sesion)...
+REM --- 4) escribir el comando de arranque ---
+REM     La tarea apunta a este .cmd (ruta sin espacios), asi no hay
+REM     comillas que liar al crear la tarea. El agente reescribe este
+REM     fichero cuando cambian los ajustes desde el icono.
+echo [4/6] Escribiendo el comando de arranque...
+> "%RUN%" echo @echo off
+>> "%RUN%" echo start "" "%EXE%" --name %NAME% --server %SERVER% --token %TOKEN%
+
+REM --- 5) crear/actualizar la tarea programada (al iniciar sesion) ---
+echo [5/6] Creando la tarea programada "%TASK%" (al iniciar sesion)...
 schtasks /delete /tn "%TASK%" /f >nul 2>&1
-schtasks /create /tn "%TASK%" /tr "\"%EXE%\" --name %NAME% --server %SERVER% --token %TOKEN%" /sc onlogon /rl limited /f
+schtasks /create /tn "%TASK%" /tr %RUN% /sc onlogon /f >nul 2>&1
 if errorlevel 1 (
-  echo.
-  echo AVISO: no se pudo crear la tarea programada. El agente arrancara solo esta vez.
+  echo        AVISO: no se pudo crear la tarea; el agente arrancara solo esta vez.
 ) else (
   echo        Tarea creada: se arranca al iniciar sesion en este equipo.
 )
 
-REM --- 5) arrancar el agente ahora (via la tarea, desacoplado) ---
-echo [5/6] Arrancando el agente...
+REM --- 6) arrancar el agente ahora (via la tarea, desacoplado) ---
+echo [6/6] Arrancando el agente...
 schtasks /run /tn "%TASK%" >nul 2>&1
 if errorlevel 1 (
   echo        (tarea no disponible; arrancando directamente)
   start "" "%EXE%" --name %NAME% --server %SERVER% --token %TOKEN%
 )
 
-REM --- 6) verificar que sigue vivo ---
-echo [6/6] Esperando 10s y comprobando...
 timeout /t 10 /nobreak >nul
 tasklist /fi "imagename eq rc-agent.exe" 2>nul | find /i "rc-agent.exe" >nul
 if errorlevel 1 (
@@ -80,12 +89,15 @@ if errorlevel 1 (
     echo   (no hay log en %DIR%\logs\agent.log)
   )
   echo ------------------------------------------------------------
-) else (
   echo.
-  echo OK: agente en marcha. Nombre en el hub: %NAME%
-  echo Tarea programada: %TASK%   Log: %DIR%\logs\agent.log
-  echo A partir de aqui se actualiza solo (auto-update por la share).
+  pause
+  exit /b 1
 )
 
 echo.
-pause
+echo OK: agente en marcha. Nombre en el hub: %NAME%
+echo Tarea programada: %TASK%   Log: %DIR%\logs\agent.log
+echo A partir de aqui el agente se actualiza solo (auto-update por la share).
+echo.
+REM Sin "pause": esta ventana se cierra sola al terminar.
+endlocal
