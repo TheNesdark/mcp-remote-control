@@ -28,8 +28,22 @@ using TextUnit = System.Windows.Automation.Text.TextUnit;
 
 static class MrcCua
 {
-    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
-    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    // Split-recording state: record split=1 fills it, record_status polls/uses
+    // it. One clip at a time (CUA jobs run sequentially anyway).
+    static readonly object RecordLock = new object();
+    static string LastFrameDir = "";
+    static string LastOutPath = "";
+    static string LastEncoder = "";
+    static string LastError = "";
+    static int LastFrames;
+    static int LastFps;
+    static int LastWidth;
+    static int LastHeight;
+    static bool LastDone;
+    static DateTime LastStartedAt;
+    static Process LastEncoderProc;
+
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
     [DllImport("user32.dll")] static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
@@ -95,6 +109,7 @@ static class MrcCua
                 case "browser_tabs": result = CmdBrowserTabs(p); break;
                 case "browser_click": result = CmdBrowserClick(p); break;
                 case "record": result = CmdRecord(p); break;
+                case "record_status": result = CmdRecordStatus(p); break;
                 default: Fail("unknown tool '" + tool + "'"); return 2;
             }
             Emit(result);
@@ -1082,13 +1097,17 @@ static class MrcCua
 
     // -------------------------------------------------------------- recording
     /**
-     * record: capture the primary monitor at N fps for `duration_sec` into a
-     * video file on the remote machine. One-shot: blocks until the clip is
-     * encoded and returns the path; the hub pulls it with a chunked transfer.
-     * The agent runs CUA jobs sequentially, so the clip stays short (max 60 s,
-     * hard job timeout). Frames go to temp JPEGs first, then:
-     *   - ffmpeg on PATH -> MP4 (h264), or
-     *   - otherwise a Motion-JPEG AVI written by the small writer below.
+     * record: capture the primary monitor at N fps for `duration_sec`.
+     *
+     * Two modes:
+     *  - One-shot (default): capture + encode in the same call and return the
+     *    finished path. Used for short clips.
+     *  - Split (split=1): capture the frames, then hand the encoding to
+     *    ffmpeg.exe in the background and return immediately with
+     *    {status:"encoding", done:false}. record_status polls the encoder; a
+     *    machine without ffmpeg is captured but encoded by record_status (the
+     *    built-in Motion-JPEG AVI writer), which stalls that poll instead of
+     *    the caller's stream.
      */
     static string CmdRecord(Dictionary<string, string> p)
     {
@@ -1103,10 +1122,9 @@ static class MrcCua
         if (fpsStr.Length > 0 && !int.TryParse(fpsStr, out fps)) fps = 4;
         if (fps < 1) fps = 1;
         if (fps > 10) fps = 10;
+        bool split = Flag(p, "split");
 
         int width = GetSystemMetrics(0), height = GetSystemMetrics(1);
-        string frameDir = Path.Combine(Path.GetTempPath(), "mrc-cua-frames-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(frameDir);
         string ffmpeg = FindFfmpeg();
         bool useFfmpeg = ffmpeg != null;
         string outPath = Param(p, "path");
@@ -1115,46 +1133,61 @@ static class MrcCua
         else if (!useFfmpeg && outPath.ToLowerInvariant().EndsWith(".mp4"))
             outPath = Path.ChangeExtension(outPath, ".avi");
 
+        string frameDir = split
+            ? Path.Combine(Path.GetTempPath(), "mrc-cua-frames-" + Guid.NewGuid().ToString("N"))
+            : Path.Combine(Path.GetTempPath(), "mrc-cua-frames-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(frameDir);
+
         int frameCount = 0;
-        long totalBytes = 0;
+        CaptureFrames(frameDir, seconds, fps, width, height, ref frameCount);
+        if (frameCount == 0) throw new InvalidOperationException("captured zero frames");
+
+        if (split)
+        {
+            // Remember what this capture is so record_status can finish it:
+            // ffmpeg encodes in the background, otherwise the status call
+            // encodes the frames itself.
+            lock (RecordLock)
+            {
+                LastFrameDir = frameDir;
+                LastOutPath = outPath;
+                LastFrames = frameCount;
+                LastFps = fps;
+                LastWidth = width;
+                LastHeight = height;
+                LastEncoder = useFfmpeg ? "ffmpeg/h264" : "mjpeg-avi";
+                LastDone = false;
+                LastError = "";
+                LastStartedAt = DateTime.UtcNow;
+                if (useFfmpeg)
+                {
+                    try
+                    {
+                        StartFfmpeg(ffmpeg, frameDir, outPath, fps);
+                    }
+                    catch (Exception ex)
+                    {
+                        LastError = ex.Message;
+                    }
+                }
+            }
+            StringBuilder s = new StringBuilder();
+            s.Append("{\"ok\":true,\"status\":\"encoding\",\"done\":false,\"path\":").Append(JsonStr(outPath))
+             .Append(",\"bytes\":0,\"frames\":").Append(frameCount)
+             .Append(",\"fps\":").Append(fps)
+             .Append(",\"duration_sec\":").Append(seconds)
+             .Append(",\"resolution\":\"").Append(width).Append("x").Append(height).Append("\"")
+             .Append(",\"encoder\":").Append(JsonStr(useFfmpeg ? "ffmpeg/h264" : "mjpeg-avi"))
+             .Append("}");
+            return s.ToString();
+        }
+
         string encoder;
         try
         {
-            int total = seconds * fps;
-            int perMs = Math.Max(1, 1000 / fps);
-            long budget = (long)seconds * 1000;
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            for (int i = 0; i < total; i++)
-            {
-                using (Bitmap frame = new Bitmap(width, height, PixelFormat.Format24bppRgb))
-                {
-                    using (Graphics g = Graphics.FromImage(frame))
-                    {
-                        g.CopyFromScreen(0, 0, 0, 0, frame.Size);
-                    }
-                    string framePath = Path.Combine(frameDir, i.ToString("D5") + ".jpg");
-                    frame.Save(framePath, ImageFormat.Jpeg);
-                    totalBytes += new FileInfo(framePath).Length;
-                }
-                frameCount++;
-                long elapsed = sw.ElapsedMilliseconds;
-                long target = (long)(i + 1) * perMs;
-                if (elapsed < target && target < budget) System.Threading.Thread.Sleep((int)(target - elapsed));
-                else if (elapsed >= budget) break;
-            }
-            if (frameCount == 0) throw new InvalidOperationException("captured zero frames");
-
             if (useFfmpeg)
             {
-                string args = "-y -framerate " + fps + " -start_number 0 -i \"" + Path.Combine(frameDir, "%05d.jpg") +
-                    "\" -c:v libx264 -pix_fmt yuv420p -crf 23 -movflags +faststart \"" + outPath + "\"";
-                ProcessStartInfo psi = new ProcessStartInfo(ffmpeg, args);
-                psi.UseShellExecute = false;
-                psi.CreateNoWindow = true;
-                psi.WindowStyle = ProcessWindowStyle.Hidden;
-                Process enc = Process.Start(psi);
-                if (!enc.WaitForExit(180000)) { try { enc.Kill(); } catch { } throw new InvalidOperationException("ffmpeg encoding timed out"); }
-                if (enc.ExitCode != 0) throw new InvalidOperationException("ffmpeg exited " + enc.ExitCode);
+                RunFfmpeg(ffmpeg, frameDir, outPath, fps);
                 encoder = "ffmpeg/h264";
             }
             else
@@ -1169,7 +1202,7 @@ static class MrcCua
         }
 
         StringBuilder sb = new StringBuilder();
-        sb.Append("{\"ok\":true,\"path\":").Append(JsonStr(outPath))
+        sb.Append("{\"ok\":true,\"status\":\"done\",\"done\":true,\"path\":").Append(JsonStr(outPath))
           .Append(",\"bytes\":").Append(new FileInfo(outPath).Length)
           .Append(",\"frames\":").Append(frameCount)
           .Append(",\"fps\":").Append(fps)
@@ -1179,6 +1212,142 @@ static class MrcCua
           .Append(",\"codec_hint\":").Append(JsonStr(useFfmpeg ? "mp4/h264" : "avi motion-jpeg; convert with ffmpeg if needed"))
           .Append("}");
         return sb.ToString();
+    }
+
+    /**
+     * record_status: poll of the split encoder started by record split=1.
+     * Reports done, still encoding, a failure, or that there is nothing to
+     * finish. When no ffmpeg was available the frames are encoded RIGHT HERE
+     * (blocking this call, so the caller's poll is the only thing stalled).
+     */
+    static string CmdRecordStatus(Dictionary<string, string> p)
+    {
+        string frameDir, outPath, encoder, error;
+        int frames, fps, width, height;
+        bool done;
+        lock (RecordLock)
+        {
+            if (LastFrameDir.Length == 0)
+                return "{\"ok\":false,\"error\":\"no split recording to report on\"}";
+            frameDir = LastFrameDir;
+            outPath = LastOutPath;
+            encoder = LastEncoder;
+            error = LastError;
+            frames = LastFrames;
+            fps = LastFps;
+            width = LastWidth;
+            height = LastHeight;
+            done = LastDone;
+        }
+
+        if (error.Length > 0)
+            return "{\"ok\":false,\"error\":" + JsonStr(error) + ",\"encoder\":" + JsonStr(encoder) + "}";
+
+        if (!done && encoder == "mjpeg-avi")
+        {
+            try
+            {
+                WriteMjpegAvi(outPath, frameDir, frames, width, height, fps);
+                lock (RecordLock) { LastDone = true; }
+                done = true;
+            }
+            catch (Exception ex)
+            {
+                lock (RecordLock) { LastError = ex.Message; }
+                return "{\"ok\":false,\"error\":" + JsonStr(ex.Message) + ",\"encoder\":" + JsonStr(encoder) + "}";
+            }
+            finally
+            {
+                try { Directory.Delete(frameDir, true); } catch { }
+                lock (RecordLock) { LastFrameDir = ""; }
+            }
+        }
+        else if (!done)
+        {
+            // ffmpeg was launched by record; ask it for a verdict.
+            Process proc = LastEncoderProc;
+            if (proc != null)
+            {
+                try
+                {
+                    if (proc.HasExited)
+                    {
+                        int code = proc.ExitCode;
+                        try { proc.Dispose(); } catch { }
+                        LastEncoderProc = null;
+                        if (code != 0)
+                        {
+                            lock (RecordLock) { LastError = "ffmpeg exited " + code; }
+                            return "{\"ok\":false,\"error\":" + JsonStr("ffmpeg exited " + code) + "}";
+                        }
+                        lock (RecordLock) { LastDone = true; }
+                        done = true;
+                        try { Directory.Delete(frameDir, true); } catch { }
+                        lock (RecordLock) { LastFrameDir = ""; }
+                    }
+                }
+                catch { }
+            }
+        }
+
+        long bytes = 0;
+        if (done) { try { bytes = new FileInfo(outPath).Length; } catch { } }
+        StringBuilder sb = new StringBuilder();
+        sb.Append("{\"ok\":true,\"status\":").Append(JsonStr(done ? "done" : "encoding"))
+          .Append(",\"done\":").Append(done ? "true" : "false")
+          .Append(",\"path\":").Append(JsonStr(outPath))
+          .Append(",\"bytes\":").Append(bytes)
+          .Append(",\"frames\":").Append(frames)
+          .Append(",\"fps\":").Append(fps)
+          .Append(",\"resolution\":\"").Append(width).Append("x").Append(height).Append("\"")
+          .Append(",\"encoder\":").Append(JsonStr(encoder))
+          .Append("}");
+        return sb.ToString();
+    }
+
+    static void CaptureFrames(string frameDir, int seconds, int fps, int width, int height, ref int frameCount)
+    {
+        int total = seconds * fps;
+        int perMs = Math.Max(1, 1000 / fps);
+        long budget = (long)seconds * 1000;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        for (int i = 0; i < total; i++)
+        {
+            using (Bitmap frame = new Bitmap(width, height, PixelFormat.Format24bppRgb))
+            {
+                using (Graphics g = Graphics.FromImage(frame))
+                {
+                    g.CopyFromScreen(0, 0, 0, 0, frame.Size);
+                }
+                string framePath = Path.Combine(frameDir, i.ToString("D5") + ".jpg");
+                frame.Save(framePath, ImageFormat.Jpeg);
+            }
+            frameCount++;
+            long elapsed = sw.ElapsedMilliseconds;
+            long target = (long)(i + 1) * perMs;
+            if (elapsed < target && target < budget) System.Threading.Thread.Sleep((int)(target - elapsed));
+            else if (elapsed >= budget) break;
+        }
+    }
+
+    static Process StartFfmpeg(string ffmpeg, string frameDir, string outPath, int fps)
+    {
+        string args = "-y -framerate " + fps + " -start_number 0 -i \"" + Path.Combine(frameDir, "%05d.jpg") +
+            "\" -c:v libx264 -pix_fmt yuv420p -crf 23 -movflags +faststart \"" + outPath + "\"";
+        ProcessStartInfo psi = new ProcessStartInfo(ffmpeg, args);
+        psi.UseShellExecute = false;
+        psi.CreateNoWindow = true;
+        psi.WindowStyle = ProcessWindowStyle.Hidden;
+        Process enc = Process.Start(psi);
+        LastEncoderProc = enc;
+        return enc;
+    }
+
+    static void RunFfmpeg(string ffmpeg, string frameDir, string outPath, int fps)
+    {
+        Process enc = StartFfmpeg(ffmpeg, frameDir, outPath, fps);
+        if (!enc.WaitForExit(180000)) { try { enc.Kill(); } catch { } throw new InvalidOperationException("ffmpeg encoding timed out"); }
+        if (enc.ExitCode != 0) throw new InvalidOperationException("ffmpeg exited " + enc.ExitCode);
     }
 
     static string FindFfmpeg()

@@ -30,6 +30,8 @@ export const JOB_TYPES = [
   "restart",
   "cua",
   "browser",
+  "record",
+  "record.status",
 ] as const;
 export const JobType = z.enum(JOB_TYPES);
 export type JobType = z.infer<typeof JobType>;
@@ -157,6 +159,17 @@ export const CuaParams = z.object({
   timeoutMs: z.number().int().positive().max(120_000).optional(),
 });
 export type CuaParams = z.infer<typeof CuaParams>;
+
+// ---------------------------------------------------------------------------
+// Screen recording (agent/src/record.ts)
+// ---------------------------------------------------------------------------
+
+export const RecordParams = z.object({
+  duration_sec: z.number().int().min(1).max(60).optional(),
+  fps: z.number().int().min(1).max(10).optional(),
+  timeoutMs: z.number().int().positive().max(120_000).optional(),
+});
+export type RecordParams = z.infer<typeof RecordParams>;
 
 // ---------------------------------------------------------------------------
 // Live-browser control over CDP (agent/src/browser-cdp.ts)

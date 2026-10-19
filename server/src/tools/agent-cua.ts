@@ -393,7 +393,10 @@ function registerAgentCuaRecord(
         const sidecarArgs: Record<string, number | boolean> = { confirm: true };
         if (args.duration_sec) sidecarArgs.duration_sec = args.duration_sec;
         if (args.fps) sidecarArgs.fps = args.fps;
-        const outcome = await hub.request(args.agent, "cua", { tool: "record", args: sidecarArgs }, args.timeoutMs, {
+        // Long clips are captured by the `record` job and encoded by the
+        // agent's background poller, so the HTTP stream is never idle long
+        // enough for a proxy to cut it (see agent/src/record.ts).
+        const outcome = await hub.request(args.agent, "record", sidecarArgs, args.timeoutMs, {
           op: "agent_cua_record",
           params: args,
         });
@@ -408,7 +411,11 @@ function registerAgentCuaRecord(
         const localPath = join(screenshotDir, `rec-${stamp}${ext}`);
         let bytes: Buffer;
         try {
-          const transfer = await downloadFile(hub, args.agent, remotePath, localPath, { timeoutMs: args.timeoutMs });
+          const transfer = await downloadFile(hub, args.agent, remotePath, localPath, {
+            // A long clip can be a few MB per second; give the chunked
+            // transfer its own budget, well above the sidecar's.
+            timeoutMs: Math.max(args.timeoutMs ?? 0, 150_000),
+          });
           bytes = Buffer.from(await Bun.file(localPath).arrayBuffer());
           if (bytes.length !== transfer.bytes) return fail("cua record failed: size mismatch after transfer");
         } catch (err) {

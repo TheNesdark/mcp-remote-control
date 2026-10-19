@@ -111,6 +111,25 @@ function browserMeta(msg: JobRequestMsg): Record<string, unknown> {
   }
 }
 
+/** Canned results for `record` jobs (agent/src/record.ts on Windows). */
+function recordMeta(msg: JobRequestMsg): Record<string, unknown> {
+  const params = (msg.params ?? {}) as { duration_sec?: number; fps?: number };
+  const duration = params.duration_sec ?? 10;
+  const fps = params.fps ?? 4;
+  const frames = duration * fps;
+  // Long clips are encoded in the background and come back as ffmpeg/h264.
+  if (duration > 15) {
+    return {
+      path: "C:\\Users\\SERVER-RX\\AppData\\Local\\Temp\\mrc-cua-rec.mp4", bytes: FAKE_PNG.length,
+      frames, fps, duration_sec: duration, encoder: "ffmpeg/h264",
+    };
+  }
+  return {
+    path: "C:\\Users\\SERVER-RX\\AppData\\Local\\Temp\\mrc-cua-rec.avi", bytes: FAKE_PNG.length,
+    frames, fps, duration_sec: duration, encoder: "mjpeg-avi",
+  };
+}
+
 const FAKE_PNG = Buffer.from("mrc-cua-fake-png-bytes");
 const FAKE_PNG_SHA = createHash("sha256").update(FAKE_PNG).digest("hex");
 
@@ -120,6 +139,7 @@ function respond(msg: JobRequestMsg): FakeResponse {
   }
   if (msg.jobType === "cua") return { meta: sidecarMeta(msg) };
   if (msg.jobType === "browser") return { meta: browserMeta(msg) };
+  if (msg.jobType === "record") return { meta: recordMeta(msg) };
   return { ok: false, error: `unexpected job ${msg.jobType}` };
 }
 
@@ -375,7 +395,18 @@ test("agent_cua_record pulls the clip into the screenshot dir with sha256", asyn
   expect(result.data.localPath.endsWith(".avi")).toBe(true);
   expect(existsSync(result.data.localPath)).toBe(true);
   expect(result.data.downloadPath).toContain("/screenshots/");
-  const jobsReported = started.jobs.filter((job) => job.jobType === "cua");
+  const jobsReported = started.jobs.filter((job) => job.jobType === "record");
   expect(jobsReported).toHaveLength(1);
-  expect(jobsReported[0]).toMatchObject({ params: { tool: "record", args: { duration_sec: 2, fps: 4, confirm: true } } });
+  expect(jobsReported[0]).toMatchObject({ params: { duration_sec: 2, fps: 4, confirm: true } });
+});
+
+test("agent_cua_record routes long clips through the record job and reports the encoder", async () => {
+  const started = await start();
+  const result = await call("agent_cua_record", { agent: "W-CUA-01", duration_sec: 30, fps: 8, confirm: true });
+  expect(result.isError).toBe(false);
+  expect(result.data.encoder).toBe("ffmpeg/h264");
+  expect(result.data.frames).toBe(240);
+  const jobsReported = started.jobs.filter((job) => job.jobType === "record");
+  expect(jobsReported).toHaveLength(1);
+  expect(jobsReported[0]).toMatchObject({ params: { duration_sec: 30, fps: 8, confirm: true } });
 });
