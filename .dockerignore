@@ -1,6 +1,6 @@
-# Contexto de build del servidor central + agente Windows.
-# El Dockerfile necesita: manifests de los 3 workspaces, shared/, server/,
-# agent/src + agent/assets + agent/build.ts (para cross-compilar el .exe).
+# Contexto de build del servidor central.
+# El Dockerfile necesita: manifests de los 2 workspaces, shared/ y server/.
+# El agente Windows (.NET) no se compila aquí (ver agent-dotnet/ y el Dockerfile).
 
 # VCS / CI / docs
 .git
@@ -23,9 +23,6 @@ tests
 scripts
 bunfig.toml
 
-# El agente se compila en una stage separada del Dockerfile; se excluyen del
-# runtime pero deben estar disponibles en el build context.
-agent/tray
-!agent/tray/first-run.ps1
-!agent/tray/tray.ps1
-agent/install.ps1
+# Agente Windows (fuera del build del servidor)
+agent-dotnet
+dist

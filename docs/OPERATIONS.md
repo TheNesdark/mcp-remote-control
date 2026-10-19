@@ -212,12 +212,11 @@ posture (plain `cmd`, no PowerShell).
 
 ## Auto-update (pull on connect)
 
-The server and the agent now share **one version** (`shared/version.ts`,
-currently `0.7.0`). On every redeploy the Docker build cross-compiles a fresh
-`rc-agent.exe` (version baked in at build time) and places it at
-`/app/agent/rc-agent.exe` inside the image, with `MRC_AGENT_BINARY_PATH`
-pointing at it. The SHA256 is **computed at runtime** from that file, so no
-manual hash is needed.
+The server and the agent share **one version** (`shared/version.ts`). The
+agent exe is published from `agent-dotnet/` (self-contained win-x64) and placed
+where the server can serve it, with `MRC_AGENT_BINARY_PATH` pointing at it; the
+SHA256 is **computed at runtime** from that file, so no manual hash is needed.
+The server image does **not** build the agent (its publish is Windows-only).
 
 Redesplegar the server does **not** touch the agent binaries on the Windows
 machines, so agents pull updates themselves when they reconnect:
@@ -262,10 +261,12 @@ Safety:
 Publishing a new agent version:
 
 ```sh
-# 1. bump shared/version.ts  (e.g. 0.7.0 -> 0.7.1)
-# 2. commit + push  -> Dokploy rebuilds the image, cross-compiles a fresh exe
-#    and serves it at /agent/latest.exe with its sha256 computed at boot.
-# 3. agents pick it up on their next reconnect (no env vars to touch).
+# 1. bump shared/version.ts  (e.g. 1.0.8 -> 1.0.9)
+# 2. cd agent-dotnet && dotnet publish -c Release -r win-x64 \
+#      --self-contained true -p:PublishSingleFile=true -o ../dist
+# 3. copy dist/rc-agent.exe to the share and to MRC_AGENT_BINARY_PATH
+#    (the sha256 is computed at boot from that file).
+# 4. agents pick it up on their next reconnect (no env vars to touch).
 ```
 
 Agents still running an older build pick it up on their next reconnect; new
