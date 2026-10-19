@@ -100,18 +100,11 @@ public sealed class SettingsForm : Form
         Settings.Save(file);
         Log.Info("settings changed from the tray", new { name, server });
 
-        // The scheduled task that keeps the agent alive carries the old values
-        // on its command line, and those would win over the config file on
-        // every restart. Rewrite it with the new ones.
-        var task = ScheduledTask.GetTaskName();
-        if (task is not null)
-        {
-            var exe = Environment.ProcessPath ?? "";
-            if (exe.Length > 0 && ScheduledTask.UpdateCommand(task, exe, name, server, token))
-                Log.Info("the scheduled task was updated with the new settings", new { task });
-            else
-                Log.Warn("the scheduled task still carries the old settings", new { task });
-        }
+        // The autostart entry (HKCU Run key) carries the settings on its
+        // command line, and those win over the config file on every logon.
+        // Rewrite it with the new ones.
+        var exe = Environment.ProcessPath ?? "";
+        if (exe.Length > 0) Autostart.SetCommand(exe, name, server, token);
 
         DialogResult = DialogResult.OK;
         Close();

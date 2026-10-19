@@ -34,7 +34,11 @@ public static class Restart
         }
 
         var args = ReadArgs(p) ?? (Environment.GetCommandLineArgs().Skip(1).ToArray());
-        var useTask = ScheduledTask.GetTaskName() is not null;
+        // The relaunch script itself is started through a one-shot task (the
+        // only kind a non-admin can register), so the agent always comes back.
+        // A persistent MRC-Agent task is not needed: the HKCU Run key covers
+        // the start at logon, and the agent restarts itself here.
+        var useTask = false;
         // Always write the script on the local disk: a script next to a
         // network-launched exe would live on the share, where it is slower and
         // can be blocked (and the relaunch itself must be a local path).

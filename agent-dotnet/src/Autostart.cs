@@ -26,6 +26,29 @@ public static class Autostart
         }
     }
 
+    /// <summary>
+    /// The command the Run key starts: the exe plus the settings. A settings
+    /// change has to rewrite it, otherwise the agent would come back with the
+    /// old name/server/token after the next logon.
+    /// </summary>
+    public static bool SetCommand(string exe, string name, string server, string token)
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: true)
+                            ?? Registry.CurrentUser.CreateSubKey(RunKey, writable: true);
+            if (key is null) return false;
+            key.SetValue(AutostartName, $"\"{exe}\" --name {name} --server {server} --token {token}", RegistryValueKind.String);
+            Log.Info("autostart command updated", new { exe, name, server });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("could not update the autostart command", new { error = ex.Message });
+            return false;
+        }
+    }
+
     public static void SetEnabled(bool enabled)
     {
         var execPath = Environment.ProcessPath ?? "";
