@@ -152,15 +152,33 @@ public static class Cua
         }
 
         Walk(window, 0);
+
+        // Java (Swing/AWT) apps expose nothing through UIA3, but they do
+        // through the Java Access Bridge: read that tree instead.
+        var hwnd = new IntPtr(window.Properties.NativeWindowHandle.ValueOrDefault.ToInt64());
+        var jab = JavaAccessBridge.ReadTree(hwnd);
+        if (jab.Count > 0)
+        {
+            foreach (var node in jab)
+            {
+                if (lines.Count >= maxElements) break;
+                lines.Add(
+                    $"{new string(' ', node.Depth * 2)}- [{node.ControlType}] {node.Name} " +
+                    $"jab={node.Role} screen({node.X},{node.Y} {node.Width}x{node.Height})");
+                count++;
+            }
+        }
+
         var meta = new Dictionary<string, object?>
         {
             ["ok"] = true,
-            ["hwnd"] = window.Properties.NativeWindowHandle.ValueOrDefault.ToInt64(),
+            ["hwnd"] = hwnd.ToInt64(),
             ["pid"] = window.Properties.ProcessId.ValueOrDefault,
             ["title"] = window.Name,
             ["class"] = window.ClassName,
             ["element_count"] = count,
             ["tree"] = string.Join("\n", lines),
+            ["engine"] = jab.Count > 0 ? "uia+jab" : "uia",
         };
 
         if (Fs.ReadBool(p, "include_screenshot") || p.ValueKind == JsonValueKind.Object && p.TryGetProperty("include_screenshot", out var shot) && shot.ValueKind == JsonValueKind.True)
@@ -187,15 +205,13 @@ public static class Cua
         var point = new System.Drawing.Point(x, y);
         if (doubleClick)
         {
-            if (button == "right")
+            var mouseButton = button switch
             {
-                Mouse.RightClick(point);
-                Mouse.RightClick(point);
-            }
-            else
-            {
-                Mouse.DoubleClick(point);
-            }
+                "right" => FlaUI.Core.Input.MouseButton.Right,
+                "middle" => FlaUI.Core.Input.MouseButton.Middle,
+                _ => FlaUI.Core.Input.MouseButton.Left,
+            };
+            DoubleClickAt(point, mouseButton);
         }
         else
         {
@@ -306,7 +322,51 @@ public static class Cua
 
         var root = Fs.ReadBool(p, "whole_desktop") ? Automation.GetDesktop() : ResolveWindow(p);
         var matches = FindAll(root, name, automationId, className, controlType, Fs.ReadInt(p, "max_results") ?? 20);
-        if (matches.Count == 0) throw new InvalidOperationException("no element matched the given criteria");
+        if (matches.Count == 0)
+        {
+            // Java apps are invisible to UIA3: fall back to the Java Access
+            // Bridge, which does expose their components (with screen rects).
+            var jabRoot = Fs.ReadBool(p, "whole_desktop")
+                ? IntPtr.Zero
+                : new IntPtr(ResolveWindow(p).Properties.NativeWindowHandle.ValueOrDefault.ToInt64());
+            if (jabRoot != IntPtr.Zero)
+            {
+                var jabMatches = JavaAccessBridge.Find(jabRoot, name, className, controlType, Fs.ReadInt(p, "max_results") ?? 20);
+                if (jabMatches.Count > 0)
+                {
+                    var jabNth = Fs.ReadInt(p, "nth") ?? 0;
+                    if (jabNth < 0 || jabNth >= jabMatches.Count)
+                        throw new InvalidOperationException($"nth {jabNth} out of range ({jabMatches.Count} matches)");
+                    var node = jabMatches[jabNth];
+                    return new Dictionary<string, object?>
+                    {
+                        ["ok"] = true,
+                        ["matches"] = jabMatches.Count,
+                        ["via"] = "jab",
+                        ["element"] = new Dictionary<string, object?>
+                        {
+                            ["name"] = node.Name,
+                            ["class_name"] = node.Role,
+                            ["control_type"] = node.ControlType,
+                            ["description"] = node.Description,
+                            ["bounds"] = new Dictionary<string, object?>
+                            {
+                                ["x"] = node.X,
+                                ["y"] = node.Y,
+                                ["width"] = node.Width,
+                                ["height"] = node.Height,
+                            },
+                        },
+                        ["click_point"] = new Dictionary<string, object?>
+                        {
+                            ["x"] = node.X + node.Width / 2,
+                            ["y"] = node.Y + node.Height / 2,
+                        },
+                    };
+                }
+            }
+            throw new InvalidOperationException("no element matched the given criteria");
+        }
 
         var nth = Fs.ReadInt(p, "nth") ?? 0;
         if (nth < 0 || nth >= matches.Count)
@@ -333,6 +393,29 @@ public static class Cua
         RequireConfirm(p, "invoke");
         var target = ResolveElement(p);
         StealForeground(target);
+
+        // Java components: UIA3 has no InvokePattern for them, so go through
+        // the Java Access Bridge's own actions (press / click / expand).
+        var javaWindow = new IntPtr(target.Properties.NativeWindowHandle.ValueOrDefault.ToInt64());
+        if (javaWindow != IntPtr.Zero && JavaAccessBridge.IsAvailable(javaWindow))
+        {
+            var jabName = Fs.ReadString(p, "name");
+            var jabClass = Fs.ReadString(p, "class_name");
+            if (JavaAccessBridge.Invoke(javaWindow, jabName, jabClass))
+            {
+                return new Dictionary<string, object?>
+                {
+                    ["ok"] = true,
+                    ["via"] = "jab",
+                    ["element"] = new Dictionary<string, object?>
+                    {
+                        ["name"] = jabName ?? "",
+                        ["class_name"] = jabClass ?? "",
+                        ["control_type"] = "Button",
+                    },
+                };
+            }
+        }
 
         var via = "invoke";
         try
@@ -381,6 +464,15 @@ public static class Cua
         {
             valuePattern.SetValue(value);
             return new Dictionary<string, object?> { ["ok"] = true, ["via"] = "value-pattern", ["chars"] = value.Length };
+        }
+        // Java text fields: write through the Java Access Bridge.
+        var jabWindow = new IntPtr(target.Properties.NativeWindowHandle.ValueOrDefault.ToInt64());
+        if (jabWindow != IntPtr.Zero)
+        {
+            var jabName = Fs.ReadString(p, "name");
+            var jabClass = Fs.ReadString(p, "class_name");
+            if (JavaAccessBridge.SetText(jabWindow, jabName, jabClass, value))
+                return new Dictionary<string, object?> { ["ok"] = true, ["via"] = "jab", ["chars"] = value.Length };
         }
         throw new InvalidOperationException("the element does not accept a value (no TextBox or ValuePattern)");
     }
@@ -875,6 +967,28 @@ public static class Cua
     }
 
     // --------------------------------------------------------------- helpers
+
+    /// <summary>
+    /// A double click that Windows (and therefore Java AWT/Swing, Tk, ...) really
+    /// recognises as one. FlaUI's Mouse.DoubleClick re-positions the cursor
+    /// between the two clicks, and a mouse move resets the OS click counter, so
+    /// those apps saw two single clicks instead of a double click. Set the
+    /// position once, then press/release twice inside the double-click time.
+    /// </summary>
+    private static void DoubleClickAt(System.Drawing.Point point, MouseButton button)
+    {
+        Mouse.Position = point;
+        Thread.Sleep(40);
+        Mouse.Down(button);
+        Thread.Sleep(30);
+        Mouse.Up(button);
+        // Well inside the 500 ms default double-click time; Swing needs the
+        // second press within the OS threshold to count as a double click.
+        Thread.Sleep(90);
+        Mouse.Down(button);
+        Thread.Sleep(30);
+        Mouse.Up(button);
+    }
 
     private static void RequireConfirm(JsonElement p, string tool)
     {
