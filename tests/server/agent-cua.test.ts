@@ -541,12 +541,12 @@ test("agent_cua_record pulls the clip into the screenshot dir with sha256", asyn
   expect(jobsReported[0]).toMatchObject({ params: { duration_sec: 2, fps: 4, confirm: true } });
 });
 
-test("agent_cua_record routes long clips through the record job and reports the encoder", async () => {
+test("agent_cua_record keeps long clips async so the proxy does not cut them", async () => {
   const started = await start();
   const result = await call("agent_cua_record", { agent: "W-CUA-01", duration_sec: 30, fps: 8, confirm: true });
   expect(result.isError).toBe(false);
-  expect(result.data.encoder).toBe("ffmpeg/h264");
-  expect(result.data.frames).toBe(240);
+  expect(result.data.state).toBe("running");
+  expect(typeof result.data.jobId).toBe("string");
   const jobsReported = started.jobs.filter((job) => job.jobType === "record");
   expect(jobsReported).toHaveLength(1);
   expect(jobsReported[0]).toMatchObject({ params: { duration_sec: 30, fps: 8, confirm: true } });

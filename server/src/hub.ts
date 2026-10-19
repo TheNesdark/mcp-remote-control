@@ -119,6 +119,8 @@ export interface AsyncJobHandle {
   agentName: string;
   jobType: JobType;
   startedAt: string;
+  /** Resolves when the job settles (used to chain follow-up work like downloads). */
+  promise: Promise<JobOutcome>;
 }
 
 /** A finished (or in-flight) async job kept for agent_jobs status/list. */
@@ -561,6 +563,7 @@ export class Hub {
       agentName: handle.agentName,
       jobType,
       startedAt: new Date(handle.startedAt).toISOString(),
+      promise: handle.promise,
     };
   }
 
@@ -717,6 +720,17 @@ export class Hub {
     const live = this.pending.get(jobId);
     if (!retained && !live) return null;
     return this.buildStatus(jobId, retained, live);
+  }
+
+  /**
+   * Update the retained outcome of a finished async job (e.g. to attach a
+   * download path computed after the job itself completed). No-op when the
+   * job is unknown or still running.
+   */
+  updateRetainedOutcome(jobId: string, outcome: JobOutcome): void {
+    const retained = this.retained.get(jobId);
+    if (!retained || retained.finishedAt === null) return;
+    retained.outcome = clampOutcome(outcome);
   }
 
   /**

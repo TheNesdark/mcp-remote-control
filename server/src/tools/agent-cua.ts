@@ -538,6 +538,7 @@ function registerAgentCuaScreenshot(
         window_id: z.number().int().positive().optional().describe("HWND in decimal to capture; omit for the full screen."),
         pid: z.number().int().positive().optional().describe("Fallback target: the process's biggest on-screen window."),
         timeoutMs: z.number().int().positive().max(TIMEOUT_MAX).optional().describe("Sidecar/job timeout in ms."),
+        async: z.boolean().optional().describe("Return a jobId immediately instead of waiting (auto for clips > 8s to survive the proxy's ~10s idle cut)."),
       },
     },
     async (raw) => {
@@ -626,6 +627,7 @@ function registerAgentCuaRecord(
     fps?: number;
     timeoutMs?: number;
     confirm?: boolean;
+    async?: boolean;
   }
   const { screenshotDir, screenshotBaseUrl } = opts;
 
@@ -645,6 +647,7 @@ function registerAgentCuaRecord(
         fps: z.number().int().min(1).max(10).optional().describe("Frames per second (default 4)."),
         confirm: z.boolean().describe("Record the screen: pass true to acknowledge."),
         timeoutMs: z.number().int().positive().max(TIMEOUT_MAX).optional().describe("Sidecar/job timeout in ms."),
+        async: z.boolean().optional().describe("Return a jobId immediately instead of waiting (auto for clips > 8s to survive the proxy's ~10s idle cut)."),
       },
     },
     async (raw) => {
@@ -658,13 +661,78 @@ function registerAgentCuaRecord(
         return toolJson({ ok: false, error }, true);
       };
       if (args.confirm !== true) return fail("agent_cua_record requires confirm: true (the clip records the whole screen)");
+
+      const duration = args.duration_sec ?? 10;
+      const useAsync = args.async === true || duration > 8;
+
+      if (useAsync) {
+        // Long clips cannot block the HTTP face: a proxy in front of it cuts
+        // idle streams after ~10s, and capture alone takes `duration` seconds.
+        // Start the job in the background, return a jobId immediately, and
+        // pull the finished file into the screenshot dir when it settles.
+        const sidecarArgs: Record<string, number | boolean> = { confirm: true };
+        if (args.duration_sec) sidecarArgs.duration_sec = args.duration_sec;
+        if (args.fps) sidecarArgs.fps = args.fps;
+        let handle: ReturnType<typeof hub.requestAsync>;
+        try {
+          handle = hub.requestAsync(args.agent, "record", sidecarArgs, args.timeoutMs, {
+            op: "agent_cua_record",
+            params: args,
+          });
+        } catch (err) {
+          auditCall(false, err instanceof Error ? err.message : String(err));
+          return toolError(err);
+        }
+        // Background: once the agent finishes encoding, pull the file and
+        // attach its local path / sha256 to the retained job outcome so the
+        // client sees them when polling agent_jobs.
+        void handle.promise.then(async (outcome) => {
+          if (!outcome.ok) return;
+          const meta = (outcome.meta ?? {}) as { path?: unknown; encoder?: unknown; frames?: unknown; fps?: unknown };
+          const remotePath = typeof meta.path === "string" ? meta.path : "";
+          if (!remotePath) return;
+          const ext = remotePath.toLowerCase().endsWith(".mp4") ? ".mp4" : ".avi";
+          await mkdir(screenshotDir, { recursive: true });
+          const stamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
+          const localPath = join(screenshotDir, `rec-${stamp}${ext}`);
+          try {
+            const transfer = await downloadFile(hub, args.agent, remotePath, localPath, {
+              timeoutMs: Math.max(args.timeoutMs ?? 0, 150_000),
+            });
+            const bytes = Buffer.from(await Bun.file(localPath).arrayBuffer());
+            if (bytes.length !== transfer.bytes) return;
+            const sha256 = createHash("sha256").update(bytes).digest("hex");
+            const downloadPath = `${SCREENSHOT_HTTP_PREFIX}${basename(localPath)}`;
+            hub.updateRetainedOutcome(handle.jobId, {
+              ...outcome,
+              meta: {
+                ...(outcome.meta ?? {}),
+                localPath,
+                sha256,
+                downloadPath,
+                downloaded: true,
+                bytes: bytes.length,
+              },
+            });
+          } catch {
+            // Leave the outcome as-is (agent-side path still reported).
+          }
+        });
+
+        auditCall(true, undefined, { async: true, jobId: handle.jobId });
+        return toolJson({
+          ok: true,
+          agent: args.agent,
+          jobId: handle.jobId,
+          state: "running",
+          note: "recording in progress; poll with agent_jobs (status) until state becomes 'ok', then read meta.localPath / meta.downloadPath",
+        });
+      }
+
       try {
         const sidecarArgs: Record<string, number | boolean> = { confirm: true };
         if (args.duration_sec) sidecarArgs.duration_sec = args.duration_sec;
         if (args.fps) sidecarArgs.fps = args.fps;
-        // Long clips are captured by the `record` job and encoded by the
-        // agent's background poller, so the HTTP stream is never idle long
-        // enough for a proxy to cut it (see agent/src/record.ts).
         const outcome = await hub.request(args.agent, "record", sidecarArgs, args.timeoutMs, {
           op: "agent_cua_record",
           params: args,
