@@ -48,6 +48,14 @@ export interface ServerConfig {
   agentLatestVersion: string;
   /** Auto-update: binary URL (relative resolves against the hub origin). */
   agentBinaryUrl: string;
+  /**
+   * Auto-update: Windows UNC path (or template) to the build, e.g.
+   * \\192.168.1.191\Hermes\rc-agent-{version}.exe. `{version}` is replaced
+   * with the announced version at runtime, so one env var covers every release.
+   * Agents on the same LAN copy it directly; the hub only forwards the path
+   * (it cannot read the share itself).
+   */
+  agentBinaryUnc: string;
   /** Auto-update: expected sha256 of that binary (optional but recommended). */
   agentBinarySha256: string;
   /** Auto-update: local file served at /agent/latest.exe (empty = not served). */
@@ -127,6 +135,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     publicUrl: (env.MRC_PUBLIC_URL?.trim() ?? "").replace(/\/+$/, ""),
     agentLatestVersion: VERSION,
     agentBinaryUrl: env.MRC_AGENT_BINARY_URL?.trim() ?? "",
+    agentBinaryUnc: env.MRC_AGENT_BINARY_UNC?.trim() ?? "",
     agentBinarySha256: env.MRC_AGENT_BINARY_SHA256?.trim().toLowerCase() ?? "",
     // Default to the build shipped in the image (see Dockerfile), so a deploy
     // publishes the agent automatically without any environment variable.

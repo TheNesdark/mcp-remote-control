@@ -3,9 +3,15 @@ using System.Security.Cryptography;
 namespace Mrc.Agent;
 
 /// <summary>
-/// Auto-update: after the welcome advertises a newer build, download it next
-/// to the exe, verify its sha256 and hand it to restart as updatePath. One
-/// attempt per process, mirroring agent/src/auto-update.ts.
+/// Auto-update: after the welcome advertises a newer build, stage it next to
+/// the exe, verify its sha256 and hand it to restart as updatePath. One attempt
+/// per process.
+///
+/// Two sources, in order of preference:
+///  - AgentBinaryUnc: a Windows share the agent can read directly (typical on a
+///    LAN: the hub runs in a Linux container and cannot reach the share, but
+///    the agent can). Copied with retries since SMB can be slow to wake.
+///  - AgentBinaryUrl: HTTP from the hub (relative URLs resolve against it).
 /// </summary>
 public static class AutoUpdate
 {
@@ -22,9 +28,12 @@ public static class AutoUpdate
             Log.Debug("auto-update: up to date", new { current = Versions.Current, latest = welcome.LatestAgentVersion });
             return;
         }
-        if (string.IsNullOrEmpty(welcome.AgentBinaryUrl))
+        var hasUnc = !string.IsNullOrWhiteSpace(welcome.AgentBinaryUnc);
+        var hasUrl = !string.IsNullOrWhiteSpace(welcome.AgentBinaryUrl);
+        if (!hasUnc && !hasUrl)
         {
-            Log.Warn("auto-update: server advertises a newer version without a binary url", new { latest = welcome.LatestAgentVersion });
+            Log.Warn("auto-update: server advertises a newer version without a source",
+                new { latest = welcome.LatestAgentVersion });
             return;
         }
         if (Interlocked.Exchange(ref _scheduled, 1) == 1) return;
@@ -41,11 +50,20 @@ public static class AutoUpdate
 
         try
         {
-            var url = ResolveBinaryUrl(welcome.AgentBinaryUrl!, Settings.Current.ServerUrl);
-            Log.Info("auto-update: downloading", new { url, latest = welcome.LatestAgentVersion });
-            var bytes = await DownloadAsync(url).ConfigureAwait(false);
-            var sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+            byte[] bytes;
+            if (!string.IsNullOrWhiteSpace(welcome.AgentBinaryUnc))
+            {
+                Log.Info("auto-update: copying from share", new { unc = welcome.AgentBinaryUnc, latest = welcome.LatestAgentVersion });
+                bytes = await CopyFromShareAsync(welcome.AgentBinaryUnc!, staged + ".src").ConfigureAwait(false);
+            }
+            else
+            {
+                var url = ResolveBinaryUrl(welcome.AgentBinaryUrl!, Settings.Current.ServerUrl);
+                Log.Info("auto-update: downloading", new { url, latest = welcome.LatestAgentVersion });
+                bytes = await DownloadAsync(url).ConfigureAwait(false);
+            }
 
+            var sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
             if (!string.IsNullOrEmpty(welcome.AgentBinarySha256) &&
                 !string.Equals(sha256, welcome.AgentBinarySha256, StringComparison.OrdinalIgnoreCase))
             {
@@ -56,7 +74,7 @@ public static class AutoUpdate
             }
 
             await File.WriteAllBytesAsync(staged, bytes).ConfigureAwait(false);
-            Log.Info("auto-update: staged", new { staged, bytes = bytes.Length });
+            Log.Info("auto-update: staged", new { staged, bytes = bytes.Length, sha256 });
 
             var outcome = await Restart.JobRestart(
                 System.Text.Json.JsonSerializer.SerializeToElement(new { updatePath = staged }),
@@ -68,6 +86,38 @@ public static class AutoUpdate
         {
             Log.Error("auto-update failed", new { error = ex.Message });
         }
+    }
+
+    /// <summary>
+    /// Copies the build off a Windows share. Retries a few times: the first
+    /// touch of an idle SMB share can fail while the share wakes up, and a
+    /// partial/absent file must never be treated as the real build.
+    /// </summary>
+    private static async Task<byte[]> CopyFromShareAsync(string unc, string scratch)
+    {
+        Exception? last = null;
+        for (var attempt = 1; attempt <= 4; attempt++)
+        {
+            try
+            {
+                await using (var source = File.OpenRead(unc))
+                await using (var target = File.Create(scratch))
+                {
+                    await source.CopyToAsync(target).ConfigureAwait(false);
+                }
+                var bytes = await File.ReadAllBytesAsync(scratch).ConfigureAwait(false);
+                try { File.Delete(scratch); } catch { /* best effort */ }
+                if (bytes.Length == 0) throw new InvalidOperationException("the share returned an empty file");
+                return bytes;
+            }
+            catch (Exception ex)
+            {
+                last = ex;
+                Log.Warn("auto-update: share copy attempt failed", new { attempt, error = ex.Message });
+                await Task.Delay(TimeSpan.FromSeconds(attempt * 2)).ConfigureAwait(false);
+            }
+        }
+        throw new InvalidOperationException($"could not copy the build from '{unc}': {last?.Message}");
     }
 
     /// <summary>Relative urls resolve against the hub origin derived from the ws url.</summary>

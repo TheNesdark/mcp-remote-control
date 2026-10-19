@@ -79,6 +79,7 @@ export function testServerConfig(token: string, overrides: Partial<ServerConfig>
     publicUrl: "",
     agentLatestVersion: "",
     agentBinaryUrl: "",
+    agentBinaryUnc: "",
     agentBinarySha256: "",
     agentBinaryPath: "",
     tlsCertPath: "",

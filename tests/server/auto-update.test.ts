@@ -84,3 +84,30 @@ test("an absolute MRC_AGENT_BINARY_URL overrides the local endpoint", async () =
   const welcome = await agent.start();
   expect(welcome.agentBinaryUrl).toBe("https://cdn.example/rc-agent.exe");
 });
+
+test("welcome advertises a UNC path so same-LAN agents copy from the share", async () => {
+  const svc = startWith({
+    agentLatestVersion: "1.0.9",
+    agentBinaryUnc: "\\\\192.168.1.191\\Hermes\\rc-agent-109.exe",
+  });
+  agent = new FakeAgent({ url: svc.wsUrl, token: TOKEN, name: "AU-4", onLog: () => {} });
+  const welcome = await agent.start();
+  expect(welcome.agentBinaryUnc).toBe("\\\\192.168.1.191\\Hermes\\rc-agent-109.exe");
+});
+
+test("a {version} placeholder in the UNC is filled with the announced version", async () => {
+  const svc = startWith({
+    agentLatestVersion: "1.0.9",
+    agentBinaryUnc: "\\\\192.168.1.191\\Hermes\\rc-agent-{version}.exe",
+  });
+  agent = new FakeAgent({ url: svc.wsUrl, token: TOKEN, name: "AU-5", onLog: () => {} });
+  const welcome = await agent.start();
+  expect(welcome.agentBinaryUnc).toBe("\\\\192.168.1.191\\Hermes\\rc-agent-1.0.9.exe");
+});
+
+test("no UNC is advertised when MRC_AGENT_BINARY_UNC is unset", async () => {
+  const svc = startWith({ agentLatestVersion: "1.0.9" });
+  agent = new FakeAgent({ url: svc.wsUrl, token: TOKEN, name: "AU-6", onLog: () => {} });
+  const welcome = await agent.start();
+  expect(welcome.agentBinaryUnc).toBeUndefined();
+});

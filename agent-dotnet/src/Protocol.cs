@@ -55,6 +55,8 @@ public sealed class WelcomeMsg
     public int HeartbeatIntervalMs { get; set; }
     public string? LatestAgentVersion { get; set; }
     public string? AgentBinaryUrl { get; set; }
+    /// <summary>Windows UNC path to copy the build from (same-LAN agents).</summary>
+    public string? AgentBinaryUnc { get; set; }
     public string? AgentBinarySha256 { get; set; }
 }
 

@@ -178,7 +178,7 @@ export interface HubOptions {
   /** Max accepted jobs per agent in a rolling 60s window (rate_limited above). */
   maxJobsPerMinute: number;
   /** Auto-update: newest published agent build (announced in `welcome`). */
-  update?: { latestVersion?: string; binaryUrl?: string; binarySha256?: string };
+  update?: { latestVersion?: string; binaryUrl?: string; binaryUnc?: string; binarySha256?: string };
   /** Finished async jobs kept for agent_jobs status/list (default 100). */
   maxRetainedJobs?: number;
   /** How long a finished async job stays queryable (default 30 min). */
@@ -443,6 +443,9 @@ export class Hub {
       heartbeatIntervalMs: this.opts.heartbeatIntervalMs,
       ...(this.opts.update?.latestVersion ? { latestAgentVersion: this.opts.update.latestVersion } : {}),
       ...(this.opts.update?.binaryUrl ? { agentBinaryUrl: this.opts.update.binaryUrl } : {}),
+      ...(this.opts.update?.binaryUnc
+        ? { agentBinaryUnc: this.opts.update.binaryUnc.replace("{version}", this.opts.update.latestVersion ?? "") }
+        : {}),
       ...(this.opts.update?.binarySha256 ? { agentBinarySha256: this.opts.update.binarySha256 } : {}),
     });
     this.opts.registry.touch(record.agentId, {

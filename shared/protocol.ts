@@ -278,8 +278,15 @@ export const WelcomeMsg = z.object({
   heartbeatIntervalMs: z.number().int().positive(),
   /** Latest agent build published by the server (auto-update, MRC_AGENT_LATEST_VERSION). */
   latestAgentVersion: z.string().min(1).optional(),
-  /** Where to fetch that build; relative URLs resolve against the hub origin. */
+  /** Where to fetch that build over HTTP; relative URLs resolve against the hub origin. */
   agentBinaryUrl: z.string().min(1).optional(),
+  /**
+   * Where to copy that build from a Windows UNC path (e.g.
+   * `\\192.168.1.191\Hermes\rc-agent.exe`). Agents on the same LAN as the
+   * share use this instead of agentBinaryUrl, since the hub itself cannot read
+   * the share to serve it.
+   */
+  agentBinaryUnc: z.string().min(1).optional(),
   /** sha256 of the published build: the agent MUST verify before swapping. */
   agentBinarySha256: z.string().min(1).optional(),
 });

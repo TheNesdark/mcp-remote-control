@@ -85,6 +85,7 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
             ...(config.agentBinaryUrl || config.agentBinaryPath
               ? { binaryUrl: config.agentBinaryUrl || "/agent/latest.exe" }
               : {}),
+            ...(config.agentBinaryUnc ? { binaryUnc: config.agentBinaryUnc } : {}),
             ...(agentBinarySha256 ? { binarySha256: agentBinarySha256 } : {}),
           },
         }

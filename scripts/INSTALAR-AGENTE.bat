@@ -11,7 +11,7 @@ REM ---------------------------------------------------------------
 set "SH=\\192.168.1.191\Hermes"
 set "DIR=%LOCALAPPDATA%\mrc-remote-control"
 set "EXE=%DIR%\rc-agent.exe"
-set "SRC=%SH%\rc-agent-108.exe"
+set "SRC=%SH%\rc-agent.exe"
 set "NAME=SERVER-RX-DOTNET"
 set "SERVER=ws://192.168.1.192:8787"
 set "TOKEN=mrc_LajSuZKlZ57FDiI2ohKll0eisXagGTFndEv2GYu7-SY"
@@ -24,7 +24,7 @@ echo.
 REM --- 1) detener instancias previas (el exe en disco queda libre) ---
 echo [1/5] Deteniendo instancias previas...
 taskkill /f /im rc-agent.exe        >nul 2>&1
-taskkill /f /im rc-agent-108.exe    >nul 2>&1
+taskkill /f /im rc-agent-109.exe    >nul 2>&1
 taskkill /f /im rc-agent-dotnet.exe >nul 2>&1
 taskkill /f /im rc-agent-091.exe    >nul 2>&1
 timeout /t 2 /nobreak >nul
@@ -66,8 +66,13 @@ if errorlevel 1 (
   )
   echo ------------------------------------------------------------
   echo.
-  echo El agente no arranco. Revisa el log de arriba y vuelve a ejecutar
-  echo este .bat. Si el share no responde, comprueba:  dir %SH%
+  echo Levantando el agente Bun de respaldo para no dejarte sin control...
+  if exist "%DIR%\rc-agent.exe.bun" (
+    start "" "%DIR%\rc-agent.exe.bun" --token %TOKEN%
+    echo Bun de respaldo lanzado.
+  ) else (
+    echo   (no encuentro el Bun de respaldo en %DIR%\rc-agent.exe.bun)
+  )
 ) else (
   echo.
   echo OK: agente en marcha (pid arriba). Nombre en el hub: %NAME%
