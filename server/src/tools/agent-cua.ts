@@ -623,6 +623,7 @@ function registerAgentCuaRecord(
   opts: { screenshotDir: string; screenshotBaseUrl?: string },
 ): void {
   interface Args extends CuaArgsBag {
+    operation?: "start" | "stop" | "status";
     duration_sec?: number;
     fps?: number;
     timeoutMs?: number;
@@ -631,19 +632,44 @@ function registerAgentCuaRecord(
   }
   const { screenshotDir, screenshotBaseUrl } = opts;
 
+  /** Pulls the finished clip from the agent into the screenshot dir. */
+  async function fetchClip(
+    agent: string,
+    remotePath: string,
+    timeoutMs: number | undefined,
+  ): Promise<{ localPath: string; bytes: number; sha256: string; downloadPath: string }> {
+    const ext = remotePath.toLowerCase().endsWith(".mp4") ? ".mp4" : ".avi";
+    await mkdir(screenshotDir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
+    const localPath = join(screenshotDir, `rec-${stamp}${ext}`);
+    const transfer = await downloadFile(hub, agent, remotePath, localPath, {
+      timeoutMs: Math.max(timeoutMs ?? 0, 150_000),
+    });
+    const bytes = Buffer.from(await Bun.file(localPath).arrayBuffer());
+    if (bytes.length !== transfer.bytes) throw new Error("size mismatch after transfer");
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const downloadPath = `${SCREENSHOT_HTTP_PREFIX}${basename(localPath)}`;
+    return { localPath, bytes: bytes.length, sha256, downloadPath };
+  }
+
   server.registerTool(
     "agent_cua_record",
     {
-      title: "Record a short screen clip via the CUA engine",
+      title: "Record a screen clip via the CUA engine",
       description:
-        "Capture the agent's primary monitor for duration_sec seconds (1-60, default 10) at fps frames/s " +
-        "(1-10, default 4) and encode it on the agent. MP4/h264 when ffmpeg is available on that machine, " +
-        "otherwise a motion-JPEG .avi (playable in VLC; remux with `ffmpeg -i in.avi -c copy out.mp4`). " +
-        "This call BLOCKS for the whole clip plus encoding. The hub pulls the finished file with a " +
-        "sha256-verified transfer and returns downloadPath. Requires confirm: true (it records the screen).",
+        "Records the agent's primary monitor and encodes it on the agent (MP4/h264 with ffmpeg, else a " +
+        "motion-JPEG .avi). Three modes: (1) fixed length — pass duration_sec (1-600, default 10) and the clip " +
+        "is that long; (2) open-ended — operation 'start' begins recording and returns immediately, operation " +
+        "'stop' ends it and returns the clip, which is EXACTLY as long as your workflow took (use this instead " +
+        "of guessing a duration); (3) operation 'status' reports how the open recording is doing. The hub pulls " +
+        "the finished file with a sha256-verified transfer and returns downloadPath. Requires confirm: true.",
       inputSchema: {
         agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
-        duration_sec: z.number().int().min(1).max(60).optional().describe("Clip length in seconds (default 10)."),
+        operation: z
+          .enum(["start", "stop", "status"])
+          .optional()
+          .describe("Open-ended recording: 'start' begins (returns at once), 'stop' ends and returns the clip, 'status' reports progress. Omit for a fixed-length clip."),
+        duration_sec: z.number().int().min(1).max(600).optional().describe("Fixed-length clip length in seconds (default 10). Ignored with operation."),
         fps: z.number().int().min(1).max(10).optional().describe("Frames per second (default 4)."),
         confirm: z.boolean().describe("Record the screen: pass true to acknowledge."),
         timeoutMs: z.number().int().positive().max(TIMEOUT_MAX).optional().describe("Sidecar/job timeout in ms."),
@@ -662,6 +688,75 @@ function registerAgentCuaRecord(
       };
       if (args.confirm !== true) return fail("agent_cua_record requires confirm: true (the clip records the whole screen)");
 
+      const sidecarArgs: Record<string, number | boolean | string> = { confirm: true };
+      if (args.fps) sidecarArgs.fps = args.fps;
+
+      // ---- open-ended mode: start / stop / status ---------------------------
+      if (args.operation) {
+        if (args.operation === "start") {
+          if (args.duration_sec) sidecarArgs.duration_sec = args.duration_sec;
+        }
+        if (args.operation !== "stop") {
+          // start/status return at once, so a plain blocking request is fine.
+          try {
+            const outcome = await hub.request(
+              args.agent,
+              "record",
+              { ...sidecarArgs, operation: args.operation },
+              args.timeoutMs,
+              { op: "agent_cua_record", params: args },
+            );
+            if (!outcome.ok) return fail(outcome.error ?? `cua record ${args.operation} failed`);
+            auditCall(true, undefined, { operation: args.operation });
+            return toolJson({ jobId: outcome.jobId, ...(outcome.meta ?? {}) });
+          } catch (err) {
+            auditCall(false, err instanceof Error ? err.message : String(err));
+            return toolError(err);
+          }
+        }
+        // stop: the agent encodes then answers; an async job keeps the HTTP
+        // face from idling while a long clip encodes.
+        let handle: ReturnType<typeof hub.requestAsync>;
+        try {
+          handle = hub.requestAsync(args.agent, "record", { ...sidecarArgs, operation: "stop" }, args.timeoutMs, {
+            op: "agent_cua_record",
+            params: args,
+          });
+        } catch (err) {
+          auditCall(false, err instanceof Error ? err.message : String(err));
+          return toolError(err);
+        }
+        void handle.promise.then(async (outcome) => {
+          if (!outcome.ok) return;
+          const meta = (outcome.meta ?? {}) as { path?: unknown };
+          const remotePath = typeof meta.path === "string" ? meta.path : "";
+          if (!remotePath) return;
+          try {
+            const clip = await fetchClip(args.agent, remotePath, args.timeoutMs);
+            hub.updateRetainedOutcome(handle.jobId, {
+              ...outcome,
+              meta: {
+                ...outcome.meta,
+                ...clip,
+                downloaded: true,
+                ...(screenshotBaseUrl ? { downloadUrl: `${screenshotBaseUrl}${clip.downloadPath}` } : {}),
+              },
+            });
+          } catch {
+            // Leave the outcome as-is (agent-side path still reported).
+          }
+        });
+        auditCall(true, undefined, { operation: "stop", jobId: handle.jobId });
+        return toolJson({
+          ok: true,
+          agent: args.agent,
+          jobId: handle.jobId,
+          state: "running",
+          note: "encoding the clip; poll with agent_jobs (status). When meta.downloaded is true, read meta.localPath / meta.downloadPath / meta.sha256.",
+        });
+      }
+
+      // ---- fixed-length mode -----------------------------------------------
       const duration = args.duration_sec ?? 10;
       const useAsync = args.async === true || duration > 8;
 
@@ -670,9 +765,7 @@ function registerAgentCuaRecord(
         // idle streams after ~10s, and capture alone takes `duration` seconds.
         // Start the job in the background, return a jobId immediately, and
         // pull the finished file into the screenshot dir when it settles.
-        const sidecarArgs: Record<string, number | boolean> = { confirm: true };
         if (args.duration_sec) sidecarArgs.duration_sec = args.duration_sec;
-        if (args.fps) sidecarArgs.fps = args.fps;
         let handle: ReturnType<typeof hub.requestAsync>;
         try {
           handle = hub.requestAsync(args.agent, "record", sidecarArgs, args.timeoutMs, {
@@ -689,10 +782,8 @@ function registerAgentCuaRecord(
         // retained job outcome so the client sees them when polling agent_jobs.
         void handle.promise.then(async (outcome) => {
           if (!outcome.ok) return;
-          // Poll until encoding finishes (split mode). Short clips already
-          // return done=true from `record`, so this loop exits immediately.
           let statusOutcome = outcome;
-          let meta = (statusOutcome.meta ?? {}) as { path?: unknown; done?: unknown; status?: unknown; encoder?: unknown; frames?: unknown; fps?: unknown };
+          let meta = (statusOutcome.meta ?? {}) as { path?: unknown; done?: unknown };
           const deadline = Date.now() + 300_000;
           while (meta.done !== true && Date.now() < deadline) {
             await new Promise((r) => setTimeout(r, 1_500));
@@ -704,37 +795,24 @@ function registerAgentCuaRecord(
               });
               if (!polled.ok) break;
               statusOutcome = polled;
-              meta = (statusOutcome.meta ?? {}) as { path?: unknown; done?: unknown; status?: unknown; encoder?: unknown; frames?: unknown; fps?: unknown };
+              meta = (statusOutcome.meta ?? {}) as { path?: unknown; done?: unknown };
             } catch {
               break;
             }
           }
           if (meta.done !== true) return; // still encoding; client keeps polling
-
           const remotePath = typeof meta.path === "string" ? meta.path : "";
           if (!remotePath) return;
-          const ext = remotePath.toLowerCase().endsWith(".mp4") ? ".mp4" : ".avi";
-          await mkdir(screenshotDir, { recursive: true });
-          const stamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
-          const localPath = join(screenshotDir, `rec-${stamp}${ext}`);
           try {
-            const transfer = await downloadFile(hub, args.agent, remotePath, localPath, {
-              timeoutMs: Math.max(args.timeoutMs ?? 0, 150_000),
-            });
-            const bytes = Buffer.from(await Bun.file(localPath).arrayBuffer());
-            if (bytes.length !== transfer.bytes) return;
-            const sha256 = createHash("sha256").update(bytes).digest("hex");
-            const downloadPath = `${SCREENSHOT_HTTP_PREFIX}${basename(localPath)}`;
+            const clip = await fetchClip(args.agent, remotePath, args.timeoutMs);
             hub.updateRetainedOutcome(handle.jobId, {
               ...statusOutcome,
               meta: {
                 ...(statusOutcome.meta ?? {}),
                 ...meta,
-                localPath,
-                sha256,
-                downloadPath,
+                ...clip,
                 downloaded: true,
-                bytes: bytes.length,
+                ...(screenshotBaseUrl ? { downloadUrl: `${screenshotBaseUrl}${clip.downloadPath}` } : {}),
               },
             });
           } catch {
@@ -753,9 +831,7 @@ function registerAgentCuaRecord(
       }
 
       try {
-        const sidecarArgs: Record<string, number | boolean> = { confirm: true };
         if (args.duration_sec) sidecarArgs.duration_sec = args.duration_sec;
-        if (args.fps) sidecarArgs.fps = args.fps;
         const outcome = await hub.request(args.agent, "record", sidecarArgs, args.timeoutMs, {
           op: "agent_cua_record",
           params: args,
@@ -764,40 +840,26 @@ function registerAgentCuaRecord(
         const meta = (outcome.meta ?? {}) as { path?: unknown; encoder?: unknown; frames?: unknown; fps?: unknown };
         const remotePath = typeof meta.path === "string" ? meta.path : "";
         if (!remotePath) return fail("cua record failed: sidecar returned no path");
-        const ext = remotePath.toLowerCase().endsWith(".mp4") ? ".mp4" : ".avi";
-
-        await mkdir(screenshotDir, { recursive: true });
-        const stamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
-        const localPath = join(screenshotDir, `rec-${stamp}${ext}`);
-        let bytes: Buffer;
+        let clip: { localPath: string; bytes: number; sha256: string; downloadPath: string };
         try {
-          const transfer = await downloadFile(hub, args.agent, remotePath, localPath, {
-            // A long clip can be a few MB per second; give the chunked
-            // transfer its own budget, well above the sidecar's.
-            timeoutMs: Math.max(args.timeoutMs ?? 0, 150_000),
-          });
-          bytes = Buffer.from(await Bun.file(localPath).arrayBuffer());
-          if (bytes.length !== transfer.bytes) return fail("cua record failed: size mismatch after transfer");
+          clip = await fetchClip(args.agent, remotePath, args.timeoutMs);
         } catch (err) {
           return fail(`cua record failed: transfer error (${err instanceof Error ? err.message : String(err)})`);
         }
-
-        const sha256 = createHash("sha256").update(bytes).digest("hex");
-        const downloadPath = `${SCREENSHOT_HTTP_PREFIX}${basename(localPath)}`;
         const payload = {
           ok: true,
           agent: args.agent,
-          localPath,
-          bytes: bytes.length,
-          sha256,
+          localPath: clip.localPath,
+          bytes: clip.bytes,
+          sha256: clip.sha256,
           encoder: meta.encoder ?? "unknown",
           frames: meta.frames,
           fps: meta.fps,
           duration_sec: args.duration_sec ?? 10,
-          downloadPath,
-          ...(screenshotBaseUrl ? { downloadUrl: `${screenshotBaseUrl}${downloadPath}` } : {}),
+          downloadPath: clip.downloadPath,
+          ...(screenshotBaseUrl ? { downloadUrl: `${screenshotBaseUrl}${clip.downloadPath}` } : {}),
         };
-        auditCall(true, undefined, { bytes: bytes.length });
+        auditCall(true, undefined, { bytes: clip.bytes });
         return toolJson(payload);
       } catch (err) {
         auditCall(false, err instanceof Error ? err.message : String(err));

@@ -165,7 +165,16 @@ export type CuaParams = z.infer<typeof CuaParams>;
 // ---------------------------------------------------------------------------
 
 export const RecordParams = z.object({
-  duration_sec: z.number().int().min(1).max(60).optional(),
+  /**
+   * Controls the capture window:
+   * - undefined: record `duration_sec` seconds in one call (the original mode).
+   * - "start": begin an open-ended recording and return immediately; the clip
+   *   is only captured when "stop" arrives.
+   * - "stop": end the open recording, encode it and return the finished clip.
+   * - "status": report how long the open recording has been running.
+   */
+  operation: z.enum(["start", "stop", "status"]).optional(),
+  duration_sec: z.number().int().min(1).max(600).optional(),
   fps: z.number().int().min(1).max(10).optional(),
   timeoutMs: z.number().int().positive().max(120_000).optional(),
 });

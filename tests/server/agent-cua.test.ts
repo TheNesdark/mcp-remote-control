@@ -147,7 +147,16 @@ function browserMeta(msg: JobRequestMsg): Record<string, unknown> {
 
 /** Canned results for `record` jobs (agent/src/record.ts on Windows). */
 function recordMeta(msg: JobRequestMsg): Record<string, unknown> {
-  const params = (msg.params ?? {}) as { duration_sec?: number; fps?: number };
+  const params = (msg.params ?? {}) as { duration_sec?: number; fps?: number; operation?: string };
+  if (params.operation === "start") {
+    return { ok: true, status: "recording", active: true, fps: params.fps ?? 4, resolution: "1368x768", encoder: "ffmpeg/h264" };
+  }
+  if (params.operation === "status") {
+    return { ok: true, active: true, elapsed_sec: 3.5, frames: 14, fps: params.fps ?? 4, resolution: "1368x768" };
+  }
+  if (params.operation === "stop") {
+    return { ok: true, status: "done", done: true, path: "C:\\Users\\SERVER-RX\\AppData\\Local\\Temp\\mrc-rec-open.mp4", bytes: FAKE_PNG.length, frames: 22, fps: params.fps ?? 4, duration_sec: 6, encoder: "ffmpeg/h264" };
+  }
   const duration = params.duration_sec ?? 10;
   const fps = params.fps ?? 4;
   const frames = duration * fps;
@@ -571,4 +580,51 @@ test("agent_cua_record keeps long clips async so the proxy does not cut them", a
   const jobsReported = started.jobs.filter((job) => job.jobType === "record");
   expect(jobsReported).toHaveLength(1);
   expect(jobsReported[0]).toMatchObject({ params: { duration_sec: 30, fps: 8, confirm: true } });
+});
+
+test("agent_cua_record operation=start returns at once without waiting for a clip", async () => {
+  const started = await start();
+  const result = await call("agent_cua_record", { agent: "W-CUA-01", operation: "start", fps: 6, confirm: true });
+  expect(result.isError).toBe(false);
+  expect(result.data.active).toBe(true);
+  expect(result.data.status).toBe("recording");
+  const params = (started.jobs[0]?.params ?? {}) as Record<string, unknown>;
+  expect(params).toMatchObject({ operation: "start", fps: 6 });
+});
+
+test("agent_cua_record operation=status reports the open recording", async () => {
+  const started = await start();
+  const result = await call("agent_cua_record", { agent: "W-CUA-01", operation: "status", confirm: true });
+  expect(result.isError).toBe(false);
+  expect(result.data.active).toBe(true);
+  expect(result.data.elapsed_sec).toBe(3.5);
+  const jobsReported = started.jobs.filter((job) => job.jobType === "record");
+  expect(jobsReported).toHaveLength(1);
+});
+
+test("agent_cua_record operation=stop pulls the clip and reports its path", async () => {
+  await start();
+  const result = await call("agent_cua_record", { agent: "W-CUA-01", operation: "stop", confirm: true });
+  expect(result.isError).toBe(false);
+  expect(result.data.state).toBe("running");
+  expect(typeof result.data.jobId).toBe("string");
+  // Wait for the background download to attach the clip metadata.
+  const jobId = result.data.jobId as string;
+  let status: Record<string, unknown> | undefined;
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 25));
+    const jobs = await call("agent_jobs", { operation: "status", jobId });
+    status = (jobs.data as Record<string, unknown>).meta as Record<string, unknown> | undefined;
+    if (status?.downloaded) break;
+  }
+  expect(status?.downloaded).toBe(true);
+  expect(String(status?.localPath).endsWith(".mp4")).toBe(true);
+  expect(typeof status?.sha256).toBe("string");
+});
+
+test("agent_cua_record rejects an unknown operation", async () => {
+  const started = await start();
+  const result = await call("agent_cua_record", { agent: "W-CUA-01", operation: "bogus", confirm: true });
+  expect(result.isError).toBe(true);
+  expect(started.jobs.length).toBe(0);
 });

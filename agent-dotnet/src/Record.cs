@@ -37,6 +37,20 @@ public static class Record
 
     public static async Task<JobOutcome> JobRecord(JsonElement p, JobContext ctx, CancellationToken ct)
     {
+        // Open-ended mode: `operation` drives start/stop/status instead of the
+        // fixed duration_sec window.
+        var operation = Fs.ReadString(p, "operation");
+        if (operation is not null)
+        {
+            return operation switch
+            {
+                "start" => StartOpen(p),
+                "stop" => await StopOpenAsync(p, ct).ConfigureAwait(false),
+                "status" => OpenStatus(),
+                _ => JobOutcome.Failure($"unknown record operation: {operation}"),
+            };
+        }
+
         var seconds = Math.Clamp(Fs.ReadInt(p, "duration_sec") ?? 10, 1, 60);
         var fps = Math.Clamp(Fs.ReadInt(p, "fps") ?? 4, 1, 10);
 
@@ -108,6 +122,198 @@ public static class Record
             ["resolution"] = $"{width}x{height}",
             ["encoder"] = ffmpeg is not null ? "ffmpeg/h264" : "mjpeg-avi",
         });
+    }
+
+    // ------------------------------------------------------- open recording
+
+    private static readonly object OpenGate = new();
+    private static string _openFrameDir = "";
+    private static string _openOutPath = "";
+    private static int _openFps;
+    private static int _openWidth;
+    private static int _openHeight;
+    private static string _openEncoder = "";
+    private static bool _openActive;
+    private static long _openStartedAt;
+    private static int _openFrames;
+    private static CancellationTokenSource? _openCts;
+    private static Task? _openTask;
+
+    /// <summary>
+    /// `record operation=start`: begin an open-ended capture on a background
+    /// thread. `stop` ends it; the clip is only encoded then, so its length is
+    /// whatever the caller's workflow took.
+    /// </summary>
+    private static JobOutcome StartOpen(JsonElement p)
+    {
+        RequireConfirm(p);
+        var fps = Math.Clamp(Fs.ReadInt(p, "fps") ?? 4, 1, 10);
+        var width = ScreenWidth();
+        var height = ScreenHeight();
+        var ffmpeg = FindFfmpeg();
+        var frameDir = Path.Combine(Path.GetTempPath(), $"mrc-rec-open-frames-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(frameDir);
+        var outPath = Path.Combine(Path.GetTempPath(),
+            $"mrc-rec-{DateTime.Now:yyyyMMdd-HHmmss}{(ffmpeg is not null ? ".mp4" : ".avi")}");
+
+        lock (OpenGate)
+        {
+            if (_openActive) return JobOutcome.Failure("a recording is already in progress (stop it first)");
+            _openFrameDir = frameDir;
+            _openOutPath = outPath;
+            _openFps = fps;
+            _openWidth = width;
+            _openHeight = height;
+            _openEncoder = ffmpeg is not null ? "ffmpeg/h264" : "mjpeg-avi";
+            _openActive = true;
+            _openStartedAt = Environment.TickCount64;
+            _openFrames = 0;
+            _openCts = new CancellationTokenSource();
+            var token = _openCts.Token;
+            _openTask = Task.Run(() => CaptureLoop(frameDir, fps, width, height, token), token);
+        }
+
+        return JobOutcome.Success(new Dictionary<string, object?>
+        {
+            ["ok"] = true,
+            ["status"] = "recording",
+            ["active"] = true,
+            ["fps"] = fps,
+            ["resolution"] = $"{width}x{height}",
+            ["encoder"] = _openEncoder,
+            ["hint"] = "call record operation=stop to finish and get the clip",
+        });
+    }
+
+    private static void CaptureLoop(string frameDir, int fps, int width, int height, CancellationToken ct)
+    {
+        var perMs = Math.Max(1, 1000 / fps);
+        var sw = Stopwatch.StartNew();
+        var i = 0;
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                using (var frame = new Bitmap(width, height, PixelFormat.Format24bppRgb))
+                {
+                    using (var graphics = Graphics.FromImage(frame))
+                    {
+                        graphics.CopyFromScreen(0, 0, 0, 0, frame.Size, CopyPixelOperation.SourceCopy);
+                    }
+                    frame.Save(Path.Combine(frameDir, i.ToString("D6") + ".jpg"), ImageFormat.Jpeg);
+                }
+                lock (OpenGate) _openFrames = i + 1;
+                i++;
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("open recording frame failed", new { error = ex.Message });
+            }
+            var target = (long)(i) * perMs;
+            var elapsed = sw.ElapsedMilliseconds;
+            if (elapsed < target) Thread.Sleep((int)Math.Min(target - elapsed, perMs));
+        }
+    }
+
+    /// <summary>`record operation=stop`: end the open capture and encode it.</summary>
+    private static async Task<JobOutcome> StopOpenAsync(JsonElement p, CancellationToken ct)
+    {
+        string frameDir, outPath, encoder;
+        int fps, width, height, frames;
+        long startedAt;
+        CancellationTokenSource? cts;
+        Task? task;
+        lock (OpenGate)
+        {
+            if (!_openActive) return JobOutcome.Failure("no open recording to stop (call operation=start first)");
+            frameDir = _openFrameDir;
+            outPath = _openOutPath;
+            encoder = _openEncoder;
+            fps = _openFps;
+            width = _openWidth;
+            height = _openHeight;
+            frames = _openFrames;
+            startedAt = _openStartedAt;
+            cts = _openCts;
+            task = _openTask;
+            _openActive = false;
+        }
+
+        try { cts?.Cancel(); } catch { /* ignore */ }
+        if (task is not null)
+        {
+            try { await task.ConfigureAwait(false); } catch { /* ignore */ }
+        }
+        try { cts?.Dispose(); } catch { /* ignore */ }
+
+        lock (OpenGate)
+        {
+            frameDir = _openFrameDir;
+            outPath = _openOutPath;
+            frames = _openFrames;
+        }
+
+        var seconds = Math.Max(1, (int)Math.Round((Environment.TickCount64 - startedAt) / 1000.0));
+        if (frames == 0) return JobOutcome.Failure("captured zero frames");
+
+        try
+        {
+            var ffmpeg = FindFfmpeg();
+            if (ffmpeg is not null)
+            {
+                await RunFfmpegAsync(ffmpeg, frameDir, outPath, fps, ct).ConfigureAwait(false);
+                encoder = "ffmpeg/h264";
+            }
+            else
+            {
+                WriteMjpegAvi(outPath, frameDir, frames, width, height, fps);
+                encoder = "mjpeg-avi";
+            }
+        }
+        finally
+        {
+            TryDeleteDir(frameDir);
+            lock (OpenGate)
+            {
+                _openFrameDir = "";
+                _openOutPath = "";
+                _openFrames = 0;
+            }
+        }
+
+        return JobOutcome.Success(Meta(outPath, frames, fps, seconds, width, height, encoder));
+    }
+
+    /// <summary>`record operation=status`: how the open recording is doing.</summary>
+    private static JobOutcome OpenStatus()
+    {
+        int frames, fps, width, height;
+        bool active;
+        long startedAt;
+        lock (OpenGate)
+        {
+            active = _openActive;
+            frames = _openFrames;
+            fps = _openFps;
+            width = _openWidth;
+            height = _openHeight;
+            startedAt = _openStartedAt;
+        }
+        var elapsed = active ? (Environment.TickCount64 - startedAt) / 1000.0 : 0;
+        return JobOutcome.Success(new Dictionary<string, object?>
+        {
+            ["ok"] = true,
+            ["active"] = active,
+            ["elapsed_sec"] = elapsed,
+            ["frames"] = frames,
+            ["fps"] = fps,
+            ["resolution"] = $"{width}x{height}",
+        });
+    }
+
+    private static void RequireConfirm(JsonElement p)
+    {
+        if (!Fs.ReadBool(p, "confirm")) throw new InvalidOperationException("record requires confirm=1");
     }
 
     public static Task<JobOutcome> JobStatus(JsonElement p, JobContext ctx, CancellationToken ct)
