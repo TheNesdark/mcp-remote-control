@@ -251,6 +251,10 @@ public static class BrowserCdp
         return list;
     }
 
+    /// <summary>
+    /// Runs an expression and returns the RemoteObject's `value` (the JSON
+    /// payload of the evaluated expression, not the CDP envelope).
+    /// </summary>
     private static async Task<JsonElement> EvaluateAsync(Attached attached, string expression, CancellationToken ct)
     {
         var result = await attached.Pool.Client.SendAsync("Runtime.evaluate",
@@ -262,7 +266,13 @@ public static class BrowserCdp
                 : exception.TryGetProperty("text", out var text) ? text.GetString() : "page eval failed";
             throw new InvalidOperationException($"page eval failed: {description}");
         }
-        return result.TryGetProperty("result", out var value) ? value : default;
+        // Runtime.evaluate answers {result: {type, value}}; the useful part is
+        // the inner RemoteObject's `value` field.
+        if (!result.TryGetProperty("result", out var remote)) return default;
+        if (remote.TryGetProperty("value", out var value)) return value;
+        // No `value` (e.g. undefined or an unserializable object): hand back the
+        // RemoteObject so callers can still stringify type/description.
+        return remote;
     }
 
     private static async Task<string> EvalStringAsync(Attached attached, string expression, CancellationToken ct)

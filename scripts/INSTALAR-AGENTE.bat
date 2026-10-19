@@ -11,7 +11,7 @@ REM ---------------------------------------------------------------
 set "SH=\\192.168.1.191\Hermes"
 set "DIR=%LOCALAPPDATA%\mrc-remote-control"
 set "EXE=%DIR%\rc-agent.exe"
-set "SRC=%SH%\rc-agent-105.exe"
+set "SRC=%SH%\rc-agent-106.exe"
 set "NAME=SERVER-RX-DOTNET"
 set "SERVER=ws://192.168.1.192:8787"
 set "TOKEN=mrc_LajSuZKlZ57FDiI2ohKll0eisXagGTFndEv2GYu7-SY"
@@ -24,7 +24,7 @@ echo.
 REM --- 1) detener instancias previas (el exe en disco queda libre) ---
 echo [1/5] Deteniendo instancias previas...
 taskkill /f /im rc-agent.exe        >nul 2>&1
-taskkill /f /im rc-agent-105.exe    >nul 2>&1
+taskkill /f /im rc-agent-106.exe    >nul 2>&1
 taskkill /f /im rc-agent-dotnet.exe >nul 2>&1
 taskkill /f /im rc-agent-091.exe    >nul 2>&1
 timeout /t 2 /nobreak >nul
