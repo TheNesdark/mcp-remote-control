@@ -542,6 +542,8 @@ public static class JavaAccessBridge
             Log.Info("jab: the bridge library could not be loaded", new { path, error = Marshal.GetLastWin32Error() });
             return;
         }
+        // Publish it so EnsureLoaded() knows the bridge is up.
+        _dll = dll;
         var dialog = CreateDialogParam(dll, DialogTemplate, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
         Log.Info("jab: bridge loaded", new { path, dialog = dialog.ToInt64(), error = dialog == IntPtr.Zero ? Marshal.GetLastWin32Error() : 0 });
 
