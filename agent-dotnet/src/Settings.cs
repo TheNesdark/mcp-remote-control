@@ -67,7 +67,7 @@ public static class Settings
         return dir;
     }
 
-    public static string DefaultLogFile() => Path.Combine(DataDir(), "logs", "agent.log");
+    public static string DefaultLogFile() => Path.Combine(LocalDir(), "logs", "agent.log");
 
     /// <summary>Resolves the layered settings and returns them (also cached).</summary>
     public static AgentSettings Load(CliArgs args)

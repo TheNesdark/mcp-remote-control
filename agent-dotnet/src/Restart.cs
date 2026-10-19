@@ -142,28 +142,51 @@ public static class Restart
         return string.Join("\r\n", lines) + "\r\n";
     }
 
+    /// <summary>
+    /// Launches the relaunch script in a way that survives this process exiting.
+    /// A scheduled task is the most reliable (Windows detaches it completely and
+    /// it is what kept the process alive during earlier manual tests); `wmic` is
+    /// deprecated and `cmd start` can die with its parent, so both are fallbacks.
+    /// </summary>
     private static bool SpawnDetached(string script)
     {
+        var name = "mrc-restart-" + Guid.NewGuid().ToString("N")[..8];
         try
         {
-            using var wmic = Process.Start(new ProcessStartInfo("wmic", $"process call create \"cmd.exe /c \\\"{script}\\\"\"")
+            using var create = Process.Start(new ProcessStartInfo("schtasks",
+                $"/create /tn {name} /tr \"cmd.exe /c \\\"{script}\\\"\" /sc once /st 00:00 /f")
             {
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
             });
-            if (wmic is not null)
+            if (create is not null)
             {
-                var stdout = wmic.StandardOutput.ReadToEnd();
-                wmic.WaitForExit(5000);
-                if (wmic.ExitCode == 0 && stdout.Contains("ReturnValue = 0;")) return true;
+                create.StandardOutput.ReadToEnd();
+                create.StandardError.ReadToEnd();
+                create.WaitForExit(5000);
+                if (create.ExitCode == 0)
+                {
+                    using var run = Process.Start(new ProcessStartInfo("schtasks", $"/run /tn {name}")
+                    {
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                    });
+                    if (run is not null && run.WaitForExit(5000) && run.ExitCode == 0)
+                    {
+                        Log.Info("restart: relaunch task started", new { task = name });
+                        return true;
+                    }
+                }
             }
+            Log.Warn("restart: schtasks relaunch failed", new { task = name });
         }
         catch (Exception ex)
         {
-            Log.Debug("wmic relaunch failed, trying cmd start", new { error = ex.Message });
+            Log.Warn("restart: schtasks unavailable", new { error = ex.Message });
         }
+
         try
         {
             Process.Start(new ProcessStartInfo("cmd.exe", $"/c start \"\" /min \"{script}\"")
@@ -171,6 +194,7 @@ public static class Restart
                 UseShellExecute = false,
                 CreateNoWindow = true,
             });
+            Log.Info("restart: relaunch via cmd start");
             return true;
         }
         catch (Exception ex)
