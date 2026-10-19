@@ -33,7 +33,10 @@ public static class Restart
         }
 
         var args = ReadArgs(p) ?? (Environment.GetCommandLineArgs().Skip(1).ToArray());
-        var script = Path.Combine(Path.GetDirectoryName(execPath) ?? ".", $"mrc-restart-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.bat");
+        // Always write the script on the local disk: a script next to a
+        // network-launched exe would live on the share, where it is slower and
+        // can be blocked (and the relaunch itself must be a local path).
+        var script = Path.Combine(Settings.LocalDir(), $"mrc-restart-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.bat");
         try
         {
             File.WriteAllText(script, BuildScript(execPath, updatePath, args));
@@ -85,6 +88,11 @@ public static class Restart
 
     private static string BuildScript(string execPath, string? updatePath, string[] args)
     {
+        // Prefer to end up running from the local install dir, even when this
+        // process was launched from a UNC share: an exe run from a share raises
+        // a Windows security prompt and fails when the share is unreachable.
+        var localExe = Path.Combine(Settings.LocalDir(), Path.GetFileName(execPath));
+
         var lines = new List<string>
         {
             "@echo off",
@@ -92,13 +100,28 @@ public static class Restart
         };
         if (!string.IsNullOrEmpty(updatePath))
         {
-            lines.Add($"move /y \"{execPath}\" \"{execPath}.old\" >nul 2>&1");
-            lines.Add($"copy /y \"{updatePath}\" \"{execPath}\" >nul 2>&1");
+            // Move the current image aside, drop the staged build in as the new
+            // local exe, then start from local.
+            if (!string.Equals(localExe, execPath, StringComparison.OrdinalIgnoreCase))
+            {
+                // Running from the share: stop touching the share image, just
+                // land the new build locally.
+                lines.Add($"move /y \"{localExe}\" \"{localExe}.old\" >nul 2>&1");
+                lines.Add($"copy /y \"{updatePath}\" \"{localExe}\" >nul 2>&1");
+            }
+            else
+            {
+                lines.Add($"move /y \"{execPath}\" \"{execPath}.old\" >nul 2>&1");
+                lines.Add($"copy /y \"{updatePath}\" \"{execPath}\" >nul 2>&1");
+            }
             lines.Add($"del /f /q \"{updatePath}\" >nul 2>&1");
         }
+        // Relaunch from local whenever a local copy exists (so a process that
+        // started on the share lands on local after its first restart).
+        var target = File.Exists(localExe) ? localExe : execPath;
         var quoted = string.Join(" ", args.Select(a => $"\"{a}\""));
-        lines.Add($"start \"\" \"{execPath}\" {quoted}".TrimEnd());
-        lines.Add($"del /f /q \"{execPath}.old\" >nul 2>&1");
+        lines.Add($"start \"\" \"{target}\" {quoted}".TrimEnd());
+        lines.Add($"del /f /q \"{target}.old\" >nul 2>&1");
         return string.Join("\r\n", lines) + "\r\n";
     }
 

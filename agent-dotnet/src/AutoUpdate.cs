@@ -44,9 +44,11 @@ public static class AutoUpdate
     {
         var execPath = Environment.ProcessPath ?? "";
         if (string.IsNullOrEmpty(execPath)) return;
-        var staged = Path.Combine(
-            Path.GetDirectoryName(execPath) ?? ".",
-            Path.GetFileNameWithoutExtension(execPath) + ".new.exe");
+        // Stage on the LOCAL disk, never next to a network-launched exe: running
+        // an .exe from a UNC share raises a Windows security prompt and staging
+        // there would too. The restart also relaunches from this local copy.
+        var exeName = Path.GetFileNameWithoutExtension(execPath);
+        var staged = Path.Combine(Settings.LocalDir(), exeName + ".new.exe");
 
         try
         {
@@ -74,6 +76,7 @@ public static class AutoUpdate
             }
 
             await File.WriteAllBytesAsync(staged, bytes).ConfigureAwait(false);
+            ClearZoneIdentifier(staged);
             Log.Info("auto-update: staged", new { staged, bytes = bytes.Length, sha256 });
 
             var outcome = await Restart.JobRestart(
@@ -85,6 +88,24 @@ public static class AutoUpdate
         catch (Exception ex)
         {
             Log.Error("auto-update failed", new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Drops the "downloaded from the network" mark (Zone.Identifier), so
+    /// Windows does not prompt or raise SmartScreen when the staged build is
+    /// relaunched. Harmless when the stream is absent.
+    /// </summary>
+    private static void ClearZoneIdentifier(string path)
+    {
+        try
+        {
+            var zone = path + ":Zone.Identifier";
+            if (File.Exists(zone)) File.Delete(zone);
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("auto-update: could not clear Zone.Identifier", new { error = ex.Message });
         }
     }
 

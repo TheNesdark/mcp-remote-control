@@ -52,6 +52,21 @@ public static class Settings
         return Path.Combine(appData, "mcp-remote-control");
     }
 
+    /// <summary>
+    /// Local (non-roaming) install dir: %LOCALAPPDATA%\mrc-remote-control. This
+    /// is where INSTALAR-AGENTE.bat puts the exe, so auto-update stages its new
+    /// build here and the restart relaunches from a local path.
+    /// </summary>
+    public static string LocalDir()
+    {
+        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (string.IsNullOrEmpty(local))
+            local = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "AppData", "Local");
+        var dir = Path.Combine(local, "mrc-remote-control");
+        try { Directory.CreateDirectory(dir); } catch { /* best effort */ }
+        return dir;
+    }
+
     public static string DefaultLogFile() => Path.Combine(DataDir(), "logs", "agent.log");
 
     /// <summary>Resolves the layered settings and returns them (also cached).</summary>
