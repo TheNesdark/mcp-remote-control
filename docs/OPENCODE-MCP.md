@@ -282,7 +282,21 @@ To keep the agent from using the tools without asking, restrict them by name:
      CIM, so it works on any display language; `interactiveOnly=false` adds
      service/batch/network sessions collapsed per user.
  12. Computer use (Windows only, UIA through **FlaUI** inside the agent binary
-     — there is one `rc-agent.exe`, no separate engine to compile on the target):
+     — there is one `rc-agent.exe`, no separate engine to compile on the target).
+
+     **Java apps (Swing/AWT)**: UIA3 sees nothing in them, so the agent falls
+     back to the **Java Access Bridge**. For that, JAB must be enabled on the
+     target machine (once, as that user):
+
+     ```cmd
+     "C:\Program Files\Java\jre1.8.0_271\bin\jabswitch.exe" -enable
+     ```
+
+     That writes `%USERPROFILE%\.accessibility.properties`; the JVM must be
+     started **afterwards** for the bridge to come up. With it, `get_window_state`
+     returns the real component tree (role, name and screen rects of every
+     control) and `find_element` / `invoke` / `set_value` work on Java controls
+     instead of failing with "no element matched".
 
     ```
     agent_cua_list_windows(agent="SRV-RX")                            # hwnd/pid/title per window
