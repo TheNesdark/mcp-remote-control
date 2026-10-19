@@ -1,13 +1,13 @@
 /**
- * agent_cua_*: computer-use tools backed by our own C# engine sidecar
- * (agent/cua/mrc-cua.cs, compiled on the target machine; no external driver).
+ * agent_cua_*: computer-use tools backed by the Windows agent's own CUA engine
+ * (agent-dotnet/src/Cua.cs, the FlaUI/UIA3 port; no external driver).
  *
- * One MCP tool = one `cua` job = one sidecar CLI invocation. The sidecar is
+ * One MCP tool = one `cua` job = one engine invocation. The engine is
  * stateless: get_window_state returns bounds, click/scroll use absolute
  * screen points, type/press target a window and steal its foreground first.
  *
- * Destructive tools require `confirm: true`; the sidecar enforces the same
- * gate again (defense in depth, it refuses runs without confirm=1).
+ * Destructive tools require `confirm: true`; the engine enforces the same
+ * gate again (defense in depth, it refuses runs without confirm=true).
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createHash } from "node:crypto";

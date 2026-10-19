@@ -255,9 +255,9 @@ different file with the same digest.
 Safety:
 - never downgrades (strictly newer only) and never swaps an unverified file;
 - `--no-auto-update` / `MRC_AUTO_UPDATE=0` disables it per machine;
-- only standalone executables self-update (a dev `bun run agent` does not);
-- `MRC_AGENT_BINARY_URL` can point at a CDN instead of the hub (the 92 MB
-  binary then never travels through the server).
+- only standalone executables self-update;
+- `MRC_AGENT_BINARY_URL` can point at a CDN instead of the hub (the binary then
+  never travels through the server).
 
 Publishing a new agent version:
 

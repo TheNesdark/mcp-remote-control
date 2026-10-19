@@ -119,7 +119,7 @@ function sidecarMeta(msg: JobRequestMsg): Record<string, unknown> {
   }
 }
 
-/** Canned CDP results for `browser` jobs (agent/src/browser-cdp.ts on Windows). */
+/** Canned CDP results for `browser` jobs (agent-dotnet BrowserCdp.cs). */
 function browserMeta(msg: JobRequestMsg): Record<string, unknown> {
   const params = (msg.params ?? {}) as { operation?: string };
   switch (params.operation) {
@@ -145,7 +145,7 @@ function browserMeta(msg: JobRequestMsg): Record<string, unknown> {
   }
 }
 
-/** Canned results for `record` jobs (agent/src/record.ts on Windows). */
+/** Canned results for `record` jobs (agent-dotnet Record.cs). */
 function recordMeta(msg: JobRequestMsg): Record<string, unknown> {
   const params = (msg.params ?? {}) as { duration_sec?: number; fps?: number; operation?: string };
   if (params.operation === "start") {

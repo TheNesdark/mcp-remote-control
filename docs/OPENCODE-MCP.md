@@ -130,14 +130,9 @@ To keep the agent from using the tools without asking, restrict them by name:
 1. `opencode mcp list` → `remote-control` should show as connected.
 2. In a session, ask the model to run `agents_list` — with no agents running it
    returns `[]`.
-3. Start an agent (the real one runs on Linux for development):
-
-   ```sh
-   bun run /root/proyectos/mcp-remote-control/agent/src/index.ts \
-     --server ws://127.0.0.1:8787 --token change-me --name PC-01
-   ```
-
-   or the fake echo agent:
+3. Start an agent. On Windows that is `rc-agent.exe` (built from
+   `agent-dotnet/`; see `docs/INSTALL-WINDOWS.md`). For local development on
+   any OS use the scripted agent:
 
    ```sh
    bun run /root/proyectos/mcp-remote-control/scripts/fake-agent.ts \
@@ -286,9 +281,8 @@ To keep the agent from using the tools without asking, restrict them by name:
    - `agent_sessions` shows who is logged on (console and RDP by default) via
      CIM, so it works on any display language; `interactiveOnly=false` adds
      service/batch/network sessions collapsed per user.
- 12. Computer use (Windows only, UIA through **FlaUI** inside the agent binary;
-     the CUA engine used to be a separate sidecar compiled on the target - that
-     is gone, there is one `rc-agent.exe`):
+ 12. Computer use (Windows only, UIA through **FlaUI** inside the agent binary
+     — there is one `rc-agent.exe`, no separate engine to compile on the target):
 
     ```
     agent_cua_list_windows(agent="SRV-RX")                            # hwnd/pid/title per window
@@ -384,12 +378,24 @@ To keep the agent from using the tools without asking, restrict them by name:
     agent_cua_record(agent="SRV-RX", duration_sec=15, fps=4, confirm=true)
     ```
 
-    - MP4/h264 when `ffmpeg.exe` is on that machine (next to the sidecar or on
-      PATH), otherwise a motion-JPEG `.avi` (playable in VLC; remux with
-      `ffmpeg -i in.avi -c copy out.mp4`). The call blocks for the clip plus
-      encoding (1–60 s, 1–10 fps), needs `confirm=true`, and the clip is saved
-      with the screenshots (`downloadUrl` included when `MRC_PUBLIC_URL` is
-      set). Nothing is ever uploaded anywhere: the file lands on the hub disk.
+    - MP4/h264 when `ffmpeg.exe` is next to the agent or on PATH, otherwise a
+      motion-JPEG `.avi` (playable in VLC; remux with
+      `ffmpeg -i in.avi -c copy out.mp4`). Needs `confirm=true` and the clip is
+      saved with the screenshots (`downloadUrl` included when `MRC_PUBLIC_URL`
+      is set). Nothing is ever uploaded anywhere: the file lands on the hub disk.
+
+    Open-ended recording — the clip is exactly as long as your workflow, so
+    there is no duration to guess:
+
+    ```
+    agent_cua_record(agent="SRV-RX", operation="start", fps=8, confirm=true)   # returns at once
+    ... do things ...
+    agent_cua_record(agent="SRV-RX", operation="status", confirm=true)          # how it's going
+    agent_cua_record(agent="SRV-RX", operation="stop", confirm=true)            # returns the clip
+    ```
+
+    `stop` answers with a `jobId`; poll `agent_jobs` until `meta.downloaded` is
+    true, then read `meta.localPath` / `meta.downloadPath` / `meta.sha256`.
 
 
 ### Saving a screenshot on the client's machine

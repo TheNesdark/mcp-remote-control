@@ -3,12 +3,14 @@
  * End-to-end test over the real entry points:
  *   MCP client (stdio)  <->  server process (index.ts)  <->  fake agents (websocket)
  *
+ * The real Windows agent (agent-dotnet) cannot run on the CI Linux host, so the
+ * agent side is covered by the in-process FakeAgent: this exercises the hub's
+ * routing, gating, presence, concurrency and job lifecycle over the wire.
+ *
  * Run: bun run e2e
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeAgent } from "./fake-agent.ts";
 import { cleanEnv, waitFor } from "./test-utils.ts";
@@ -16,7 +18,6 @@ import { cleanEnv, waitFor } from "./test-utils.ts";
 const PORT = Number(process.env.E2E_PORT ?? 18_999);
 const TOKEN = "e2e-token";
 const SERVER_ENTRY = join(import.meta.dir, "..", "server", "src", "index.ts");
-const AGENT_ENTRY = join(import.meta.dir, "..", "agent", "src", "index.ts");
 
 interface AgentSummary {
   id: string;
@@ -64,7 +65,7 @@ async function listAgents(): Promise<AgentSummary[]> {
   return JSON.parse(text) as AgentSummary[];
 }
 
-async function callAgentTool(
+async function callTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<{ isError: boolean; data: Record<string, unknown> }> {
@@ -80,29 +81,7 @@ async function callAgentTool(
   return { isError: Boolean(res.isError), data };
 }
 
-/** Prefix a child process stream line-by-line for readable e2e output. */
-function forwardLines(stream: ReadableStream<Uint8Array>, prefix: string): void {
-  const decoder = new TextDecoder();
-  const reader = stream.getReader();
-  let buffer = "";
-  void (async () => {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let index = buffer.indexOf("\n");
-      while (index >= 0) {
-        const line = buffer.slice(0, index);
-        buffer = buffer.slice(index + 1);
-        if (line.trim()) console.log(`${prefix}${line}`);
-        index = buffer.indexOf("\n");
-      }
-    }
-  })();
-}
-
 const agents: FakeAgent[] = [];
-let agentProc: Bun.Subprocess<"ignore", "pipe", "pipe"> | null = null;
 try {
   console.log("e2e: spawning server process and connecting mcp client");
   await client.connect(transport);
@@ -122,6 +101,16 @@ try {
     name: "FAKE-01",
     tags: ["test"],
     onLog: (line) => console.log(`  [FAKE-01] ${line}`),
+    respond: (msg) => {
+      const params = (msg.params ?? {}) as { command?: string };
+      // Emulate the real agent's exec: run nothing, echo the command back.
+      if (msg.jobType === "exec") {
+        const command = params.command ?? "";
+        const sleepMs = /sleep\s+(\d+)/.exec(command) ? 5_000 : 0;
+        return { stdout: `${command}\n`, exitCode: 0, ...(sleepMs ? { sleepMs } : {}) };
+      }
+      return undefined;
+    },
   });
   agents.push(a1);
   await a1.start();
@@ -182,208 +171,66 @@ try {
   check("bad token is rejected with auth_failed", rejected && bad.lastError?.code === "auth_failed", bad.lastError);
 
   // -------------------------------------------------------------------------
-  // Real agent: agent_exec end to end (streaming, exit codes, timeout kill)
+  // Job routing and lifecycle against FAKE-01
   // -------------------------------------------------------------------------
-  console.log("e2e: starting the real agent (agent/src)");
-  agentProc = Bun.spawn<"ignore", "pipe", "pipe">({
-    cmd: ["bun", "run", AGENT_ENTRY, "--server", `ws://127.0.0.1:${PORT}`, "--token", TOKEN, "--name", "E2E-01", "--tags", "e2e"],
-    stdout: "pipe",
-    stderr: "pipe",
-    stdin: "ignore",
-  });
-  forwardLines(agentProc.stdout, "  [E2E-01] ");
-  forwardLines(agentProc.stderr, "  [E2E-01] ");
+  console.log("e2e: exercising job routing and lifecycle");
 
-  await waitFor(
-    async () => {
-      const all = await listAgents();
-      const real = all.find((a) => a.name === "E2E-01");
-      return real?.online ? true : undefined;
-    },
-    { label: "real agent online", timeoutMs: 8_000 },
-  );
-  check("real agent connected to the hub", true);
-
-  const echo = await callAgentTool("agent_exec", { agent: "E2E-01", command: "echo hello-e2e" });
+  const echo = await callTool("agent_exec", { agent: "FAKE-01", command: "echo hello-e2e" });
   check(
-    "agent_exec echoes stdout and exit code 0",
-    echo.data.ok === true && String(echo.data.stdout).includes("hello-e2e") && echo.data.exitCode === 0,
+    "agent_exec returns the agent's stdout and exit code",
+    echo.isError === false && echo.data.ok === true && String(echo.data.stdout).includes("hello-e2e"),
     echo.data,
   );
 
-  const failed = await callAgentTool("agent_exec", { agent: "E2E-01", command: "printf 'oops' 1>&2; exit 3" });
-  check(
-    "agent_exec reports non-zero exit code and stderr",
-    failed.data.ok === false && failed.data.exitCode === 3 && String(failed.data.stderr).includes("oops"),
-    failed.data,
+  const unknown = await callTool("agent_exec", { agent: "NOPE-99", command: "echo x" });
+  check("unknown agent is rejected", unknown.isError === true, unknown.data);
+
+  // A paused agent refuses work (assertAgentReady).
+  const paused = await callTool("agent_exec", { agent: "FAKE-02", command: "echo x" });
+  check("paused agent rejects jobs", paused.isError === true, paused.data);
+
+  // async job + status/list + cancel
+  const async1 = await callTool("agent_exec", { agent: "FAKE-01", command: "sleep 10", async: true });
+  check("async agent_exec returns a jobId", typeof async1.data.jobId === "string", async1.data);
+  if (typeof async1.data.jobId === "string") {
+    const status = await callTool("agent_jobs", { operation: "status", jobId: async1.data.jobId });
+    check("agent_jobs reports the running job", status.data.state === "running", status.data);
+    const cancelled = await callTool("agent_jobs", { operation: "cancel", jobId: async1.data.jobId });
+    check("agent_jobs cancels the running job", cancelled.data.ok === true, cancelled.data);
+    const after = await waitFor(
+      async () => {
+        const s = await callTool("agent_jobs", { operation: "status", jobId: async1.data.jobId as string });
+        return s.data.state !== "running" ? s.data : undefined;
+      },
+      { label: "job settles after cancel", timeoutMs: 8_000 },
+    );
+    check("cancelled job settles as failed", after.state === "failed", after);
+  }
+
+  // Concurrent jobs on one agent are serialized by the per-agent limiter.
+  const many = await Promise.all(
+    [1, 2, 3].map((n) => callTool("agent_exec", { agent: "FAKE-01", command: `echo n${n}` })),
   );
-
-  const timed = await callAgentTool("agent_exec", { agent: "E2E-01", command: "sleep 3", timeoutMs: 500 });
   check(
-    "agent_exec timeout kills the process quickly",
-    timed.isError === true &&
-      String(timed.data.error ?? "").match(/timed out|cancelled/) !== null &&
-      Number(timed.data.durationMs) < 3_000,
-    timed.data,
-  );
-
-  // -------------------------------------------------------------------------
-  // Real agent: files (list/read/write + upload/download with sha256)
-  // -------------------------------------------------------------------------
-  console.log("e2e: exercising file tools against the real agent");
-  const fsDir = mkdtempSync(join(tmpdir(), "mrc-e2e-fs-"));
-  const helloPath = join(fsDir, "notes", "hello.txt");
-
-  const writeRes = await callAgentTool("agent_fs", {
-    agent: "E2E-01",
-    operation: "write",
-    path: helloPath,
-    content: "hello file",
-    mkdirs: true,
-  });
-  check(
-    "agent_fs write creates dirs and returns bytes + sha256",
-    writeRes.data.ok === true && writeRes.data.bytes === 10 && typeof writeRes.data.sha256 === "string",
-    writeRes.data,
-  );
-
-  const readRes = await callAgentTool("agent_fs", { agent: "E2E-01", operation: "read", path: helloPath });
-  check(
-    "agent_fs read returns content, eof and sha256",
-    readRes.data.content === "hello file" && readRes.data.eof === true && typeof readRes.data.sha256 === "string",
-    readRes.data,
-  );
-
-  const listRes = await callAgentTool("agent_fs", { agent: "E2E-01", operation: "list", path: join(fsDir, "notes") });
-  check(
-    "agent_fs list shows the file",
-    Array.isArray(listRes.data.entries) &&
-      (listRes.data.entries as Array<{ name: string }>).some((entry) => entry.name === "hello.txt"),
-    listRes.data,
-  );
-
-  const sourceBin = join(fsDir, "up.bin");
-  const payload = Buffer.alloc(1024 * 1024);
-  for (let i = 0; i < payload.length; i++) payload[i] = i % 251;
-  writeFileSync(sourceBin, payload);
-
-  const uploadRes = await callAgentTool("agent_fs_transfer", {
-    agent: "E2E-01",
-    operation: "upload",
-    localPath: sourceBin,
-    remotePath: join(fsDir, "remote.bin"),
-  });
-  check(
-    "agent_fs_transfer upload reports ok, size and sha256",
-    uploadRes.data.ok === true && uploadRes.data.bytes === payload.length && typeof uploadRes.data.sha256 === "string",
-    uploadRes.data,
-  );
-
-  const downloadRes = await callAgentTool("agent_fs_transfer", {
-    agent: "E2E-01",
-    operation: "download",
-    remotePath: join(fsDir, "remote.bin"),
-    localPath: join(fsDir, "down.bin"),
-  });
-  check(
-    "agent_fs_transfer download round trips the same sha256",
-    downloadRes.data.ok === true &&
-      downloadRes.data.bytes === payload.length &&
-      downloadRes.data.sha256 === uploadRes.data.sha256,
-    { up: uploadRes.data, down: downloadRes.data },
-  );
-
-  const missingRes = await callAgentTool("agent_fs", { agent: "E2E-01", operation: "read", path: join(fsDir, "nope.txt") });
-  check(
-    "agent_fs read reports missing files as an error",
-    missingRes.isError === true && String(missingRes.data.error ?? "").includes("ENOENT"),
-    missingRes.data,
+    "three concurrent jobs all settle",
+    many.every((m) => m.data.ok === true),
+    many.map((m) => m.data),
   );
 
   // -------------------------------------------------------------------------
-  // Real agent: inventory, processes and screenshot
+  // Confirmation gate on a destructive tool
   // -------------------------------------------------------------------------
-  console.log("e2e: exercising inventory/process/screenshot tools");
-  const infoRes = await callAgentTool("agent_info", { agent: "E2E-01" });
-  check(
-    "agent_info returns host, cpu and disks",
-    typeof infoRes.data.host === "string" &&
-      Number((infoRes.data.cpu as { cores?: number } | undefined)?.cores ?? 0) > 0 &&
-      Array.isArray(infoRes.data.disks),
-    infoRes.data,
-  );
-
-  const psRes = await callAgentTool("agent_ps", { agent: "E2E-01", operation: "list", top: 500, sort: "pid" });
-  const psProcesses = (psRes.data.processes ?? []) as Array<{ pid: number; name: string }>;
-  check(
-    "agent_ps list returns processes with pids",
-    psProcesses.length > 0 && psProcesses.every((proc) => typeof proc.pid === "number"),
-    { total: psRes.data.total, sample: psProcesses.slice(0, 3) },
-  );
-
-  const spawned = await callAgentTool("agent_exec", {
-    agent: "E2E-01",
-    command: "sh -c 'sleep 45 >/dev/null 2>&1 & echo pid:$!'",
-  });
-  const remotePid = Number(/pid:(\d+)/.exec(String(spawned.data.stdout ?? ""))?.[1] ?? 0);
-  check("spawned a remote sleep process to kill", Number.isInteger(remotePid) && remotePid > 0, spawned.data);
-
-  const killRes = await callAgentTool("agent_ps", { agent: "E2E-01", operation: "kill", pid: remotePid });
-  check(
-    "agent_ps kill reports the killed process",
-    killRes.isError === false && Number(killRes.data.killedCount) >= 1,
-    killRes.data,
-  );
-
-  // A killed orphan may linger as a zombie when PID 1 does not reap (e.g. CI
-  // containers), so both "gone" and state Z count as dead.
-  const probe = await callAgentTool("agent_exec", {
-    agent: "E2E-01",
-    command: `if [ -e /proc/${remotePid} ]; then awk '{print "state:" $3}' /proc/${remotePid}/stat; else echo state:gone; fi`,
-  });
-  check(
-    "killed process is gone or a zombie",
-    /state:(gone|Z)/.test(String(probe.data.stdout ?? "")),
-    probe.data,
-  );
-
-  const shot = await callAgentTool("agent_screenshot", { agent: "E2E-01" });
-  const shotWorked = shot.isError === false && typeof shot.data.localPath === "string";
-  const shotHeadless =
-    shot.isError === true &&
-    /no interactive session|no graphical display|no capture tool/.test(String(shot.data.text ?? shot.data.error ?? ""));
-  check("agent_screenshot captures or reports a clear headless error", shotWorked || shotHeadless, shot.data);
-
-  // -------------------------------------------------------------------------
-  // Concurrent jobs across two agents (fake + real)
-  // -------------------------------------------------------------------------
-  console.log("e2e: running concurrent jobs against FAKE-01 and E2E-01");
-  const concurrent = await Promise.all([
-    callAgentTool("agent_exec", { agent: "FAKE-01", command: "echo a" }),
-    callAgentTool("agent_exec", { agent: "FAKE-01", command: "echo b" }),
-    callAgentTool("agent_exec", { agent: "FAKE-01", command: "echo c" }),
-    callAgentTool("agent_exec", { agent: "E2E-01", command: "echo x" }),
-    callAgentTool("agent_info", { agent: "E2E-01" }),
-    callAgentTool("agent_ps", { agent: "E2E-01", operation: "list", top: 10 }),
-  ]);
-  const [cFakeA, cFakeB, cFakeC, cExec, cInfo, cPs] = concurrent;
-  check(
-    "concurrent jobs across 2 agents all succeed",
-    concurrent.every((res) => res.isError === false) &&
-      cFakeA.data.ok === true &&
-      cFakeB.data.ok === true &&
-      cFakeC.data.ok === true &&
-      cExec.data.ok === true &&
-      typeof cInfo.data.host === "string" &&
-      Array.isArray(cPs.data.processes),
-    concurrent.map((res) => ({ isError: res.isError, ok: res.data.ok })),
-  );
+  console.log("e2e: exercising the confirm gate");
+  const noConfirm = await callTool("agent_exec", { agent: "FAKE-01", command: "echo x" });
+  // agent_exec is not confirm-gated; use a CUA tool that is.
+  check("agent_exec needs no confirm", noConfirm.isError === false, noConfirm.data);
+  const cuaNoConfirm = await callTool("agent_cua_click", { agent: "FAKE-01", x: 1, y: 2 });
+  check("agent_cua_click requires confirm", cuaNoConfirm.isError === true, cuaNoConfirm.data);
 } catch (err) {
   failures++;
   console.error("e2e error:", err);
 } finally {
   for (const agent of agents) agent.stop();
-  agentProc?.kill();
   try {
     await client.close();
   } catch {

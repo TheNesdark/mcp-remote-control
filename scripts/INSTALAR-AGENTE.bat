@@ -66,13 +66,8 @@ if errorlevel 1 (
   )
   echo ------------------------------------------------------------
   echo.
-  echo Levantando el agente Bun de respaldo para no dejarte sin control...
-  if exist "%DIR%\rc-agent.exe.bun" (
-    start "" "%DIR%\rc-agent.exe.bun" --token %TOKEN%
-    echo Bun de respaldo lanzado.
-  ) else (
-    echo   (no encuentro el Bun de respaldo en %DIR%\rc-agent.exe.bun)
-  )
+  echo El agente no arranco. Revisa el log de arriba y vuelve a ejecutar
+  echo este .bat. Si el share no responde, comprueba:  dir %SH%
 ) else (
   echo.
   echo OK: agente en marcha (pid arriba). Nombre en el hub: %NAME%

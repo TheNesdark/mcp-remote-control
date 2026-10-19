@@ -3,11 +3,20 @@
 Servidor MCP central que permite a un agente LLM (opencode) controlar varias máquinas
 Windows, cada una ejecutando un agente `.exe` que se conecta al servidor y recibe órdenes.
 
+> **Nota de arquitectura (actualización posterior)**: este documento recoge la
+> planificación original, cuyo agente era **Bun + TypeScript** (`agent/`) compilado
+> con `bun build --compile`. Ese agente **se eliminó**; el agente Windows es ahora
+> el port **C#/.NET 8** en `agent-dotnet/`, un único `rc-agent.exe` self-contained
+> que integra el motor UIA (FlaUI), el control de navegador por CDP y la grabación
+> de pantalla. Las referencias a `agent/`, `bun run build:exe` y `agent/src` de las
+> secciones siguientes son **históricas**; para el estado y uso actuales, ver
+> `README.md`, `docs/INSTALL-WINDOWS.md` y `docs/OPENCODE-MCP.md`.
+
 > **Decisiones ya tomadas** (sesión de planificación):
 >
 > | Tema | Decisión |
 > |---|---|
-> | Stack | **Bun + TypeScript** en ambos lados (central y agente) |
+> | Stack | **Bun + TypeScript** en ambos lados (central y agente) — *el agente pasó a .NET, ver nota* |
 > | Transporte | **WebSocket persistente** iniciado por el agente (outbound) |
 > | Capacidades v1 | Ejecutar comandos, archivos (subir/bajar), inventario + procesos, screenshot (**solo monitor primario**) |
 > | UI del agente | **App de bandeja (system tray)**: icono junto al reloj (como volumen/batería) con activar/desactivar; el primer arranque pide el nombre de la máquina |

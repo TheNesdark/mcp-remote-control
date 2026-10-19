@@ -145,7 +145,7 @@ export const RestartParams = z.object({
 });
 export type RestartParams = z.infer<typeof RestartParams>;
 // ---------------------------------------------------------------------------
-// Own CUA engine (sidecar mrc-cua.exe, compiled/managed by agent/src/cua.ts)
+// Own CUA engine (agent-dotnet/src/Cua.cs, the FlaUI/UIA3 port)
 // ---------------------------------------------------------------------------
 
 export const CUA_ARG = z.union([z.string().max(4096), z.number(), z.boolean()]);
@@ -161,7 +161,7 @@ export const CuaParams = z.object({
 export type CuaParams = z.infer<typeof CuaParams>;
 
 // ---------------------------------------------------------------------------
-// Screen recording (agent/src/record.ts)
+// Screen recording (agent-dotnet/src/Record.cs)
 // ---------------------------------------------------------------------------
 
 export const RecordParams = z.object({
@@ -181,7 +181,7 @@ export const RecordParams = z.object({
 export type RecordParams = z.infer<typeof RecordParams>;
 
 // ---------------------------------------------------------------------------
-// Live-browser control over CDP (agent/src/browser-cdp.ts)
+// Live-browser control over CDP (agent-dotnet/src/BrowserCdp.cs)
 // ---------------------------------------------------------------------------
 
 export const BrowserParams = z.object({

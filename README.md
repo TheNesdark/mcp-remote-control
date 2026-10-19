@@ -1,20 +1,19 @@
 # mcp-remote-control
 
 Central MCP server that lets an LLM agent (opencode) control remote machines
-(Windows first) through a WebSocket link. Each target machine runs a small
-tray application (`rc-agent.exe`) that connects **outbound** to the server, so
-no ports are opened on the Windows side.
+(Windows) through a WebSocket link. Each target machine runs a small tray
+application (`rc-agent.exe`, built from the .NET port in `agent-dotnet/`) that
+connects **outbound** to the server, so no ports are opened on the Windows side.
 
 Full design and roadmap: [`PLAN.md`](./PLAN.md).
 
 ## Status — F5 (packaging + LAN: exe, installer, MCP over HTTP, systemd)
 
-- [x] `bun run build:exe` cross-compiles `dist/rc-agent.exe` (valid PE: MZ +
-      PE signature, ~92 MB, no console window; icon/version metadata only when
-      built on Windows — Bun limitation, documented)
-- [x] `agent/assets/icon.ico` (16/32/48/256, generated in-repo, determinism test)
-- [x] `agent/install.ps1`: user scope, no admin, DPAPI token, HKCU autostart,
-      idempotent re-runs, uninstall + purge
+- [x] `agent-dotnet` publishes `rc-agent.exe` (self-contained, single file,
+      .NET 8 + FlaUI.UIA3): one binary with the UIA engine, browser control and
+      screen recording — no separate sidecar to compile on the target
+- [x] `scripts/INSTALAR-AGENTE.bat`: stops old copies, installs from the share
+      into `%LOCALAPPDATA%`, launches from local and dumps the log if it dies
 - [x] Helpers resolved next to the exe first (`helper-scripts.ts`), then
       %APPDATA%, then the checkout
 - [x] MCP over Streamable HTTP at `/mcp` (Bearer `<MRC_TOKEN>`, 401 otherwise):
@@ -75,8 +74,9 @@ Full design and roadmap: [`PLAN.md`](./PLAN.md).
       (`agent_software`, `agent_time`, `agent_sessions`), `GET /health`.
       Auditing keeps per-operation names (`agent_ps_kill`, `agent_fs_delete`,
       `agent_exec_async`, ...).
-- [x] Real agent (`agent/src`) with reconnect/backoff: exec with process-tree
-      kill, fs jobs, inventory, process listing/killing, screenshots
+- [x] Real agent (`agent-dotnet/`) with reconnect/backoff: exec with
+      process-tree kill, fs jobs, inventory, process listing/killing,
+      screenshots, UIA computer-use, CDP browser control, screen recording
 - [x] Chunked file transfers (SHA-256 verified both ways) and screenshots
       pulled chunked from the agent temp file (image embedded in the tool
       result, or path only)
@@ -89,8 +89,8 @@ Full design and roadmap: [`PLAN.md`](./PLAN.md).
       (`--log-file`). The `tray/*.ps1` helpers are embedded in the exe.
 - [x] Linux process listing without procps (reads `/proc`), BSD/macOS via `ps`,
       Windows via PowerShell (`Get-Process`, two-sample CPU%)
-- [x] Unit tests (`bun test`) + black-box e2e (`bun run e2e`), including a
-      50 MB binary transfer with matching hash
+- [x] Unit tests (`bun test`) + black-box e2e (`bun run e2e`); the Windows
+      agent is covered by the hub's integration tests with a scripted agent
 
 ## Quickstart (dev)
 
@@ -102,13 +102,13 @@ bun install
 # terminal 1: server (MCP over stdio + websocket hub on :8787)
 MRC_TOKEN=dev-token bun run server
 
-# terminal 2: the real agent (runs on Linux for development)
-bun run agent -- --server ws://127.0.0.1:8787 --token dev-token --name PC-01
+# terminal 2: a scripted agent (Linux dev, no Windows needed)
+bun run agent:fake -- --server ws://127.0.0.1:8787 --token dev-token --name FAKE-01
 # stdin commands: pause | resume | quit
 
 # tests
 bun test        # unit + integration tests
-bun run e2e     # MCP client <-> real server <-> fake + real agents
+bun run e2e     # MCP client <-> real server <-> scripted agents
 bun run typecheck
 
 # enroll a production agent (per-agent token) and check status
@@ -126,10 +126,10 @@ shared/     wire protocol (server <-> agent), zod schemas, helpers (args,
 server/     MCP server (stdio + HTTP) + websocket hub (one Bun process):
             hub + job-limits, registry/store (SQLite tokens), audit,
             tools/* (one MCP tool per file, job-tool.ts helper), cli (admin)
-agent/      agent sources: connection, jobs dispatch, exec/fs/ps (procfs
-            readers)/sysinfo/screenshot handlers, settings + autostart +
-            first-run, tray integration + tray/*.ps1 helpers (Windows)
+agent-dotnet/ Windows agent (C#/.NET 8): connection, job dispatch, exec/fs/ps,
+            UIA computer-use engine, CDP browser control, screen recording,
+            settings/autostart/first-run, tray
 scripts/    fake agent + e2e harness + test-utils (Linux, no Windows needed)
-tests/      unit + integration tests mirroring the tree (agent/server/shared)
+tests/      unit + integration tests mirroring the tree (server/shared)
 docs/       opencode integration, install + operations notes
 ```

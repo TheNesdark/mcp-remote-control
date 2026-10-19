@@ -4,61 +4,61 @@
 server. No inbound ports are opened on the Windows machine; a firewall rule is
 not needed for the agent to work.
 
-> **Status**: F5. One-shot installer (`agent/install.ps1`) + cross-compiled
-> `rc-agent.exe` (`bun run build:exe`). LAN-only deployment: no Tailscale/VPN,
-> plain `ws://` + `http://` on the trusted local network.
+The agent is the .NET 8 port in `agent-dotnet/` and ships as a single
+self-contained `rc-agent.exe` (~154 MB) with everything inside: exec/fs/ps
+handlers, the FlaUI/UIA3 computer-use engine, CDP browser control and screen
+recording. There is no separate sidecar to compile on the target.
+
+> **LAN-only deployment**: no Tailscale/VPN, plain `ws://` + `http://` on the
+> trusted local network.
 
 ## Requirements
 
-- Windows 10/11 (x64). PowerShell 5.1 is used by the tray/first-run helpers and
-  by `agent_ps`/`agent_screenshot`; it ships with Windows.
+- Windows 10/11 (x64).
 - Network reachability to the central server on the LAN
   (e.g. `ws://192.168.1.50:8787` — see `docs/OPERATIONS.md` for the server
   side: static IP, firewall, systemd).
 - A per-agent token from the server operator:
   `bun run admin -- agent add --name PC-01` on the server host.
+- For screen recordings as MP4: `ffmpeg.exe` on that machine (next to the agent
+  or on `PATH`). Without it the engine writes a motion-JPEG `.avi` instead.
 
-## One-shot install (recommended)
+## Install (recommended: `INSTALAR-AGENTE.bat`)
 
-Copy `rc-agent.exe`, `install.ps1` and `tray/*.ps1` to the machine (USB,
-network share — whatever your LAN allows), then from an **unelevated**
-PowerShell:
+The repo ships `scripts/INSTALAR-AGENTE.bat`, also dropped on the LAN share so
+a machine can install itself from `\\<server>\Hermes`:
 
-```powershell
-.\install.ps1 -Server ws://192.168.1.50:8787 -Token mrc_xxxx -Name OFICINA-01
-```
+1. On the server, publish the exe from the repo (Linux cross-build works):
 
-This installs to `%LOCALAPPDATA%\mcp-remote-control` (no admin needed),
-writes `%APPDATA%\mcp-remote-control\agent.json` (token encrypted with DPAPI,
-current user), registers Start with Windows (`HKCU\...\Run`) and starts the
-agent — look for the tray icon next to the clock. Re-running updates files
-and config (existing values are kept unless overridden).
+   ```sh
+   cd agent-dotnet
+   dotnet publish -c Release -r win-x64 --self-contained true \
+     -p:PublishSingleFile=true -p:EnableWindowsTargeting=true -o ../dist
+   ```
 
-Useful switches: `-InstallDir`, `-NoAutostart`, `-NoStart`,
-`-Uninstall` (removes exe/autostart/process, keeps config),
-`-Uninstall -Purge` (also removes `agent.json`).
+   Copy `dist/rc-agent.exe` to the share. Point `SRC` in the `.bat` at it.
+2. On the Windows machine, run `INSTALAR-AGENTE.bat`. It:
+   - stops any previous agent copy,
+   - installs to `%LOCALAPPDATA%\mrc-remote-control\rc-agent.exe`,
+   - launches it **from local** (not from the share, so the share stays
+     writable) as `SERVER-<name>`,
+   - waits 10 s and, if the process died, prints the tail of the log.
 
-## Manual first run (no installer)
+Set `SH`, `NAME`, `SERVER` and `TOKEN` at the top of the `.bat` for your LAN.
 
-1. Copy `rc-agent.exe` (or the repo for `bun run agent`) to the machine. The
-   `.ps1` helpers are **embedded in the exe**, so no side files are needed.
-2. Run it. On Windows, if there is no config yet and no `--name/--server/--token`
-   flags were given, a **first-run dialog** asks for:
+## Manual first run
+
+1. Copy `rc-agent.exe` to the machine and run it. With no config and no
+   `--name/--server/--token` flags, a **first-run dialog** asks for:
    - **Computer name** — how this machine appears in `agents_list`
-     (prefilled with `%COMPUTERNAME%`, pattern `^[A-Za-z0-9._-]{1,32}$`).
+     (prefilled with `%COMPUTERNAME%`).
    - **Server URL** — the central server's IP. A **bare IP is accepted**:
      `192.168.1.50` becomes `ws://192.168.1.50:8787`.
-   - **Agent token** — only shown when one is not already available (baked into
-     the exe or present in `agent.json`).
-3. The name/server/token are stored in
-   `%APPDATA%\mcp-remote-control\agent.json`; the token is **encrypted with
-   DPAPI** (current Windows user) before it is written.
-4. A tray icon appears next to the clock (see below). Choose **Settings...** to
-   reopen the same dialog at any time.
-
-> Building a fleet? `bun run build:exe --server ws://<host>:8787` bakes the
-> server URL as the dialog's prefill (still editable). Omit it to ship a fully
-> generic exe that asks for the server on every machine.
+   - **Agent token** — only shown when one is not already available.
+2. The name/server/token are stored in
+   `%LOCALAPPDATA%\mrc-remote-control\settings.json`; the token is protected
+   with **DPAPI** (current Windows user) before it is written.
+3. A tray icon appears next to the clock (see below).
 
 CLI flags and environment variables override the config file:
 `--server`, `--token`, `--name`, `--tags a,b`, `--id ag_xxx`, `--paused`,
@@ -67,35 +67,28 @@ CLI flags and environment variables override the config file:
 
 ## Tray icon
 
-The tray helper is a PowerShell + WinForms `NotifyIcon` (`agent/tray/tray.ps1`)
-that the agent starts and drives over JSON lines on stdin/stdout.
-
-States: green **Connected** · yellow **Paused (disabled locally)** · gray
-**Connecting...** · red **Disconnected**. The tooltip shows the state and the
-server URL.
+The tray is a WinForms `NotifyIcon` built into the exe. States: green
+**Connected** · yellow **Paused (disabled locally)** · gray **Connecting...** ·
+red **Disconnected**. The tooltip shows the state and the server URL.
 
 Menu:
 
 - `Enable agent` / `Disable agent` — pauses the agent **without disconnecting**:
-  the server keeps the agent online but refuses new jobs with
+  the server keeps it online but refuses new jobs with
   `agent paused locally`.
 - `Reconnect now` — drops the current socket and skips the reconnect backoff.
-- `Open logs` — opens `%APPDATA%\mcp-remote-control\logs`.
-- `Start with Windows` — writes/deletes the `HKCU\...\CurrentVersion\Run`
-  entry pointing at `rc-agent.exe` (only available in the compiled exe).
+- `Open logs` — opens `%LOCALAPPDATA%\mrc-remote-control\logs`.
+- `Start with Windows` — writes/deletes the `HKCU\...\CurrentVersion\Run` entry.
 - `Exit` — stops the agent.
-
-Double-clicking the icon toggles enable/disable. A second tray instance exits
-with `already_running` (the agent itself can still run without a tray).
 
 ## Deployment options
 
 | Option | Screenshots | Notes |
 |---|---|---|
-| **User logon (recommended)** — run once + `Start with Windows` | ✅ works | The agent runs in the interactive session, which screenshots require. |
+| **User logon (recommended)** — run once + `Start with Windows` | ✅ works | The agent must run in the interactive session, which screenshots require. |
 | **Task Scheduler at logon** ("run only when user is logged on") | ✅ works | Same session requirement; useful for central deployment. |
 | **Task Scheduler at startup** ("whether logged on or not") | ❌ | Everything except screenshots works; a locked/absent desktop makes `agent_screenshot` fail with `no interactive session`. |
-| **Windows service** (session 0) | ❌ | Not supported in v1 (F6 backlog); screenshots are impossible. |
+| **Windows service** (session 0) | ❌ | Not supported in v1; screenshots are impossible. |
 
 Screenshot failures are explicit: the agent detects session 0 /
 `[Environment]::UserInteractive = false` and replies
@@ -103,35 +96,24 @@ Screenshot failures are explicit: the agent detects session 0 /
 
 ## Logs
 
-- File: `%APPDATA%\mcp-remote-control\logs\agent.log` (rotates at 5 MB,
-  keeping one `agent.log.1`). Level controlled with `--log-level`.
-- The server logs to stderr (`MRC_LOG_LEVEL`); when run under opencode, those
-  logs show up in the MCP server output.
+- File: `%LOCALAPPDATA%\mrc-remote-control\logs\agent.log`. Level controlled
+  with `--log-level`.
+- The server logs to stderr (`MRC_LOG_LEVEL`); under opencode those logs show up
+  in the MCP server output.
 
 ## Antivirus / EDR notes
 
 - The agent only makes an **outbound** websocket connection and runs commands /
   file operations requested by the server operator.
-- The tray helper is a minimal `NotifyIcon` script (no `-EncodedCommand`, no
-  obfuscation). If your EDR distrusts PowerShell, the fallback is a tiny C#
-  `tray.exe` compiled with the `csc.exe` that ships with Windows (backlog).
 - Unsigned binaries can be blocked: add an exclusion for `rc-agent.exe` or plan
   for code signing (backlog).
 
-## Verifying on a fresh machine (checklist, < 10 min)
+## Bonus: controlling the user's browser
 
-1. Copy `rc-agent.exe` + `install.ps1` + `tray/*.ps1`; run
-   `.\install.ps1 -Server ws://<lan-ip>:8787 -Token <token> -Name TEST-01`.
-2. Tray icon appears within seconds; tooltip `TEST-01 - Connected - ws://...`.
-   `agents_list` from opencode shows the machine as **online** (not paused).
-3. Tray: icon appears; tooltip `NAME - Connected - ws://...`; menu open/disable
-   works; `Disable agent` flips the tooltip to *Paused* and
-   `agents_list` shows `paused: true`; `Enable agent` reverses it.
-4. `agent_screenshot` returns a correct primary-monitor image; with the agent
-   started in session 0 it must fail with the clear `no interactive session`
-   error instead.
-5. `agent_ps` (list) shows processes with user/CPU/memory; `agent_ps` (kill)
-   terminates a test process (try `notepad.exe`).
-6. `Open logs` opens the log folder and `agent.log` has recent entries.
-7. `Start with Windows` survives a logoff/logon cycle and `Exit` stops the
-   agent (icon disappears immediately).
+`agent_cua_browser` drives the Chrome/Edge the user already runs, over the
+DevTools Protocol of their real profile — no debug port on a throwaway profile.
+Chrome 136+ only exposes it once the user turns **`chrome://inspect/#remote-debugging`
+→ "Allow remote debugging"** on (this writes `DevToolsActivePort` into the
+profile). The first time the agent attaches to a tab, the browser asks
+"Allow debugging?" once; accept it and later commands are silent while the agent
+process lives.
