@@ -30,6 +30,9 @@ public static class Diagnose
         // The bridge: loaded? which library? is a Java window answering?
         report["bridge"] = Bridge();
 
+        // The watchdog: without it a dead agent stays dead.
+        report["watchdog"] = Watchdog.IsRunning();
+
         // The recording state (a clip half written is a common confusion).
         report["recording"] = Record.Status();
 

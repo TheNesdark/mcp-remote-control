@@ -78,6 +78,25 @@ logged per chunk — the enclosing tool call is the single audited entry.
 | Transfer size | 1 GiB | — | `agent_fs_transfer` upload/download |
 | Screenshot embed | 8 MB | — | Larger images return `localPath` only |
 
+## The agent comes back by itself
+
+When the hub goes down (a deploy, a restart) it closes every agent socket with
+1001 "server shutting down". The agent must come back on its own: nobody is
+watching the screen of a remote machine.
+
+The loop used to stop there. `ConnectOnceAsync` returned after the close and
+`RunAsync` waited on a semaphore that only a *requested* reconnect (the hub
+asking, or the tray button) releases. With the hub down nothing released it:
+the process stayed alive, the watchdog saw a live pid and did nothing, and the
+machine was unreachable until somebody ran the installer by hand.
+
+Now a session says how it ended: a requested reconnect waits for the request to
+be consumed and reconnects at once, any other close retries with the usual
+backoff (1 s, then up to 60 s). `agent_diagnose` reports `watchdog`, so "is
+anything watching this agent" has an answer. The watchdog mutex is taken with
+`WaitOne(0)` and an abandoned mutex is taken over: a watchdog killed with the
+session no longer blocks the next one forever.
+
 ## Restart procedure
 
 The server is stateless apart from SQLite: stop it, start it again, agents

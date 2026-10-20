@@ -72,6 +72,33 @@ public static class Watchdog
     }
 
     /// <summary>The watchdog loop. It never returns normally.</summary>
+    /// <summary>
+    /// True when a watchdog holds the mutex. An abandoned mutex (its owner
+    /// died without releasing it) means nobody is watching.
+    /// </summary>
+    public static bool IsRunning()
+    {
+        try
+        {
+            using var mutex = new Mutex(false, MutexName);
+            bool held;
+            try
+            {
+                held = mutex.WaitOne(0);
+            }
+            catch (AbandonedMutexException)
+            {
+                held = true;
+            }
+            if (held) mutex.ReleaseMutex();
+            return !held;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
     public static int Run()
     {
         // The mutex is taken without asking for ownership and then taken

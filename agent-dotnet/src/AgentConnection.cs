@@ -36,6 +36,7 @@ public sealed class AgentConnection : IAsyncDisposable
     private bool _paused;
     private bool _hadWelcome;
     private volatile bool _stopped;
+    private volatile bool _reconnectRequested;
 
     public AgentConnection(AgentConnectionOptions opts, JobManager jobs)
     {
@@ -59,13 +60,18 @@ public sealed class AgentConnection : IAsyncDisposable
         var attempt = 0;
         while (!_stopped)
         {
+            var requested = false;
             try
             {
-                await ConnectOnceAsync().ConfigureAwait(false);
-                // A clean session: reset the schedule and wait to be woken by a
-                // close, a reconnect request or shutdown.
+                requested = await ConnectOnceAsync().ConfigureAwait(false);
                 attempt = 0;
-                await WaitForWakeAsync().ConfigureAwait(false);
+                // Only a session we closed ourselves (the hub asked for a
+                // reconnect, or the settings changed) waits for that request
+                // to be consumed. When the socket is closed by the other
+                // side -- a hub restart, a network fault -- there is nobody
+                // to wake us: waiting here left the agent alive but offline
+                // until somebody ran the installer by hand.
+                if (requested) await WaitForWakeAsync().ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (_cts.IsCancellationRequested)
             {
@@ -80,7 +86,8 @@ public sealed class AgentConnection : IAsyncDisposable
             if (_stopped) break;
             // A session that had a welcome gets one fast retry first.
             if (_hadWelcome) attempt = Math.Min(attempt, 1);
-            var delay = BackoffDelay(attempt);
+            // A requested reconnect is immediate: no backoff.
+            var delay = requested ? 0 : BackoffDelay(attempt);
             attempt++;
             Log.Info("reconnecting", new { delayMs = delay });
             try
@@ -103,7 +110,12 @@ public sealed class AgentConnection : IAsyncDisposable
         return Math.Max(250, (int)Math.Round(raw + jitter));
     }
 
-    private async Task ConnectOnceAsync()
+    /// <summary>
+    /// Runs one session. Returns true when the session ended because we were
+    /// asked to reconnect, false when the other side (or the network) closed
+    /// it -- the caller must retry in that case.
+    /// </summary>
+    private async Task<bool> ConnectOnceAsync()
     {
         var url = Protocol.NormalizeAgentUrl(_opts.ServerUrl);
         Log.Info("connecting", new { url, name = _opts.Name });
@@ -149,7 +161,13 @@ public sealed class AgentConnection : IAsyncDisposable
         _channel = null;
         _hadWelcome = false;
         _jobs.CancelAll();
-        Log.Info("disconnected", new { reason = closed.Task.IsCompleted ? closed.Task.Result : null });
+        var requested = _reconnectRequested;
+        _reconnectRequested = false;
+        Log.Info("disconnected", new
+        {
+            reason = closed.Task.IsCompleted ? closed.Task.Result : null,
+            requested,
+        });
         try
         {
             // A half-open socket (the hub container was replaced) leaves the
@@ -167,6 +185,7 @@ public sealed class AgentConnection : IAsyncDisposable
             // the pump failed: nothing left to do here
         }
         try { await channel.DisposeAsync().ConfigureAwait(false); } catch { /* already gone */ }
+        return requested;
     }
 
     private void OnServerMessage(string raw)
@@ -274,6 +293,7 @@ public sealed class AgentConnection : IAsyncDisposable
         var channel = _channel;
         if (channel is null || !channel.IsOpen) return;
         Log.Info("reconnect requested");
+        _reconnectRequested = true;
         try
         {
             channel.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(2));

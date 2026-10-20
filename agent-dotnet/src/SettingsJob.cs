@@ -46,7 +46,7 @@ public static class SettingsJob
             ["autostart_command"] = RunCommand(),
             ["config_path"] = Settings.ConfigPath,
             ["version"] = Versions.Current,
-            ["watchdog"] = WatchdogRunning(),
+            ["watchdog"] = Watchdog.IsRunning(),
             ["pid"] = Environment.ProcessId,
         };
     }
@@ -114,30 +114,6 @@ public static class SettingsJob
         catch (Exception)
         {
             return "";
-        }
-    }
-
-    private static bool WatchdogRunning()
-    {
-        try
-        {
-            using var mutex = new Mutex(false, "Local\\Mrc.Agent.Watchdog");
-            bool held;
-            try
-            {
-                held = mutex.WaitOne(0);
-            }
-            catch (AbandonedMutexException)
-            {
-                // The watchdog that owned it died: nobody is watching.
-                held = true;
-            }
-            if (held) mutex.ReleaseMutex();
-            return !held;
-        }
-        catch (Exception)
-        {
-            return false;
         }
     }
 
