@@ -43,7 +43,13 @@ export function registerAgentSettings(server: McpServer, hub: Hub, audit: AuditL
         tags: args.tags,
         autostart: args.autostart,
       }),
-      buildResult: (outcome) => JSON.parse(outcome.stdout || "{}") as Record<string, unknown>,
+      // The agent answers with the report in the meta; some agents write it
+      // to stdout instead.
+      buildResult: (outcome) => {
+        const meta = (outcome.meta ?? {}) as Record<string, unknown>;
+        if (Object.keys(meta).length > 0) return meta;
+        return JSON.parse(outcome.stdout || "{}") as Record<string, unknown>;
+      },
       buildFailure: (outcome) => {
         const meta = (outcome.meta ?? {}) as { error?: unknown };
         if (meta.error) return { ok: false, error: meta.error };

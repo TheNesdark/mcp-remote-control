@@ -68,9 +68,9 @@ function respond(msg: JobRequestMsg): FakeResponse {
   if (msg.jobType === "settings") {
     const params = (msg.params ?? {}) as { operation?: string };
     if (params.operation === "write") {
-      return { stdout: JSON.stringify({ ok: true, changed: ["server"], name: "SERVER-RX", server: "ws://nuevo:8787", autostart: true, restart_required: true }) };
+      return { meta: { ok: true, changed: ["server"], name: "SERVER-RX", server: "ws://nuevo:8787", autostart: true, restart_required: true } };
     }
-    return { stdout: JSON.stringify(SETTINGS) };
+    return { meta: SETTINGS };
   }
   return { ok: false, error: `unexpected job ${msg.jobType}` };
 }

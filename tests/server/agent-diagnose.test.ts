@@ -74,7 +74,8 @@ afterEach(async () => {
 });
 
 function respond(msg: JobRequestMsg): FakeResponse {
-  if (msg.jobType === "diagnose") return { stdout: JSON.stringify(DIAGNOSE) };
+  // The real agent answers with the report in the meta (agent-dotnet Diagnose.cs).
+  if (msg.jobType === "diagnose") return { meta: DIAGNOSE };
   return { ok: false, error: `unexpected job ${msg.jobType}` };
 }
 
