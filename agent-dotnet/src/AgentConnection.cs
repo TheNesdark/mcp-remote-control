@@ -150,7 +150,23 @@ public sealed class AgentConnection : IAsyncDisposable
         _hadWelcome = false;
         _jobs.CancelAll();
         Log.Info("disconnected", new { reason = closed.Task.IsCompleted ? closed.Task.Result : null });
-        await pump.ConfigureAwait(false);
+        try
+        {
+            // A half-open socket (the hub container was replaced) leaves the
+            // pump waiting on a send that never completes. Waiting for it
+            // forever would strand the agent: bound the wait and then force
+            // the socket down so the reconnect loop can start.
+            await pump.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            Log.Warn("pump did not finish, aborting the socket");
+        }
+        catch (Exception)
+        {
+            // the pump failed: nothing left to do here
+        }
+        try { await channel.DisposeAsync().ConfigureAwait(false); } catch { /* already gone */ }
     }
 
     private void OnServerMessage(string raw)

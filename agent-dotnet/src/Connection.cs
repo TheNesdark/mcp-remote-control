@@ -152,12 +152,19 @@ public sealed class WsChannel : IAsyncDisposable
         try
         {
             if (_ws.State == WebSocketState.Open)
-                await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "agent stopping", CancellationToken.None).ConfigureAwait(false);
+            {
+                // A half-open socket never answers the close handshake (the
+                // hub container was replaced under us): bound the wait and
+                // abort afterwards, so the caller is never stuck on it.
+                var closing = _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "agent stopping", CancellationToken.None);
+                await closing.WaitAsync(TimeSpan.FromSeconds(2), CancellationToken.None).ConfigureAwait(false);
+            }
         }
         catch (Exception)
         {
             // closing a dead socket is fine
         }
+        try { _ws.Abort(); } catch { /* already gone */ }
         _ws.Dispose();
         _sendGate.Dispose();
     }
