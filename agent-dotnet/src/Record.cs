@@ -256,6 +256,7 @@ public static class Record
         var seconds = Math.Max(1, (int)Math.Round((Environment.TickCount64 - startedAt) / 1000.0));
         if (frames == 0) return JobOutcome.Failure("captured zero frames");
 
+        var encoded = false;
         try
         {
             var ffmpeg = FindFfmpeg();
@@ -269,10 +270,17 @@ public static class Record
                 WriteMjpegAvi(outPath, frameDir, frames, width, height, fps);
                 encoder = "mjpeg-avi";
             }
+            encoded = true;
+        }
+        catch (Exception ex)
+        {
+            // The frames are the only copy of the recording: keep them so the
+            // clip can still be encoded by hand, and say where they are.
+            throw new InvalidOperationException($"{ex.Message}; frames kept in {frameDir}", ex);
         }
         finally
         {
-            TryDeleteDir(frameDir);
+            if (encoded) TryDeleteDir(frameDir);
             lock (OpenGate)
             {
                 _openFrameDir = "";
@@ -416,7 +424,7 @@ public static class Record
                 {
                     graphics.CopyFromScreen(0, 0, 0, 0, frame.Size, CopyPixelOperation.SourceCopy);
                 }
-                frame.Save(Path.Combine(frameDir, i.ToString("D5") + ".jpg"), ImageFormat.Jpeg);
+                frame.Save(Path.Combine(frameDir, i.ToString("D6") + ".jpg"), ImageFormat.Jpeg);
             }
             captured++;
             var elapsed = stopwatch.ElapsedMilliseconds;
@@ -442,9 +450,16 @@ public static class Record
         return null;
     }
 
+    /// <summary>
+    /// ffmpeg reads the captured frames through the image2 demuxer. The pattern
+    /// must match the zero padded names written by the capture loops (6 digits),
+    /// otherwise ffmpeg finds no first frame and exits with ENOENT (-2).
+    /// </summary>
+    private const string FramePattern = "%06d.jpg";
+
     private static Process StartFfmpeg(string ffmpeg, string frameDir, string outPath, int fps)
     {
-        var args = $"-y -framerate {fps} -start_number 0 -i \"{Path.Combine(frameDir, "%05d.jpg")}\" " +
+        var args = $"-y -framerate {fps} -start_number 0 -i \"{Path.Combine(frameDir, FramePattern)}\" " +
                    $"-c:v libx264 -pix_fmt yuv420p -crf 23 -movflags +faststart \"{outPath}\"";
         var process = Process.Start(new ProcessStartInfo(ffmpeg, args)
         {
