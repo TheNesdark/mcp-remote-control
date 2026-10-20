@@ -74,13 +74,41 @@ public static class Watchdog
     /// <summary>The watchdog loop. It never returns normally.</summary>
     public static int Run()
     {
-        using var mutex = new Mutex(true, MutexName, out var first);
-        if (!first)
+        // The mutex is taken without asking for ownership and then taken
+        // with a zero timeout: if the watchdog that owned it died without
+        // releasing it (the session ended, the machine was reset), the wait
+        // throws AbandonedMutexException and the mutex is ours. Without this
+        // the mutex stayed abandoned and no watchdog could ever run again:
+        // the agent died and nobody brought it back.
+        using var mutex = new Mutex(false, MutexName);
+        var owned = false;
+        try
+        {
+            owned = mutex.WaitOne(0);
+        }
+        catch (AbandonedMutexException)
+        {
+            owned = true;
+            Log.Info("watchdog: the previous watchdog did not release the mutex, taking it over");
+        }
+        if (!owned)
         {
             Log.Info("watchdog: another one is already running");
             return 0;
         }
 
+        try
+        {
+            return Loop();
+        }
+        finally
+        {
+            try { mutex.ReleaseMutex(); } catch (Exception) { /* already gone */ }
+        }
+    }
+
+    private static int Loop()
+    {
         var exe = Environment.ProcessPath ?? "";
         Log.Info("watchdog: watching", new { pid = Environment.ProcessId });
 

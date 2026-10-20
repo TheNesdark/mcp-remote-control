@@ -122,7 +122,16 @@ public static class SettingsJob
         try
         {
             using var mutex = new Mutex(false, "Local\\Mrc.Agent.Watchdog");
-            var held = mutex.WaitOne(0);
+            bool held;
+            try
+            {
+                held = mutex.WaitOne(0);
+            }
+            catch (AbandonedMutexException)
+            {
+                // The watchdog that owned it died: nobody is watching.
+                held = true;
+            }
             if (held) mutex.ReleaseMutex();
             return !held;
         }
