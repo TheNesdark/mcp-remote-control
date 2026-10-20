@@ -1386,7 +1386,9 @@ public static class Cua
             var best = Win32.BiggestForPid(pid.Value);
             if (best is not null) return new IntPtr(best.Hwnd);
         }
-        throw new InvalidOperationException("provide window_id (from agent_cua_list_windows) or pid");
+        throw new ToolError(ToolError.Codes.InvalidArgs,
+            "provide window_id (from agent_cua_list_windows) or pid",
+            "call list_windows first, then pass the hwnd (window_id) of the window to drive");
     }
 
     private static AutomationElement ResolveWindow(JsonElement p)

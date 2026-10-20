@@ -43,7 +43,9 @@ public static class SettingsJob
             ["id"] = settings.AgentId ?? "",
             ["paused"] = settings.Paused,
             ["autostart"] = Autostart.IsEnabled(),
-            ["autostart_command"] = RunCommand(),
+            // The Run key holds the token in plain text: mask it here for the
+            // same reason the token field is masked.
+            ["autostart_command"] = MaskIn(RunCommand(), settings.Token),
             ["config_path"] = Settings.ConfigPath,
             ["version"] = Versions.Current,
             ["watchdog"] = Watchdog.IsRunning(),
@@ -115,6 +117,13 @@ public static class SettingsJob
         {
             return "";
         }
+    }
+
+    /// <summary>Replaces every appearance of the token inside a command line.</summary>
+    private static string MaskIn(string command, string token)
+    {
+        if (string.IsNullOrEmpty(command) || string.IsNullOrEmpty(token)) return command;
+        return command.Replace(token, Mask(token), StringComparison.Ordinal);
     }
 
     /// <summary>The token is never returned in full: only its shape.</summary>
