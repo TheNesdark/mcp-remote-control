@@ -150,6 +150,13 @@ public static class JavaAccessBridge
     /// <summary>True when the bridge library is loaded in this process.</summary>
     public static bool Loaded => _dll != IntPtr.Zero;
 
+    /// <summary>
+    /// Switches the bridge off for the running call. Some applications crash
+    /// the JVM when the bridge walks their tree, and the caller has to be able
+    /// to say "this time, UIA3 and coordinates only".
+    /// </summary>
+    public static readonly AsyncLocal<bool?> Disabled = new();
+
     /// <summary>Path of the bridge library in use, empty when it is not loaded.</summary>
     public static string? BridgeLibraryPath => _libraryPath;
 
@@ -205,6 +212,7 @@ public static class JavaAccessBridge
         {
             if (!getAccessibleContextFromHWND(hwnd, out var vmId, out var context) || context == 0) return nodes;
             Walk(vmId, context, 0, maxDepth, maxNodes, Environment.TickCount64 + maxMillis, nodes);
+            ScaleToPhysical(hwnd, nodes);
             return nodes;
         });
     }
@@ -231,6 +239,38 @@ public static class JavaAccessBridge
     private static bool Contains(string? value, string needle) =>
         !string.IsNullOrEmpty(value) && value.Contains(needle, StringComparison.OrdinalIgnoreCase);
 
+
+    /// <summary>
+    /// Converts the rects of the tree to physical pixels.
+    ///
+    /// An application without a per-monitor DPI manifest (every Java
+    /// application) is virtualized by Windows and reports its coordinates in
+    /// logical pixels, while the agent (per-monitor aware) works in physical
+    /// ones: without this the click points of the tree miss the control.
+    /// </summary>
+    private static void ScaleToPhysical(IntPtr hwnd, List<JabNode> nodes)
+    {
+        if (nodes.Count == 0) return;
+        var root = nodes[0];
+        if (root.Width <= 0 || root.Height <= 0) return;
+        var scale = ScreenGeometry.ScaleOf(hwnd.ToInt64(), root.Width, root.Height);
+        if (Math.Abs(scale - 1.0) < 0.001) return;
+        var physical = ScreenGeometry.RectOf(hwnd.ToInt64());
+        var originX = physical.X - (root.X - physical.X) * scale;
+        var originY = physical.Y - (root.Y - physical.Y) * scale;
+        for (var i = 0; i < nodes.Count; i++)
+        {
+            var n = nodes[i];
+            nodes[i] = n with
+            {
+                X = (int)Math.Round(originX + n.X * scale),
+                Y = (int)Math.Round(originY + n.Y * scale),
+                Width = (int)Math.Round(n.Width * scale),
+                Height = (int)Math.Round(n.Height * scale),
+            };
+        }
+        Log.Info("jab: the tree was scaled to physical pixels", new { scale, root = root.Width });
+    }
 
     /// <summary>
     /// The JDK's getVisibleChildren copies (count - startIndex) entries into the
@@ -513,6 +553,7 @@ public static class JavaAccessBridge
     private static bool Connect(IntPtr hwnd)
     {
         if (hwnd == IntPtr.Zero) return false;
+        if (Disabled.Value == true) return false;
         if (IsHostile(hwnd))
         {
             Log.Warn("jab: the bridge is not used with this process after an accident",

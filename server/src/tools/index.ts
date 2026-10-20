@@ -7,6 +7,7 @@ import { registerAgentExec } from "./agent-exec.ts";
 import { registerAgentFs } from "./agent-fs.ts";
 import { registerAgentInfo } from "./agent-info.ts";
 import { registerAgentDiagnose } from "./agent-diagnose.ts";
+import { registerAgentSettings } from "./agent-settings.ts";
 import { registerAgentJobs } from "./agent-jobs.ts";
 import { registerAgentMessage } from "./agent-message.ts";
 import { registerAgentNet } from "./agent-net.ts";
@@ -45,6 +46,7 @@ export function registerTools(server: McpServer, hub: Hub, options: ToolsOptions
   registerAgentFs(server, hub, audit);
   registerAgentInfo(server, hub, audit);
   registerAgentDiagnose(server, hub, audit);
+  registerAgentSettings(server, hub, audit);
   registerAgentPs(server, hub, audit);
   registerAgentRestart(server, hub, audit);
   registerAgentScreenshot(server, hub, screenshotDir, audit, screenshotBaseUrl ?? "", screenshotKeep ?? 0);

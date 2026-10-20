@@ -180,4 +180,16 @@ public static class Fs
 
     internal static bool ReadBool(JsonElement p, string name) =>
         p.ValueKind == JsonValueKind.Object && p.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
+
+    /// <summary>A list of strings ("paths": ["a", "b"]).</summary>
+    internal static List<string>? ReadStringList(JsonElement p, string name)
+    {
+        if (p.ValueKind != JsonValueKind.Object || !p.TryGetProperty(name, out var v)) return null;
+        if (v.ValueKind == JsonValueKind.String) return new List<string> { v.GetString()! };
+        if (v.ValueKind != JsonValueKind.Array) return null;
+        var list = new List<string>();
+        foreach (var item in v.EnumerateArray())
+            if (item.ValueKind == JsonValueKind.String) list.Add(item.GetString()!);
+        return list;
+    }
 }

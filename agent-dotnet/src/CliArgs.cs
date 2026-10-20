@@ -26,6 +26,12 @@ public sealed class CliArgs
     /// <summary>Attach to the parent console (debugging); otherwise stay detached.</summary>
     public bool Console => Flag("console") == true;
 
+    /// <summary>Runs as the watchdog instead of as the agent.</summary>
+    public bool Watchdog => Flag("watchdog") == true;
+
+    /// <summary>Do not start the watchdog.</summary>
+    public bool NoWatchdog => Flag("no-watchdog") == true;
+
     public static CliArgs Parse(string[] argv)
     {
         var args = new CliArgs();

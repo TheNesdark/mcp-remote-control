@@ -31,6 +31,20 @@ public static class Cua
     private static readonly object Gate = new();
     private static AutomationElement? _foreground;
 
+    /// <summary>
+    /// What the job did, in order. The hub returns it with the result, so a
+    /// caller can see the steps of an automation without opening the log of
+    /// the machine.
+    /// </summary>
+    private static readonly AsyncLocal<List<string>?> _steps = new();
+
+    /// <summary>Records one step of the running job.</summary>
+    internal static void Step(string what)
+    {
+        var steps = _steps.Value;
+        if (steps is not null) steps.Add(what);
+    }
+
     // ------------------------------------------------------------------- job
 
     public static async Task<JobOutcome> JobCall(JsonElement p, JobContext ctx, CancellationToken ct)
@@ -42,6 +56,15 @@ public static class Cua
         var args = p.ValueKind == JsonValueKind.Object && p.TryGetProperty("args", out var bag) && bag.ValueKind == JsonValueKind.Object
             ? bag
             : p;
+
+        // The bridge can be switched off per call: some applications crash
+        // the JVM when the bridge walks their tree, and the caller can always
+        // fall back to UIA3 and coordinates.
+        var bridgeOff = string.Equals(Fs.ReadString(args, "bridge"), "off", StringComparison.OrdinalIgnoreCase);
+        JavaAccessBridge.Disabled.Value = bridgeOff;
+
+        var steps = new List<string>();
+        _steps.Value = steps;
         try
         {
             var meta = tool switch
@@ -61,18 +84,40 @@ public static class Cua
                 "wait_for" => await WaitForAsync(args, ct),
                 "table_read" => TableRead(args),
                 "clipboard_set" => ClipboardSet(args),
-                "clipboard_get" => ClipboardGet(),
+                "clipboard_get" => ClipboardGet(args),
+                "clipboard_set_image" => ClipboardSetImage(args),
+                "clipboard_set_files" => ClipboardSetFiles(args),
                 "window" => WindowControl(args),
                 "send_hotkey" => SendHotkey(args),
                 "drag" => Drag(args),
                 "element_screenshot" => ElementScreenshot(args),
+                "read_value" => ReadValue(args),
+                "jab_wait_for" => JabWaitFor(args),
                 _ => throw new InvalidOperationException($"unknown tool '{tool}'"),
             };
+            if (steps.Count > 0)
+            {
+                meta["steps"] = steps;
+                ctx.Stdout(string.Join("\n", steps.Select(s => "step: " + s)) + "\n");
+            }
             return JobOutcome.Success(meta);
+        }
+        catch (ToolError ex)
+        {
+            var meta = ex.ToMeta();
+            if (steps.Count > 0) meta["steps"] = steps;
+            return JobOutcome.Failure(ex.Message, null, meta);
         }
         catch (Exception ex)
         {
-            return JobOutcome.Failure(ex.Message);
+            var meta = ToolError.Wrap(ex).ToMeta();
+            if (steps.Count > 0) meta["steps"] = steps;
+            return JobOutcome.Failure(ex.Message, null, meta);
+        }
+        finally
+        {
+            _steps.Value = null;
+            JavaAccessBridge.Disabled.Value = null;
         }
     }
 
@@ -117,6 +162,236 @@ public static class Cua
     }
 
     /// <summary>ControlView tree with role, name, automation id, pid and screen rect.</summary>
+    /// <summary>Puts an image (base64 PNG) in the clipboard.</summary>
+    private static Dictionary<string, object?> ClipboardSetImage(JsonElement p)
+    {
+        RequireConfirm(p, "clipboard_set_image");
+        var b64 = Fs.ReadString(p, "image_base64")
+            ?? throw new ToolError(ToolError.Codes.InvalidArgs, "clipboard_set_image requires image_base64");
+        byte[] bytes;
+        try { bytes = Convert.FromBase64String(b64); }
+        catch (Exception ex) { throw new ToolError(ToolError.Codes.InvalidArgs, "image_base64 is not base64: " + ex.Message); }
+
+        Exception? captured = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                using var ms = new MemoryStream(bytes);
+                using var image = System.Drawing.Image.FromStream(ms);
+                System.Windows.Forms.Clipboard.SetImage(new System.Drawing.Bitmap(image));
+            }
+            catch (Exception ex) { captured = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join(5000);
+        if (captured is not null)
+            throw new ToolError(ToolError.Codes.Internal, "the image could not be put in the clipboard: " + captured.Message);
+        Step($"clipboard image ({bytes.Length} bytes)");
+        return new Dictionary<string, object?> { ["ok"] = true, ["bytes"] = bytes.Length };
+    }
+
+    /// <summary>
+    /// Puts files in the clipboard, the way the explorer does it, so an
+    /// application can paste them.
+    /// </summary>
+    private static Dictionary<string, object?> ClipboardSetFiles(JsonElement p)
+    {
+        RequireConfirm(p, "clipboard_set_files");
+        var paths = Fs.ReadStringList(p, "paths")
+            ?? throw new ToolError(ToolError.Codes.InvalidArgs, "clipboard_set_files requires paths");
+        var existing = new List<string>();
+        foreach (var path in paths)
+        {
+            if (File.Exists(path)) existing.Add(path);
+            else throw new ToolError(ToolError.Codes.InvalidArgs, $"the file does not exist: {path}");
+        }
+        if (existing.Count == 0)
+            throw new ToolError(ToolError.Codes.InvalidArgs, "no valid file to put in the clipboard");
+
+        Exception? captured = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var data = new System.Windows.Forms.DataObject();
+                var drop = new System.Collections.Specialized.StringCollection();
+                foreach (var file in existing) drop.Add(file);
+                data.SetFileDropList(drop);
+                System.Windows.Forms.Clipboard.SetDataObject(data, true);
+            }
+            catch (Exception ex) { captured = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join(5000);
+        if (captured is not null)
+            throw new ToolError(ToolError.Codes.Internal, "the files could not be put in the clipboard: " + captured.Message);
+        Step($"clipboard files ({existing.Count})");
+        return new Dictionary<string, object?>
+        {
+            ["ok"] = true,
+            ["files"] = existing,
+        };
+    }
+
+    /// <summary>Presses a modifier and a key together.</summary>
+    private static void SendChord(VirtualKeyShort modifier, VirtualKeyShort key)
+    {
+        Keyboard.Press(modifier);
+        try { Keyboard.Press(key); }
+        finally { Keyboard.Release(modifier); }
+    }
+
+    /// <summary>The text in the clipboard ("" when there is none).</summary>
+    private static string ClipboardText()
+    {
+        var text = "";
+        Exception? captured = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                text = System.Windows.Forms.Clipboard.ContainsText()
+                    ? System.Windows.Forms.Clipboard.GetText()
+                    : "";
+            }
+            catch (Exception ex) { captured = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join(2000);
+        return captured is null ? text : "";
+    }
+
+    /// <summary>Puts text in the clipboard.</summary>
+    private static void SetClipboardText(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        var thread = new Thread(() =>
+        {
+            try { System.Windows.Forms.Clipboard.SetText(text); }
+            catch (Exception) { /* the clipboard can be busy */ }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join(2000);
+    }
+
+    /// <summary>
+    /// Reads the value of a field.
+    ///
+    /// A Java field does not expose its text (the bridge can only write), so
+    /// the value is read the way a person would: focus the field, select
+    /// everything, copy, and read the clipboard. Whatever was in the clipboard
+    /// before is put back afterwards.
+    /// </summary>
+    private static Dictionary<string, object?> ReadValue(JsonElement p)
+    {
+        RequireConfirm(p, "read_value");
+
+        // Where to focus: explicit coordinates, or the centre of an element.
+        var x = Fs.ReadInt(p, "x");
+        var y = Fs.ReadInt(p, "y");
+        if (x is null || y is null)
+        {
+            var target = ResolveElement(p);
+            var rect = target.BoundingRectangle;
+            if (rect.Width < 1 || rect.Height < 1)
+                throw new ToolError(ToolError.Codes.ElementNotFound, "the element has no on-screen rect");
+            StealForeground(target);
+            x = (int)(rect.X + rect.Width / 2);
+            y = (int)(rect.Y + rect.Height / 2);
+        }
+        else
+        {
+            var window = ResolveWindow(p);
+            StealForeground(window);
+        }
+
+        var previous = ClipboardText();
+        try
+        {
+            Mouse.Click(new System.Drawing.Point(x.Value, y.Value));
+            SendChord(VirtualKeyShort.CONTROL, VirtualKeyShort.KEY_A);
+            SendChord(VirtualKeyShort.CONTROL, VirtualKeyShort.KEY_C);
+            var text = "";
+            for (var attempt = 0; attempt < 12; attempt++)
+            {
+                Thread.Sleep(60);
+                text = ClipboardText();
+                if (text.Length > 0) break;
+            }
+            Step($"read value ({text.Length} chars)");
+            return new Dictionary<string, object?>
+            {
+                ["ok"] = true,
+                ["via"] = "clipboard",
+                ["value"] = text,
+                ["chars"] = text.Length,
+                ["restored_clipboard"] = previous.Length > 0,
+            };
+        }
+        finally
+        {
+            if (previous.Length > 0) SetClipboardText(previous);
+        }
+    }
+
+    /// <summary>
+    /// Waits for an element of a Java application to show up.
+    ///
+    /// The UIA wait_for is useless with Swing (UIA does not see it), so this
+    /// one polls the bridge until the element appears or the time runs out.
+    /// </summary>
+    private static Dictionary<string, object?> JabWaitFor(JsonElement p)
+    {
+        var hwnd = ResolveHwnd(p);
+        var name = Fs.ReadString(p, "name");
+        var timeoutMs = Math.Clamp(Fs.ReadInt(p, "timeout_ms") ?? 15000, 200, 120_000);
+        var pollMs = Math.Clamp(Fs.ReadInt(p, "poll_ms") ?? 400, 100, 5000);
+        var wantGone = Fs.ReadBool(p, "until_gone");
+        var deadline = Environment.TickCount64 + timeoutMs;
+
+        while (true)
+        {
+            var alive = JavaAccessBridge.TargetAlive(hwnd);
+            var nodes = alive
+                ? JavaAccessBridge.ReadTree(hwnd, 8, 400, 2000)
+                : new List<JabNode>();
+            var hit = nodes.FirstOrDefault(n =>
+                (name is null || n.Name.Contains(name, StringComparison.OrdinalIgnoreCase)) &&
+                n.Width > 0 && n.Height > 0);
+            var present = hit is not null;
+            if (present != wantGone)
+            {
+                return new Dictionary<string, object?>
+                {
+                    ["ok"] = true,
+                    ["present"] = present,
+                    ["waited_ms"] = (int)(timeoutMs - (deadline - Environment.TickCount64)),
+                    ["element"] = hit is null ? null : new Dictionary<string, object?>
+                    {
+                        ["name"] = hit.Name,
+                        ["role"] = hit.Role,
+                        ["index"] = hit.Index,
+                        ["path"] = hit.Path,
+                        ["bounds"] = new Dictionary<string, object?>
+                        {
+                            ["x"] = hit.X, ["y"] = hit.Y, ["width"] = hit.Width, ["height"] = hit.Height,
+                        },
+                    },
+                };
+            }
+            if (Environment.TickCount64 >= deadline)
+                throw new ToolError(ToolError.Codes.Timeout,
+                    $"the element {(wantGone ? "is still there" : "did not appear")} after {timeoutMs} ms",
+                    "raise timeout_ms, or check that the application is in the expected state");
+            Thread.Sleep((int)Math.Min(pollMs, Math.Max(50, deadline - Environment.TickCount64)));
+        }
+    }
+
     /// <summary>
     /// Roles the bridge can act on (the Java side offers click/press/toggle
     /// actions for these). Handy to know before spending a job on an invoke.
@@ -262,6 +537,7 @@ public static class Cua
         var window = ResolveWindow(p);
         StealForeground(window);
         Keyboard.Type(text);
+        Step($"type {text.Length} chars");
         return new Dictionary<string, object?> { ["ok"] = true, ["typed_chars"] = text.Length };
     }
 
@@ -279,6 +555,7 @@ public static class Cua
         if (virtualKey is not null) Keyboard.Press(virtualKey.Value);
         else if (key.Length == 1) Keyboard.Type(key);
         else throw new InvalidOperationException($"unknown key '{key}'");
+        Step($"press {string.Join("+", modifiers)}{(virtualKey is not null ? virtualKey.Value.ToString() : key)}");
         for (var i = modifiers.Count - 1; i >= 0; i--) Keyboard.Release(modifiers[i]);
 
         return new Dictionary<string, object?> { ["ok"] = true, ["key"] = key };
@@ -294,6 +571,7 @@ public static class Cua
         StealForeground(window);
         Mouse.Position = new System.Drawing.Point(x, y);
         Mouse.Scroll(ticks);
+        Step($"scroll {ticks} at {x},{y}");
         return new Dictionary<string, object?>
         {
             ["ok"] = true,
@@ -722,7 +1000,7 @@ public static class Cua
     /// clipboard_get: read the clipboard. This is the extraction path for apps
     /// that expose no usable UIA tree (select-all + copy, then read here).
     /// </summary>
-    private static Dictionary<string, object?> ClipboardGet()
+    private static Dictionary<string, object?> ClipboardGet(JsonElement p)
     {
         Dictionary<string, object?>? result = null;
         Exception? captured = null;
@@ -736,11 +1014,26 @@ public static class Cua
                     var text = System.Windows.Forms.Clipboard.ContainsText()
                         ? System.Windows.Forms.Clipboard.GetText()
                         : "";
+                    var hasImage = System.Windows.Forms.Clipboard.ContainsImage();
+                    var imageBase64 = "";
+                    if (hasImage && Fs.ReadBool(p, "include_image"))
+                    {
+                        using var image = System.Windows.Forms.Clipboard.GetImage();
+                        if (image is not null)
+                        {
+                            using var ms = new MemoryStream();
+                            image.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                            imageBase64 = Convert.ToBase64String(ms.ToArray());
+                        }
+                    }
                     result = new Dictionary<string, object?>
                     {
                         ["ok"] = true,
                         ["has_text"] = text.Length > 0,
                         ["chars"] = text.Length,
+                        ["has_image"] = hasImage,
+                        ["image_base64"] = imageBase64,
+                        ["image_chars"] = imageBase64.Length,
                         ["text"] = text,
                     };
                     return;
@@ -855,6 +1148,7 @@ public static class Cua
 
         foreach (var modifier in modifiers) Keyboard.Press(modifier);
         Keyboard.Press(final.Value);
+        Step($"hotkey {string.Join("+", modifiers)}{final.Value}");
         Keyboard.Release(final.Value);
         for (var i = modifiers.Count - 1; i >= 0; i--) Keyboard.Release(modifiers[i]);
 

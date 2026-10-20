@@ -31,6 +31,14 @@ public static class Program
             if (!AttachConsole(-1)) AllocConsole();
         }
 
+        // The watchdog is the same executable with --watchdog: it watches
+        // the agent and starts it again when it dies.
+        if (args.Watchdog)
+        {
+            Log.SetFile(Settings.DefaultLogFile());
+            return Watchdog.Run();
+        }
+
         var settings = Settings.Load(args);
         Log.SetFile(settings.LogFile);
 
@@ -54,6 +62,11 @@ public static class Program
             }
         }
         Log.Info("rc-agent starting", new { version = Versions.Current, name = settings.Name, server = settings.ServerUrl });
+
+        // Somebody has to bring the agent back when it dies: the watchdog is
+        // that somebody. It is started here and stops when the agent is
+        // closed on purpose.
+        Watchdog.Start(argv, !args.NoWatchdog);
         if (settings.UsingDefaultToken) Log.Warn("using the default dev token; pass --token or set MRC_TOKEN");
 
         AutoUpdate.Enabled = !args.NoAutoUpdate;
@@ -84,7 +97,11 @@ public static class Program
         if (trayWanted)
         {
             tray = new Tray(connection);
-            tray.OnExitRequested += () => Environment.Exit(0);
+            tray.OnExitRequested += () =>
+            {
+                Watchdog.AskStop();
+                Environment.Exit(0);
+            };
             // New settings only take effect on a fresh process: restart in place.
             SettingsForm.RestartRequested += () =>
             {

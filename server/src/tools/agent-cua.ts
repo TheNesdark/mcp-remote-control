@@ -56,14 +56,28 @@ interface CuaArgsBag {
   from_automation_id?: string;
   to_name?: string;
   to_automation_id?: string;
+  jab_index?: number;
+  /** "off" skips the Java Access Bridge for this call. */
+  bridge?: string;
+  /** Where to read a value from. */
+  width?: number;
+  height?: number;
+  /** Images (base64 PNG) for the clipboard. */
+  image_base64?: string;
+  /** Local files to put in the clipboard. */
+  paths?: string[];
+  /** Java element to wait for. */
+  timeout_ms?: number;
+  poll_ms?: number;
+  until_gone?: boolean;
 }
 
 /** Strip the routing fields: the remaining args go verbatim to the sidecar CLI. */
-function cuaArgs(args: object): Record<string, string | number | boolean> {
-  const out: Record<string, string | number | boolean> = {};
+function cuaArgs(args: object): Record<string, string | number | boolean | string[]> {
+  const out: Record<string, string | number | boolean | string[]> = {};
   for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
     if (key === "agent" || key === "timeoutMs" || value === undefined || value === null) continue;
-    out[key] = value as string | number | boolean;
+    out[key] = value as string | number | boolean | string[];
   }
   return out;
 }
@@ -96,6 +110,13 @@ function registerCuaJobTool(
         jobId: outcome.jobId,
         ...(outcome.meta ?? {}),
       }),
+      // The agent reports failures with a code and a hint; they are more
+      // useful than the bare message.
+      buildFailure: (outcome) => {
+        const meta = (outcome.meta ?? {}) as { error?: unknown; steps?: unknown };
+        if (meta.error) return { ok: false, error: meta.error, steps: meta.steps ?? [] };
+        return { ok: false, error: outcome.error ?? `${def.sidecarTool} failed` };
+      },
     },
   });
 }
@@ -109,6 +130,14 @@ export function registerAgentCuaTools(
   opts: { screenshotDir: string; screenshotBaseUrl?: string },
 ): void {
   const timeoutSchema = z.number().int().positive().max(TIMEOUT_MAX).optional().describe("Sidecar/job timeout in ms.");
+  const bridgeSchema = z
+    .enum(["on", "off"])
+    .optional()
+    .describe(
+      "Set to 'off' to skip the Java Access Bridge for this call. Some applications crash the JVM when " +
+        "the bridge walks their tree; with 'off' the agent uses UIA3 and coordinates only.",
+    );
+
   const confirmSchema = z.boolean().describe(CONFIRM_HINT);
   const targetError = (args: object): string | null => {
     const a = args as { window_id?: number; pid?: number };
@@ -140,6 +169,7 @@ export function registerAgentCuaTools(
     inputSchema: {
       agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
       window_id: windowIdSchema,
+      bridge: bridgeSchema,
       pid: pidSchema,
       max_elements: z.number().int().min(10).max(300).optional().describe("Element cap (default 80)."),
       include_screenshot: z.boolean().optional().describe("Also capture the window as a PNG."),
@@ -260,6 +290,7 @@ export function registerAgentCuaTools(
   // -- element-oriented (FlaUI): find/invoke/set_value/wait_for/table_read -----
 
   const elementCriteria = {
+    bridge: bridgeSchema,
     name: z.string().max(256).optional().describe("Substring of the element name (case-insensitive)."),
     automation_id: z.string().max(256).optional().describe("Substring of the AutomationId."),
     class_name: z.string().max(256).optional().describe("Substring of the window class name."),
@@ -411,9 +442,82 @@ export function registerAgentCuaTools(
       "usable UIA tree: select everything and copy inside the app, then read the content here. Read-only.",
     inputSchema: {
       agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
+      include_image: z.boolean().optional().describe("Also return the image of the clipboard, as base64 PNG."),
       timeoutMs: timeoutSchema,
     },
     sidecarTool: "clipboard_get",
+  });
+
+  registerCuaJobTool(server, hub, audit, {
+    name: "agent_cua_clipboard_set_image",
+    title: "Put an image in the clipboard (CUA engine)",
+    description:
+      "Puts an image (base64 PNG) in the clipboard, so an application can paste it. Requires confirm: true.",
+    inputSchema: {
+      agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
+      image_base64: z.string().max(20_000_000).describe("The image, as base64 PNG."),
+      confirm: confirmSchema,
+      timeoutMs: timeoutSchema,
+    },
+    sidecarTool: "clipboard_set_image",
+    validate: (args) => (args.confirm ? null : "requires confirm: true"),
+  });
+
+  registerCuaJobTool(server, hub, audit, {
+    name: "agent_cua_clipboard_set_files",
+    title: "Put files in the clipboard (CUA engine)",
+    description:
+      "Puts local files in the clipboard the way the explorer does it, so an application can paste them. " +
+      "Requires confirm: true.",
+    inputSchema: {
+      agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
+      paths: z.array(z.string().max(1024)).min(1).describe("Paths of the files, on the agent's machine."),
+      confirm: confirmSchema,
+      timeoutMs: timeoutSchema,
+    },
+    sidecarTool: "clipboard_set_files",
+    validate: (args) => (args.confirm ? null : "requires confirm: true"),
+  });
+
+  registerCuaJobTool(server, hub, audit, {
+    name: "agent_cua_read_value",
+    title: "Read the value of a field (CUA engine)",
+    description:
+      "Reads what a field holds. A Java field does not expose its text (the bridge can only write), so the " +
+      "agent focuses it, selects everything, copies and reads the clipboard, putting back whatever was there " +
+      "before. Point it at the field with x/y or with the element criteria. Requires confirm: true.",
+    inputSchema: {
+      agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
+      x: z.number().int().optional().describe("X of the field to read (absolute screen pixels)."),
+      y: z.number().int().optional().describe("Y of the field to read (absolute screen pixels)."),
+      ...elementCriteria,
+      window_id: windowIdSchema,
+      pid: pidSchema,
+      confirm: confirmSchema,
+      timeoutMs: timeoutSchema,
+    },
+    sidecarTool: "read_value",
+    validate: (args) => (args.confirm ? null : "requires confirm: true"),
+  });
+
+  registerCuaJobTool(server, hub, audit, {
+    name: "agent_cua_jab_wait_for",
+    title: "Wait for an element of a Java application (CUA engine)",
+    description:
+      "Blocks until an element of a Java application appears (default) or disappears (until_gone: true). " +
+      "The UIA wait_for cannot see Swing applications, this one goes through the Java Access Bridge. Read-only.",
+    inputSchema: {
+      agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
+      name: z.string().max(256).optional().describe("Substring of the element name."),
+      window_id: windowIdSchema,
+      bridge: bridgeSchema,
+      pid: pidSchema,
+      timeout_ms: z.number().int().min(200).max(120_000).optional().describe("Wait budget in ms (default 15000)."),
+      until_gone: z.boolean().optional().describe("Wait for the element to disappear instead."),
+      poll_ms: z.number().int().min(100).max(5000).optional().describe("Poll interval (default 400)."),
+      timeoutMs: timeoutSchema,
+    },
+    sidecarTool: "jab_wait_for",
   });
 
   registerCuaJobTool(server, hub, audit, {

@@ -54,8 +54,9 @@ public static class Record
         var seconds = Math.Clamp(Fs.ReadInt(p, "duration_sec") ?? 10, 1, 60);
         var fps = Math.Clamp(Fs.ReadInt(p, "fps") ?? 4, 1, 10);
 
-        var width = ScreenWidth();
-        var height = ScreenHeight();
+        var area = TargetArea(p);
+        var width = area.Width;
+        var height = area.Height;
         var ffmpeg = FindFfmpeg();
         var split = seconds > SplitMinSec;
         var frameDir = Path.Combine(Path.GetTempPath(), $"mrc-rec-frames-{Guid.NewGuid():N}");
@@ -63,7 +64,7 @@ public static class Record
         var outPath = Path.Combine(Path.GetTempPath(),
             $"mrc-rec-{DateTime.Now:yyyyMMdd-HHmmss}{(ffmpeg is not null ? ".mp4" : ".avi")}");
 
-        var frameCount = await Task.Run(() => CaptureFrames(frameDir, seconds, fps, width, height, ct), ct).ConfigureAwait(false);
+        var frameCount = await Task.Run(() => CaptureFrames(frameDir, seconds, fps, area, ct), ct).ConfigureAwait(false);
         if (frameCount == 0) return JobOutcome.Failure("captured zero frames");
 
         if (!split)
@@ -148,8 +149,9 @@ public static class Record
     {
         RequireConfirm(p);
         var fps = Math.Clamp(Fs.ReadInt(p, "fps") ?? 4, 1, 10);
-        var width = ScreenWidth();
-        var height = ScreenHeight();
+        var area = TargetArea(p);
+        var width = area.Width;
+        var height = area.Height;
         var ffmpeg = FindFfmpeg();
         var frameDir = Path.Combine(Path.GetTempPath(), $"mrc-rec-open-frames-{Guid.NewGuid():N}");
         Directory.CreateDirectory(frameDir);
@@ -170,7 +172,7 @@ public static class Record
             _openFrames = 0;
             _openCts = new CancellationTokenSource();
             var token = _openCts.Token;
-            _openTask = Task.Run(() => CaptureLoop(frameDir, fps, width, height, token), token);
+            _openTask = Task.Run(() => CaptureLoop(frameDir, fps, area, token), token);
         }
 
         return JobOutcome.Success(new Dictionary<string, object?>
@@ -185,7 +187,7 @@ public static class Record
         });
     }
 
-    private static void CaptureLoop(string frameDir, int fps, int width, int height, CancellationToken ct)
+    private static void CaptureLoop(string frameDir, int fps, ScreenGeometry.Area area, CancellationToken ct)
     {
         var perMs = Math.Max(1, 1000 / fps);
         var sw = Stopwatch.StartNew();
@@ -194,11 +196,11 @@ public static class Record
         {
             try
             {
-                using (var frame = new Bitmap(width, height, PixelFormat.Format24bppRgb))
+                using (var frame = new Bitmap(area.Width, area.Height, PixelFormat.Format24bppRgb))
                 {
                     using (var graphics = Graphics.FromImage(frame))
                     {
-                        graphics.CopyFromScreen(0, 0, 0, 0, frame.Size, CopyPixelOperation.SourceCopy);
+                        graphics.CopyFromScreen(area.X, area.Y, 0, 0, frame.Size, CopyPixelOperation.SourceCopy);
                     }
                     frame.Save(Path.Combine(frameDir, i.ToString("D6") + ".jpg"), ImageFormat.Jpeg);
                 }
@@ -416,7 +418,7 @@ public static class Record
 
     // ------------------------------------------------------------ frame capture
 
-    private static int CaptureFrames(string frameDir, int seconds, int fps, int width, int height, CancellationToken ct)
+    private static int CaptureFrames(string frameDir, int seconds, int fps, ScreenGeometry.Area area, CancellationToken ct)
     {
         var total = seconds * fps;
         var perMs = Math.Max(1, 1000 / fps);
@@ -425,11 +427,11 @@ public static class Record
         var captured = 0;
         for (var i = 0; i < total && !ct.IsCancellationRequested; i++)
         {
-            using (var frame = new Bitmap(width, height, PixelFormat.Format24bppRgb))
+            using (var frame = new Bitmap(area.Width, area.Height, PixelFormat.Format24bppRgb))
             {
                 using (var graphics = Graphics.FromImage(frame))
                 {
-                    graphics.CopyFromScreen(0, 0, 0, 0, frame.Size, CopyPixelOperation.SourceCopy);
+                    graphics.CopyFromScreen(area.X, area.Y, 0, 0, frame.Size, CopyPixelOperation.SourceCopy);
                 }
                 frame.Save(Path.Combine(frameDir, i.ToString("D6") + ".jpg"), ImageFormat.Jpeg);
             }
@@ -635,6 +637,27 @@ public static class Record
 
     [DllImport("user32.dll")]
     private static extern int GetSystemMetrics(int index);
+
+    /// <summary>
+    /// What the recorder is going to capture: the whole desktop (all the
+    /// monitors, with the origin it really has), one window, or a region.
+    /// </summary>
+    private static ScreenGeometry.Area TargetArea(JsonElement p)
+    {
+        var hwnd = Fs.ReadInt(p, "window_id");
+        if (hwnd is not null)
+        {
+            var rect = ScreenGeometry.RectOf(hwnd.Value);
+            if (rect.Width > 0 && rect.Height > 0) return rect;
+        }
+        var x = Fs.ReadInt(p, "x");
+        var y = Fs.ReadInt(p, "y");
+        var w = Fs.ReadInt(p, "width");
+        var h = Fs.ReadInt(p, "height");
+        if (x is not null && y is not null && w is not null && h is not null && w > 0 && h > 0)
+            return new ScreenGeometry.Area(x.Value, y.Value, w.Value, h.Value);
+        return ScreenGeometry.Virtual();
+    }
 
     private static int ScreenWidth() => GetSystemMetrics(0);
     private static int ScreenHeight() => GetSystemMetrics(1);

@@ -99,6 +99,14 @@ function sidecarMeta(msg: JobRequestMsg): Record<string, unknown> {
       };
     case "clipboard_set":
       return { chars: 12 };
+    case "clipboard_set_image":
+      return { bytes: 2048 };
+    case "clipboard_set_files":
+      return { files: ["C:\\temp\\informe.pdf"] };
+    case "read_value":
+      return { ok: true, via: "clipboard", value: "Listado de ordenes", chars: 18, restored_clipboard: true };
+    case "jab_wait_for":
+      return { ok: true, present: true, waited_ms: 420, element: { name: "Informes PyP", role: "label", index: 12, path: "0/3/1" } };
     case "clipboard_get":
       return { has_text: true, chars: 21, text: "FACT-2026-0001  |  1250.00" };
     case "window":
@@ -651,4 +659,92 @@ test("agent_cua_record rejects an unknown operation", async () => {
   const result = await call("agent_cua_record", { agent: "W-CUA-01", operation: "bogus", confirm: true });
   expect(result.isError).toBe(true);
   expect(started.jobs.length).toBe(0);
+});
+
+
+test("the new agent_cua tools are registered", async () => {
+  const started = await start();
+  const tools = (await started.client.listTools()).tools.map((tool) => tool.name);
+  for (const name of [
+    "agent_cua_read_value",
+    "agent_cua_jab_wait_for",
+    "agent_cua_clipboard_set_image",
+    "agent_cua_clipboard_set_files",
+  ]) {
+    expect(tools).toContain(name);
+  }
+});
+
+test("agent_cua_read_value reads the field and restores the clipboard", async () => {
+  const started = await start();
+  const result = await call("agent_cua_read_value", { agent: "W-CUA-01", x: 495, y: 236, confirm: true });
+  expect(result.isError).toBe(false);
+  expect(started.jobs[0]).toMatchObject({ jobType: "cua", params: { tool: "read_value" } });
+  expect(result.data.value).toBe("Listado de ordenes");
+  expect(result.data.restored_clipboard).toBe(true);
+});
+
+test("agent_cua_read_value needs the confirmation", async () => {
+  const started = await start();
+  const result = await call("agent_cua_read_value", { agent: "W-CUA-01", x: 495, y: 236 });
+  expect(result.isError).toBe(true);
+  expect(started.jobs.length).toBe(0);
+});
+
+test("agent_cua_jab_wait_for waits for a Java element", async () => {
+  const started = await start();
+  const result = await call("agent_cua_jab_wait_for", { agent: "W-CUA-01", name: "Informes PyP", window_id: 101 });
+  expect(result.isError).toBe(false);
+  expect(started.jobs[0]).toMatchObject({ jobType: "cua", params: { tool: "jab_wait_for" } });
+  expect(result.data.present).toBe(true);
+  expect(result.data.element.path).toBe("0/3/1");
+});
+
+test("the bridge can be switched off for a call", async () => {
+  const started = await start();
+  await call("agent_cua_get_window_state", { agent: "W-CUA-01", window_id: 101, bridge: "off" });
+  const params = started.jobs[0]?.params as { args: Record<string, unknown> };
+  expect(params.args.bridge).toBe("off");
+});
+
+test("a structured error from the agent reaches the caller", async () => {
+  const started = await start();
+  // The agent answers with the code and the hint it built.
+  started.agent.stop();
+  const service = createService(testServerConfig(TOKEN));
+  const screenshotDir = await mkdtempSync(join(tmpdir(), "mrc-cua-err-"));
+  const agent = new FakeAgent({
+    url: `ws://127.0.0.1:${service.port}`,
+    token: TOKEN,
+    name: "W-ERR-01",
+    os: "Windows_NT 10.0.19045",
+    onLog: () => {},
+    respond: () => ({
+      ok: false,
+      error: "the Java application is no longer running",
+      meta: {
+        ok: false,
+        error: { code: "jvm_died", message: "the Java application is no longer running", hint: "look for hs_err_pid*.log" },
+      },
+    }),
+  });
+  await agent.start();
+  const handler = createMcpHttpHandler(service.hub, { version: "test", screenshotDir, audit: service.audit, bearerToken: TOKEN });
+  httpServer = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+  const client = new Client({ name: "cua-err-test", version: "0.0.0" });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${httpServer.port}/mcp`), {
+      requestInit: { headers: { authorization: `Bearer ${TOKEN}` } },
+    }),
+  );
+  const result = await client.callTool({ name: "agent_cua_get_window_state", arguments: { agent: "W-ERR-01", window_id: 101 } });
+  const text = (result.content as Array<{ type: string; text?: string }>).find((item) => item.type === "text")?.text ?? "";
+  const data = JSON.parse(text);
+  expect(result.isError).toBe(true);
+  expect(data.error.code).toBe("jvm_died");
+  expect(data.error.hint).toContain("hs_err");
+  agent.stop();
+  service.close();
+  await rmSync(screenshotDir, { recursive: true, force: true });
+  await client.close();
 });

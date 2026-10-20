@@ -89,6 +89,7 @@ public sealed class JobManager
         Register("record", Record.JobRecord);
         Register("record.status", Record.JobStatus);
         Register("diagnose", Diagnose.Job);
+        Register("settings", SettingsJob.Job);
     }
 
     public void HandleRequest(JobRequestMsg msg)

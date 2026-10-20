@@ -311,3 +311,49 @@ When a bridge call fails, `agent_diagnose` says whether the application is
 still alive; "the Java application is no longer running" means the JVM died,
 and `hs_err_pid*.log` next to the jar explains why.
 
+
+### The watchdog
+
+The agent is started by the user (HKCU Run key) and by the installer, but
+nothing used to bring it back when it died: a crash left the machine
+unreachable until somebody walked to it. The agent now starts a **watchdog**,
+a second copy of the same executable with `--watchdog` that
+
+- watches the pid of the agent (written in `agent.pid` in the agent's
+  directory) and starts it again when it is gone;
+- waits 8 seconds before doing so, because an update replaces the executable
+  and starts the new one: the agent is alive, with another pid;
+- stops when the agent is closed on purpose (the tray writes
+  `watchdog.stop`), and never opens a window;
+- needs no scheduled task and no administrator rights.
+
+`agent_diagnose` says whether the watchdog is running. `--no-watchdog` turns
+it off.
+
+### New tools
+
+| Tool | What it does |
+| --- | --- |
+| `agent_diagnose` | One call with the state of the agent, the bridge, the Java windows, the recording and the last log lines. |
+| `agent_settings` | Reads and writes the name, the hub, the token and the autostart of the agent from the outside. The token is never returned in full. |
+| `agent_cua_read_value` | Reads what a field holds (focus, select, copy, read the clipboard, put the clipboard back). The only way to read a Java field. |
+| `agent_cua_jab_wait_for` | Waits for an element of a Java application; the UIA `wait_for` cannot see Swing. |
+| `agent_cua_clipboard_set_image` | Puts an image in the clipboard. |
+| `agent_cua_clipboard_set_files` | Puts files in the clipboard, the way the explorer does it. |
+
+Every CUA call accepts `bridge: "off"` to skip the Java Access Bridge for
+that call (some applications crash the JVM when the bridge walks their
+tree), and every call that moves the mouse or the keyboard returns the
+`steps` it did.
+
+### Errors with a code
+
+A failure of the agent now carries a stable code and a hint:
+
+```json
+{"ok": false, "error": {"code": "jvm_died", "message": "...", "hint": "look for hs_err_pid*.log"}}
+```
+
+The codes are `jvm_died`, `bridge_unavailable`, `bridge_hostile`,
+`element_not_found`, `window_not_found`, `timeout`, `invalid_args`,
+`not_supported` and `internal`.

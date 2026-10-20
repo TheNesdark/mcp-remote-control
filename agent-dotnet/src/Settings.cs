@@ -116,6 +116,30 @@ public static class Settings
             LogFile = logFile,
             UsingDefaultToken = token == DevToken,
         };
+
+        // A first run with --name/--server/--token has no configuration file
+        // yet: write it, so the agent can be started again without arguments
+        // (that is what the watchdog does when the agent dies).
+        if (file is null && (args.Name is not null || args.Server is not null || args.Token is not null))
+        {
+            try
+            {
+                Save(new ConfigFile
+                {
+                    Name = name,
+                    Server = server,
+                    Tags = tags,
+                    TokenProtected = token == DevToken ? null : Dpapi.Protect(token),
+                    Id = args.Id,
+                });
+                Log.Info("the configuration was written for the first time", new { path = _configPath });
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("the configuration could not be written", new { error = ex.Message });
+            }
+        }
+
         return _current;
     }
 

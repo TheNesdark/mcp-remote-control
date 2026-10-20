@@ -33,6 +33,7 @@ export const JOB_TYPES = [
   "record",
   "record.status",
   "diagnose",
+  "settings",
 ] as const;
 export const JobType = z.enum(JOB_TYPES);
 export type JobType = z.infer<typeof JobType>;
