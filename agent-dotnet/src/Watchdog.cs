@@ -84,6 +84,7 @@ public static class Watchdog
         var exe = Environment.ProcessPath ?? "";
         Log.Info("watchdog: watching", new { pid = Environment.ProcessId });
 
+        var quickRestarts = 0;
         while (true)
         {
             Thread.Sleep(2000);
@@ -95,7 +96,7 @@ public static class Watchdog
             }
 
             var pid = ReadPid();
-            if (pid > 0 && IsAlive(pid)) continue;
+            if (pid > 0 && IsAlive(pid)) { quickRestarts = 0; continue; }
 
             // The agent is missing. It may be an update in progress, which
             // replaces the executable and starts the new one: give it room
@@ -103,9 +104,21 @@ public static class Watchdog
             Thread.Sleep(GraceMs);
             if (ConsumeStop()) return 0;
             pid = ReadPid();
-            if (pid > 0 && IsAlive(pid)) continue;
+            if (pid > 0 && IsAlive(pid)) { quickRestarts = 0; continue; }
 
-            Log.Warn("watchdog: the agent is not running, starting it again", new { exe });
+            // An agent that dies right after being started is not going to
+            // do better on the next attempt (a token the hub rejects, for
+            // example): after a few of those, stop and say why, instead of
+            // looping forever.
+            quickRestarts++;
+            if (quickRestarts >= MaxQuickRestarts)
+            {
+                Log.Error("watchdog: the agent keeps dying right after starting, not starting it again",
+                    new { attempts = quickRestarts, hint = "look at the last lines of the agent log" });
+                return 0;
+            }
+
+            Log.Warn("watchdog: the agent is not running, starting it again", new { exe, attempt = quickRestarts });
             try
             {
                 var args = ReadArgs();
@@ -123,6 +136,9 @@ public static class Watchdog
             }
         }
     }
+
+    /// <summary>How many times in a row the agent may die right after starting.</summary>
+    private const int MaxQuickRestarts = 3;
 
     /// <summary>Asks the watchdog to stop (the agent is being closed on purpose).</summary>
     public static void AskStop()
@@ -219,12 +235,19 @@ public static class Watchdog
         }
     }
 
+    /// <summary>
+    /// True when the pid belongs to a live agent. The name is checked too:
+    /// Windows reuses pids quickly, and a reused pid would keep the watchdog
+    /// from ever starting the agent again.
+    /// </summary>
     private static bool IsAlive(int pid)
     {
         try
         {
             using var process = Process.GetProcessById(pid);
-            return !process.HasExited;
+            if (process.HasExited) return false;
+            var name = process.ProcessName;
+            return name.StartsWith("rc-agent", StringComparison.OrdinalIgnoreCase);
         }
         catch (ArgumentException)
         {

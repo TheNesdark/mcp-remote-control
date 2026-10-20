@@ -58,18 +58,20 @@ if defined VER (
 )
 
 REM --- 3) autoinicio al iniciar sesion (clave Run del usuario) ---
-REM     Si el equipo ya tiene un agente configurado, se arranca SIN argumentos:
-REM     el agente lee su config (nombre, servidor, token) y asi no se crea un
-REM     agente nuevo con otro nombre. Solo en una instalacion nueva (sin
-REM     config) se pasan los argumentos.
+REM     El nombre sale de la configuracion existente cuando la hay, para no
+REM     crear un segundo agente con otro nombre. Los argumentos se pasan
+REM     siempre: un config con el token cifrado ilegible (copiado de otro
+REM     equipo, por ejemplo) dejaba al agente sin poder conectar.
 set "CFG=%APPDATA%\mcp-remote-control\agent.json"
-set "AGENTARGS="
-if not exist "%CFG%" (
-  set "AGENTARGS=--name %NAME% --server %SERVER% --token %TOKEN%"
-  echo        (instalacion nueva: se usara %NAME%)
+if exist "%CFG%" (
+  for /f "usebackq delims=" %%n in (`powershell -NoProfile -Command "try { (Get-Content '%CFG%' -Raw | ConvertFrom-Json).name } catch { '' }" 2^>nul`) do (
+    if not "%%n"=="" set "NAME=%%n"
+  )
+  echo        (config existente: se usara el nombre %NAME%)
 ) else (
-  echo        (config existente: se respeta su nombre y servidor)
+  echo        (instalacion nueva: se usara %NAME%)
 )
+set "AGENTARGS=--name %NAME% --server %SERVER% --token %TOKEN%"
 
 echo [3/4] Registrando el autoinicio...
 set "RUNCMD=\"%EXE%\""
