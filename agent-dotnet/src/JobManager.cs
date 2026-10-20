@@ -88,6 +88,7 @@ public sealed class JobManager
         Register("browser", BrowserCdp.JobCall);
         Register("record", Record.JobRecord);
         Register("record.status", Record.JobStatus);
+        Register("diagnose", Diagnose.Job);
     }
 
     public void HandleRequest(JobRequestMsg msg)

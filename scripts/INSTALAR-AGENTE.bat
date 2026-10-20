@@ -16,7 +16,10 @@ REM ---------------------------------------------------------------
 set "SH=\\192.168.1.191\Hermes"
 set "DIR=%LOCALAPPDATA%\mrc-remote-control"
 set "EXE=%DIR%\rc-agent.exe"
-set "SRC=%SH%\rc-agent.exe"
+REM   El binario se copia del MISMO archivo que usa el auto-update del hub
+REM   (MRC_AGENT_BINARY_UNC). Con dos archivos en la share uno se queda
+REM   atras y el instalador pone en la maquina una build vieja.
+set "SRC=%SH%\rc-agent-update.exe"
 set "NAME=SERVER-RX"
 set "SERVER=ws://192.168.1.192:8787"
 set "TOKEN=mrc_LajSuZKlZ57FDiI2ohKll0eisXagGTFndEv2GYu7-SY"
@@ -42,7 +45,17 @@ if errorlevel 1 (
   goto fin
 )
 powershell -NoProfile -Command "Unblock-File -Path '%EXE%' -ErrorAction SilentlyContinue" >nul 2>&1
-for /f "tokens=3 delims=." %%a in ('powershell -NoProfile -Command "(Get-Item '%EXE%').VersionInfo.FileVersion" 2^>nul') do echo        version instalada: %%a.%%b.%%c
+
+REM     La version se lee del binario QUE SE ACABA DE COPIAR (no de la
+REM     share): asi se ve de verdad que version quedo instalada. El
+REM     FileVersion es "1.0.31.0"; el ProductVersion, "1.0.31".
+set "VER="
+for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "(Get-Item '%EXE%').VersionInfo.ProductVersion.Split('+')[0]" 2^>nul`) do set "VER=%%v"
+if defined VER (
+  echo        version instalada: %VER%
+) else (
+  echo        AVISO: no se pudo leer la version del binario instalado.
+)
 
 REM --- 3) autoinicio al iniciar sesion (clave Run del usuario) ---
 REM     Si el equipo ya tiene un agente configurado, se arranca SIN argumentos:

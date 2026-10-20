@@ -26,7 +26,7 @@ public static class Protocol
     {
         "exec", "fs.list", "fs.read", "fs.write", "fs.hash", "info",
         "ps.list", "ps.kill", "screenshot", "restart", "cua", "browser",
-        "record", "record.status",
+        "record", "record.status", "diagnose",
     };
 
     /// <summary>Advertised capabilities (mirror of the TS CAPS list).</summary>

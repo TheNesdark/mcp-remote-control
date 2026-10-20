@@ -88,38 +88,47 @@ public static class Cua
 
     private static Dictionary<string, object?> ListWindows()
     {
+        // Win32 instead of UIA3: enumerating the desktop through UIA takes
+        // seconds when a Java application is open (the MSAA proxy talks to the
+        // Java Access Bridge) and the result is the same.
         var windows = new List<Dictionary<string, object?>>();
-        lock (Gate)
+        foreach (var w in Win32.Enumerate())
         {
-            var desktop = Automation.GetDesktop();
-            foreach (var window in desktop.FindAllChildren())
+            if (!w.Visible) continue;
+            if (w.Width < 1 || w.Height < 1) continue;
+            windows.Add(new Dictionary<string, object?>
             {
-                try
+                ["hwnd"] = w.Hwnd,
+                ["pid"] = w.Pid,
+                ["process"] = w.Process,
+                ["class"] = w.Class,
+                ["title"] = w.Title,
+                ["visible"] = w.Visible,
+                ["bounds"] = new Dictionary<string, object?>
                 {
-                    if (window.IsOffscreen) continue;
-                    var rect = window.BoundingRectangle;
-                    if (rect.Width < 1 || rect.Height < 1) continue;
-                    windows.Add(new Dictionary<string, object?>
-                    {
-                        ["hwnd"] = window.Properties.NativeWindowHandle.ValueOrDefault.ToInt64(),
-                        ["pid"] = window.Properties.ProcessId.ValueOrDefault,
-                        ["process"] = ProcessName(window.Properties.ProcessId.ValueOrDefault),
-                        ["class"] = window.ClassName,
-                        ["title"] = window.Name,
-                        ["visible"] = !window.IsOffscreen,
-                        ["bounds"] = Bounds(rect),
-                    });
-                }
-                catch (Exception)
-                {
-                    // a window can vanish mid-enumeration
-                }
-            }
+                    ["x"] = w.X,
+                    ["y"] = w.Y,
+                    ["width"] = w.Width,
+                    ["height"] = w.Height,
+                },
+            });
         }
         return new Dictionary<string, object?> { ["ok"] = true, ["windows"] = windows };
     }
 
     /// <summary>ControlView tree with role, name, automation id, pid and screen rect.</summary>
+    /// <summary>
+    /// Roles the bridge can act on (the Java side offers click/press/toggle
+    /// actions for these). Handy to know before spending a job on an invoke.
+    /// </summary>
+    private static bool IsActionableRole(string role) =>
+        role.Contains("button", StringComparison.OrdinalIgnoreCase)
+        || role.Contains("link", StringComparison.OrdinalIgnoreCase)
+        || role.Contains("check box", StringComparison.OrdinalIgnoreCase)
+        || role.Contains("menu item", StringComparison.OrdinalIgnoreCase)
+        || role.Contains("combo box", StringComparison.OrdinalIgnoreCase)
+        || role.Contains("tree item", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
     /// True for a Java (AWT/Swing) window. Those expose nothing through
     /// UIA3, so they are read through the Java Access Bridge instead.
@@ -383,6 +392,8 @@ public static class Cua
                         // (a text field is named by the label next to it), so
                         // the tree index is the reliable handle.
                         ["index"] = node.Index,
+                        ["path"] = node.Path,
+                        ["actionable"] = IsActionableRole(node.Role),
                         ["text"] = node.Text,
                     };
                 }
@@ -413,6 +424,25 @@ public static class Cua
     private static Dictionary<string, object?> InvokeElement(JsonElement p)
     {
         RequireConfirm(p, "invoke");
+
+        // Java buttons: the bridge knows their actions, UIA3 does not.
+        var jabIndex = Fs.ReadInt(p, "jab_index");
+        if (jabIndex is not null)
+        {
+            var hwnd = ResolveHwnd(p);
+            if (Win32.IsJavaWindow(hwnd.ToInt64()))
+            {
+                if (JavaAccessBridge.InvokeByIndex(hwnd, jabIndex.Value))
+                    return new Dictionary<string, object?>
+                    {
+                        ["ok"] = true,
+                        ["via"] = "jab",
+                        ["element"] = new Dictionary<string, object?> { ["name"] = Fs.ReadString(p, "name") ?? "" },
+                    };
+                throw new InvalidOperationException(JavaAccessBridge.DescribeFailure(hwnd));
+            }
+        }
+
         var target = ResolveElement(p);
         StealForeground(target);
 
@@ -423,7 +453,6 @@ public static class Cua
         {
             var jabName = Fs.ReadString(p, "name");
             var jabClass = Fs.ReadString(p, "class_name");
-            var jabIndex = Fs.ReadInt(p, "jab_index");
             var jabDone = jabIndex is not null
                 ? JavaAccessBridge.InvokeByIndex(javaWindow, jabIndex.Value)
                 : JavaAccessBridge.Invoke(javaWindow, jabName, jabClass);
@@ -441,6 +470,8 @@ public static class Cua
                     },
                 };
             }
+            if (!JavaAccessBridge.TargetAlive(javaWindow))
+                throw new InvalidOperationException(JavaAccessBridge.DescribeFailure(javaWindow));
         }
 
         var via = "invoke";
@@ -474,6 +505,26 @@ public static class Cua
     {
         RequireConfirm(p, "set_value");
         var value = Fs.ReadString(p, "value") ?? throw new InvalidOperationException("set_value requires 'value'");
+
+        // A Java field is addressed by its index in the bridge tree: UIA3
+        // cannot see Swing at all, so there is no element to resolve first.
+        var jabIndex = Fs.ReadInt(p, "jab_index");
+        if (jabIndex is not null)
+        {
+            var hwnd = ResolveHwnd(p);
+            if (Win32.IsJavaWindow(hwnd.ToInt64()))
+            {
+                if (JavaAccessBridge.SetTextByIndex(hwnd, jabIndex.Value, value))
+                    return new Dictionary<string, object?>
+                    {
+                        ["ok"] = true,
+                        ["via"] = "jab",
+                        ["chars"] = value.Length,
+                    };
+                throw new InvalidOperationException(JavaAccessBridge.DescribeFailure(hwnd));
+            }
+        }
+
         var target = ResolveElement(p);
 
         try
@@ -496,7 +547,6 @@ public static class Cua
         var jabWindow = new IntPtr(target.Properties.NativeWindowHandle.ValueOrDefault.ToInt64());
         if (jabWindow != IntPtr.Zero)
         {
-            var jabIndex = Fs.ReadInt(p, "jab_index");
             var jabName = Fs.ReadString(p, "name");
             var jabClass = Fs.ReadString(p, "class_name");
             var done = jabIndex is not null
@@ -1027,6 +1077,24 @@ public static class Cua
     }
 
     /// <summary>Targets a window by hwnd, or the pid's biggest window, or the desktop.</summary>
+    /// <summary>
+    /// The HWND a call refers to, without going through UIA3. Java windows are
+    /// invisible to UIA3 and a desktop enumeration with them open is slow, so
+    /// this path is the one the bridge uses.
+    /// </summary>
+    private static IntPtr ResolveHwnd(JsonElement p)
+    {
+        var hwnd = Fs.ReadInt(p, "window_id");
+        if (hwnd is not null) return new IntPtr(hwnd.Value);
+        var pid = Fs.ReadInt(p, "pid");
+        if (pid is not null)
+        {
+            var best = Win32.BiggestForPid(pid.Value);
+            if (best is not null) return new IntPtr(best.Hwnd);
+        }
+        throw new InvalidOperationException("provide window_id (from agent_cua_list_windows) or pid");
+    }
+
     private static AutomationElement ResolveWindow(JsonElement p)
     {
         var hwnd = Fs.ReadInt(p, "window_id");

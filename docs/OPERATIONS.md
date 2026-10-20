@@ -269,6 +269,45 @@ Publishing a new agent version:
 # 4. agents pick it up on their next reconnect (no env vars to touch).
 ```
 
-Agents still running an older build pick it up on their next reconnect; new
-ones get it at first start. With Dokploy: redeploy after bumping the version
-in `shared/version.ts`.
+`scripts/deploy-hub.sh` does all of it (publish the agent, upload it to the
+share and redeploy the hub), with the order that matters: **the binary on the
+share first, the hub afterwards**. The agent refuses an update whose version
+is not exactly the one the hub announces, so a share ahead of the hub is not
+picked up, and a share behind it is rejected.
+
+### One binary on the share
+
+`MRC_AGENT_BINARY_UNC` points at `\\192.168.1.191\Hermes\rc-agent-update.exe`
+and `scripts/INSTALAR-AGENTE.bat` copies **the same file**. Keep it that way:
+with two files on the share one of them stays behind and the installer puts an
+old build on the machine. The installer prints the version it copied, read
+from the file that was just written.
+
+### Deploying the hub (Dokploy)
+
+Use **application.deploy**, not application.redeploy: `redeploy` reuses the
+clone Dokploy made earlier and can deploy an old commit, which shows up as a
+hub that announces a version that is not in the repository. `deploy` clones
+again.
+
+There is no GitHub webhook for this repository (the hub lives on the LAN and
+GitHub cannot reach it), so `autoDeploy` on push never fires: the deploy is
+always manual.
+
+### The Java Access Bridge is powerful and fragile
+
+Swing applications are invisible to UIA3, so the agent reads them through the
+Java Access Bridge. Two rules keep that from taking the application down:
+
+- the JDK copies `count - startIndex` children into the caller's buffer and
+  fills a 256 entry array on its own stack, so a node with more visible
+  children than that overflows the stack of the JVM and kills it (an access
+  violation in `jvm.dll`). Nodes that big are skipped and logged;
+- every walk has a budget (nodes, depth and wall clock) and only one job at a
+  time is inside the bridge: the AT thread stops broadcasting while a job is
+  using the DLL.
+
+When a bridge call fails, `agent_diagnose` says whether the application is
+still alive; "the Java application is no longer running" means the JVM died,
+and `hs_err_pid*.log` next to the jar explains why.
+

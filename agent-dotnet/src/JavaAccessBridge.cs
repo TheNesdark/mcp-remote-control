@@ -45,11 +45,75 @@ public static class JavaAccessBridge
 
     private static readonly object Gate = new();
     private static IntPtr _dll;
+    private static string? _libraryPath;
     private static IntPtr _info;
     private static IntPtr _visible;
     private static IntPtr _message;
     private static Thread? _atThread;
     private static volatile bool _atRun;
+
+    /// <summary>
+    /// Number of jobs currently talking to the bridge. The AT thread stops
+    /// broadcasting the hello while a job is inside the DLL: the broadcast and
+    /// a tree walk at the same time make the JVM's bridge thread mishandle the
+    /// requests and take the application down with it.
+    /// </summary>
+    private static int _busy;
+
+    /// <summary>
+    /// Processes whose application died while the bridge was talking to it.
+    /// The JDK side is not robust against every tree, so after an accident the
+    /// bridge is not used again with that process for a while: the agent falls
+    /// back to UIA3 and coordinates instead of killing the application again.
+    /// </summary>
+    private static readonly Dictionary<string, long> HostileProcesses = new(StringComparer.OrdinalIgnoreCase);
+
+    private const int HostileMs = 30 * 60 * 1000;
+
+    private static void NoteHostile(IntPtr hwnd)
+    {
+        try
+        {
+            var name = Win32.ProcessOf(hwnd.ToInt64());
+            if (string.IsNullOrEmpty(name)) return;
+            lock (Gate) HostileProcesses[name] = Environment.TickCount64 + HostileMs;
+            Log.Warn("jab: the bridge took the application down, not using it with this process for a while",
+                new { process = name, minutes = HostileMs / 60000 });
+        }
+        catch (Exception)
+        {
+            // best effort
+        }
+    }
+
+    /// <summary>True when the bridge already had an accident with this process.</summary>
+    public static bool IsHostile(IntPtr hwnd)
+    {
+        try
+        {
+            var name = Win32.ProcessOf(hwnd.ToInt64());
+            if (string.IsNullOrEmpty(name)) return false;
+            lock (Gate)
+            {
+                if (!HostileProcesses.TryGetValue(name, out var until)) return false;
+                if (Environment.TickCount64 > until)
+                {
+                    HostileProcesses.Remove(name);
+                    return false;
+                }
+                return true;
+            }
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Default budget for a walk: nodes, depth and wall clock.</summary>
+    public const int DefaultMaxNodes = 1500;
+    public const int DefaultMaxDepth = 10;
+    public const int DefaultMaxMillis = 4000;
 
     // ---- native interop -------------------------------------------------
 
@@ -67,6 +131,7 @@ public static class JavaAccessBridge
 
     [DllImport(DllName)] private static extern void Windows_run();
     [DllImport(DllName)] private static extern bool isJavaWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hwnd);
     [DllImport(DllName)] private static extern bool getAccessibleContextFromHWND(IntPtr hwnd, out long vmId, out long context);
     [DllImport(DllName)] private static extern bool getAccessibleContextInfo(long vmId, long context, IntPtr info);
     [DllImport(DllName)] private static extern int getVisibleChildrenCount(long vmId, long context);
@@ -82,20 +147,66 @@ public static class JavaAccessBridge
     /// <summary>True when the bridge is loaded and a Java window is reachable.</summary>
     public static bool IsAvailable(IntPtr hwnd) => Connect(hwnd);
 
+    /// <summary>True when the bridge library is loaded in this process.</summary>
+    public static bool Loaded => _dll != IntPtr.Zero;
+
+    /// <summary>Path of the bridge library in use, empty when it is not loaded.</summary>
+    public static string? BridgeLibraryPath => _libraryPath;
+
+    /// <summary>
+    /// True while the Java window (and with it the JVM) is still there. A
+    /// bridge call that fails on a window that no longer exists means the
+    /// application died, not that the element was not found.
+    /// </summary>
+    public static bool TargetAlive(IntPtr hwnd) => hwnd != IntPtr.Zero && IsWindow(hwnd);
+
+    /// <summary>
+    /// Why a bridge call did not work. When the Java window is gone the JVM
+    /// died (a crash of the bridge is the usual reason) and saying so is more
+    /// useful than an empty error.
+    /// </summary>
+    public static string DescribeFailure(IntPtr hwnd)
+    {
+        if (TargetAlive(hwnd)) return "the Java Access Bridge did not answer for that element";
+        NoteHostile(hwnd);
+        return "the Java application is no longer running (the JVM exited; look for hs_err_pid*.log next to the jar)";
+    }
+
+    /// <summary>
+    /// Runs a block that talks to the bridge. Only one job at a time is inside
+    /// the DLL, and the AT thread knows there is work in flight.
+    /// </summary>
+    private static T UseBridge<T>(Func<T> work)
+    {
+        Interlocked.Increment(ref _busy);
+        try
+        {
+            lock (Gate) return work();
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _busy);
+        }
+    }
+
     /// <summary>
     /// The component tree of a Java window: role, name and screen bounds of every
     /// visible node. Empty when the window is not a Java window.
     /// </summary>
-    public static List<JabNode> ReadTree(IntPtr hwnd, int maxDepth = 12, int maxNodes = 4000)
+    public static List<JabNode> ReadTree(
+        IntPtr hwnd,
+        int maxDepth = DefaultMaxDepth,
+        int maxNodes = DefaultMaxNodes,
+        int maxMillis = DefaultMaxMillis)
     {
         var nodes = new List<JabNode>();
         if (!Connect(hwnd)) return nodes;
-        lock (Gate)
+        return UseBridge(() =>
         {
             if (!getAccessibleContextFromHWND(hwnd, out var vmId, out var context) || context == 0) return nodes;
-            Walk(vmId, context, 0, maxDepth, maxNodes, nodes);
-        }
-        return nodes;
+            Walk(vmId, context, 0, maxDepth, maxNodes, Environment.TickCount64 + maxMillis, nodes);
+            return nodes;
+        });
     }
 
     /// <summary>
@@ -106,7 +217,7 @@ public static class JavaAccessBridge
     {
         var hits = new List<JabNode>();
         if (!Connect(hwnd)) return hits;
-        foreach (var node in ReadTree(hwnd))
+        foreach (var node in ReadTree(hwnd, DefaultMaxDepth, DefaultMaxNodes, DefaultMaxMillis))
         {
             if (hits.Count >= max) break;
             if (name is not null && !Contains(node.Name, name)) continue;
@@ -158,11 +269,11 @@ public static class JavaAccessBridge
     public static bool SetText(IntPtr hwnd, string? name, string? className, string value)
     {
         if (!Connect(hwnd)) return false;
-        lock (Gate)
+        return UseBridge(() =>
         {
             if (!getAccessibleContextFromHWND(hwnd, out var vmId, out var root)) return false;
             return SetTextDeep(vmId, root, name, className, value, 0);
-        }
+        });
     }
 
     /// <summary>
@@ -199,11 +310,11 @@ public static class JavaAccessBridge
     public static bool Invoke(IntPtr hwnd, string? name, string? className)
     {
         if (!Connect(hwnd)) return false;
-        lock (Gate)
+        return UseBridge(() =>
         {
             if (!getAccessibleContextFromHWND(hwnd, out var vmId, out var root)) return false;
             return InvokeDeep(vmId, root, name, className, 0);
-        }
+        });
     }
 
     private static bool InvokeDeep(long vmId, long context, string? name, string? className, int depth)
@@ -268,12 +379,12 @@ public static class JavaAccessBridge
     public static bool SetTextByIndex(IntPtr hwnd, int index, string value)
     {
         if (!Connect(hwnd)) return false;
-        lock (Gate)
+        return UseBridge(() =>
         {
             if (!getAccessibleContextFromHWND(hwnd, out var vmId, out var root)) return false;
             var counter = 0;
             return SetTextAt(vmId, root, index, value, 0, ref counter);
-        }
+        });
     }
 
     /// <summary>
@@ -306,12 +417,12 @@ public static class JavaAccessBridge
     public static bool InvokeByIndex(IntPtr hwnd, int index)
     {
         if (!Connect(hwnd)) return false;
-        lock (Gate)
+        return UseBridge(() =>
         {
             if (!getAccessibleContextFromHWND(hwnd, out var vmId, out var root)) return false;
             var counter = 0;
             return InvokeAt(vmId, root, index, 0, ref counter);
-        }
+        });
     }
 
     private static bool InvokeAt(long vmId, long context, int target, int depth, ref int counter)
@@ -340,9 +451,14 @@ public static class JavaAccessBridge
 
     private sealed record Node(long Context, long VmId, string Role, string Name, int X, int Y, int W, int H, int Depth);
 
-    private static void Walk(long vmId, long context, int depth, int maxDepth, int maxNodes, List<JabNode> outNodes)
+    private static void Walk(long vmId, long context, int depth, int maxDepth, int maxNodes, long deadline, List<JabNode> outNodes, string path = "")
     {
         if (depth > maxDepth || outNodes.Count >= maxNodes) return;
+        if (Environment.TickCount64 > deadline)
+        {
+            Log.Warn("jab: the tree walk ran out of time", new { nodes = outNodes.Count });
+            return;
+        }
         getAccessibleContextInfo(vmId, context, _info);
         var role = ReadWide(OffRoleEn, 256);
         if (role.Length == 0) role = ReadWide(OffRole, 256);
@@ -354,12 +470,13 @@ public static class JavaAccessBridge
         var h = Marshal.ReadInt32(_info, OffHeight);
         var index = outNodes.Count;
         var text = ReadNodeText(vmId, context, role);
-        outNodes.Add(new JabNode(role, name, description, x, y, w, h, depth, index, text));
+        outNodes.Add(new JabNode(role, name, description, x, y, w, h, depth, index, text, path));
 
+        var childIndex = 0;
         foreach (var child in VisibleChildren(vmId, context))
         {
             if (outNodes.Count >= maxNodes) return;
-            Walk(vmId, child, depth + 1, maxDepth, maxNodes, outNodes);
+            Walk(vmId, child, depth + 1, maxDepth, maxNodes, deadline, outNodes, $"{path}/{childIndex++}");
         }
     }
 
@@ -396,6 +513,12 @@ public static class JavaAccessBridge
     private static bool Connect(IntPtr hwnd)
     {
         if (hwnd == IntPtr.Zero) return false;
+        if (IsHostile(hwnd))
+        {
+            Log.Warn("jab: the bridge is not used with this process after an accident",
+                new { hwnd = hwnd.ToInt64(), process = Win32.ProcessOf(hwnd.ToInt64()) });
+            return false;
+        }
         if (!EnsureLoaded()) return false;
         if (isJavaWindow(hwnd)) return true;
 
@@ -548,14 +671,28 @@ public static class JavaAccessBridge
         {
             try
             {
-                // Broadcast the hello from this thread, so the dialog the JVM
-                // answers to belongs to the thread that pumps messages.
-                Windows_run();
-                var until = Environment.TickCount64 + 1000;
-                while (Environment.TickCount64 < until)
+                if (Volatile.Read(ref _busy) == 0)
                 {
-                    while (PeekMessage(_message, IntPtr.Zero, 0, 0, 1)) DispatchMessage(_message);
-                    Thread.Sleep(20);
+                    // Broadcast the hello from this thread, so the dialog the JVM
+                    // answers to belongs to the thread that pumps messages.
+                    Windows_run();
+                    var until = Environment.TickCount64 + 1000;
+                    while (Environment.TickCount64 < until)
+                    {
+                        while (PeekMessage(_message, IntPtr.Zero, 0, 0, 1)) DispatchMessage(_message);
+                        Thread.Sleep(20);
+                    }
+                }
+                else
+                {
+                    // A job is inside the bridge: only keep the messages flowing,
+                    // do not broadcast on top of it.
+                    var until = Environment.TickCount64 + 50;
+                    while (Environment.TickCount64 < until)
+                    {
+                        while (PeekMessage(_message, IntPtr.Zero, 0, 0, 1)) DispatchMessage(_message);
+                        Thread.Sleep(5);
+                    }
                 }
             }
             catch (Exception ex)
@@ -579,6 +716,7 @@ public static class JavaAccessBridge
                     new { hint = "install a JRE with jabswitch and enable the bridge" });
                 return false;
             }
+            _libraryPath = path;
             _info = Marshal.AllocHGlobal(InfoSize);
             _visible = Marshal.AllocHGlobal(VisibleChildrenSize);
             _message = Marshal.AllocHGlobal(64);
@@ -603,7 +741,8 @@ public sealed record JabNode(
     int Height,
     int Depth,
     int Index,
-    string Text)
+    string Text,
+    string Path = "")
 {
     /// <summary>UIA-ish control type derived from the JAB role.</summary>
     public string ControlType => Role switch

@@ -292,6 +292,13 @@ public static class Record
         return JobOutcome.Success(Meta(outPath, frames, fps, seconds, width, height, encoder));
     }
 
+    /// <summary>Public view of the open recording, for the diagnose job.</summary>
+    public static Dictionary<string, object?> Status()
+    {
+        var outcome = OpenStatus();
+        return outcome.Meta ?? new Dictionary<string, object?>();
+    }
+
     /// <summary>`record operation=status`: how the open recording is doing.</summary>
     private static JobOutcome OpenStatus()
     {

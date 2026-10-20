@@ -133,6 +133,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     retainedJobTtlMs: positiveInt(env.MRC_JOB_HISTORY_TTL_MS, "MRC_JOB_HISTORY_TTL_MS", DEFAULT_RETAINED_JOB_TTL_MS),
     mcpHttpPort: portOrZero(env.MRC_MCP_HTTP_PORT, "MRC_MCP_HTTP_PORT", 0),
     publicUrl: (env.MRC_PUBLIC_URL?.trim() ?? "").replace(/\/+$/, ""),
+    // The version the hub announces comes from the repo (shared/version.ts):
+    // it is the single source of truth for both the hub and the agent, and an
+    // operator cannot pin an older one here.
     agentLatestVersion: VERSION,
     agentBinaryUrl: env.MRC_AGENT_BINARY_URL?.trim() ?? "",
     agentBinaryUnc: env.MRC_AGENT_BINARY_UNC?.trim() ?? "",
