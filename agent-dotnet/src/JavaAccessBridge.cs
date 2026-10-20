@@ -120,6 +120,37 @@ public static class JavaAccessBridge
     private static bool Contains(string? value, string needle) =>
         !string.IsNullOrEmpty(value) && value.Contains(needle, StringComparison.OrdinalIgnoreCase);
 
+
+    /// <summary>
+    /// The JDK's getVisibleChildren copies (count - startIndex) entries into the
+    /// caller's buffer and fills a 256 entry array on its own stack: asking for
+    /// a node with more visible children than that overflows the stack of the
+    /// JVM and kills the application (an access violation in jvm.dll). Such
+    /// nodes are skipped instead.
+    /// </summary>
+    private const int MaxVisibleChildren = 256;
+
+    /// <summary>Visible children of a node, empty when the node is too big.</summary>
+    private static List<long> VisibleChildren(long vmId, long context)
+    {
+        var children = new List<long>();
+        var count = getVisibleChildrenCount(vmId, context);
+        if (count <= 0) return children;
+        if (count > MaxVisibleChildren)
+        {
+            Log.Warn("jab: node with too many visible children, skipped", new { count });
+            return children;
+        }
+        if (!getVisibleChildren(vmId, context, 0, _visible)) return children;
+        var returned = Marshal.ReadInt32(_visible, 0);
+        for (var i = 0; i < returned && i < MaxVisibleChildren; i++)
+        {
+            var child = Marshal.ReadInt64(_visible, VisibleChildrenOffset + i * 8);
+            if (child != 0) children.Add(child);
+        }
+        return children;
+    }
+
     /// <summary>
     /// Writes text into a Java text field, addressed by the same criteria
     /// find_element uses. Returns false when the field cannot be found.
@@ -154,18 +185,9 @@ public static class JavaAccessBridge
         var classOk = className is null || Contains(role, className);
         if (isField && nameOk && classOk && setTextContents(vmId, context, value)) return true;
 
-        var count = getVisibleChildrenCount(vmId, context);
-        if (count <= 0) return false;
-        for (var start = 0; start < count; start += 256)
+        foreach (var child in VisibleChildren(vmId, context))
         {
-            if (!getVisibleChildren(vmId, context, start, _visible)) break;
-            var returned = Marshal.ReadInt32(_visible, 0);
-            for (var i = 0; i < returned; i++)
-            {
-                var child = Marshal.ReadInt64(_visible, VisibleChildrenOffset + i * 8);
-                if (child != 0 && SetTextDeep(vmId, child, name, className, value, depth + 1)) return true;
-            }
-            if (returned < 256) break;
+            if (SetTextDeep(vmId, child, name, className, value, depth + 1)) return true;
         }
         return false;
     }
@@ -206,18 +228,9 @@ public static class JavaAccessBridge
             }
         }
 
-        var count = getVisibleChildrenCount(vmId, context);
-        if (count <= 0) return false;
-        for (var start = 0; start < count; start += 256)
+        foreach (var child in VisibleChildren(vmId, context))
         {
-            if (!getVisibleChildren(vmId, context, start, _visible)) break;
-            var returned = Marshal.ReadInt32(_visible, 0);
-            for (var i = 0; i < returned; i++)
-            {
-                var child = Marshal.ReadInt64(_visible, VisibleChildrenOffset + i * 8);
-                if (child != 0 && InvokeDeep(vmId, child, name, className, depth + 1)) return true;
-            }
-            if (returned < 256) break;
+            if (InvokeDeep(vmId, child, name, className, depth + 1)) return true;
         }
         return false;
     }
@@ -282,19 +295,9 @@ public static class JavaAccessBridge
                 || role.Contains("password", StringComparison.OrdinalIgnoreCase);
             return isField && setTextContents(vmId, context, value);
         }
-        var count = getVisibleChildrenCount(vmId, context);
-        if (count <= 0) return false;
-        for (var start = 0; start < count; start += 256)
+        foreach (var child in VisibleChildren(vmId, context))
         {
-            if (!getVisibleChildren(vmId, context, start, _visible)) break;
-            var returned = Marshal.ReadInt32(_visible, 0);
-            for (var i = 0; i < returned; i++)
-            {
-                var child = Marshal.ReadInt64(_visible, VisibleChildrenOffset + i * 8);
-                if (child == 0) continue;
-                if (SetTextAt(vmId, child, target, value, depth + 1, ref counter)) return true;
-            }
-            if (returned < 256) break;
+            if (SetTextAt(vmId, child, target, value, depth + 1, ref counter)) return true;
         }
         return false;
     }
@@ -326,19 +329,9 @@ public static class JavaAccessBridge
                 if (DoAction(vmId, context, action)) return true;
             }
         }
-        var count = getVisibleChildrenCount(vmId, context);
-        if (count <= 0) return false;
-        for (var start = 0; start < count; start += 256)
+        foreach (var child in VisibleChildren(vmId, context))
         {
-            if (!getVisibleChildren(vmId, context, start, _visible)) break;
-            var returned = Marshal.ReadInt32(_visible, 0);
-            for (var i = 0; i < returned; i++)
-            {
-                var child = Marshal.ReadInt64(_visible, VisibleChildrenOffset + i * 8);
-                if (child == 0) continue;
-                if (InvokeAt(vmId, child, target, depth + 1, ref counter)) return true;
-            }
-            if (returned < 256) break;
+            if (InvokeAt(vmId, child, target, depth + 1, ref counter)) return true;
         }
         return false;
     }
@@ -363,18 +356,10 @@ public static class JavaAccessBridge
         var text = ReadNodeText(vmId, context, role);
         outNodes.Add(new JabNode(role, name, description, x, y, w, h, depth, index, text));
 
-        var count = getVisibleChildrenCount(vmId, context);
-        if (count <= 0) return;
-        for (var start = 0; start < count; start += 256)
+        foreach (var child in VisibleChildren(vmId, context))
         {
-            if (!getVisibleChildren(vmId, context, start, _visible)) break;
-            var returned = Marshal.ReadInt32(_visible, 0);
-            for (var i = 0; i < returned && outNodes.Count < maxNodes; i++)
-            {
-                var child = Marshal.ReadInt64(_visible, VisibleChildrenOffset + i * 8);
-                if (child != 0) Walk(vmId, child, depth + 1, maxDepth, maxNodes, outNodes);
-            }
-            if (returned < 256) break;
+            if (outNodes.Count >= maxNodes) return;
+            Walk(vmId, child, depth + 1, maxDepth, maxNodes, outNodes);
         }
     }
 
