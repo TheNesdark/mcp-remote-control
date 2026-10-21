@@ -458,3 +458,8 @@ The Win7 target also requires SP1, KB2533623 and KB4474419 on the machine.
 UIA through FlaUI 4.x has not been validated against a real Windows 7 box;
 CDP works with Chrome 109, the last Chrome for Windows 7. The legacy build
 reports the same version as the net8 one, so the hub cannot tell them apart.
+
+The Windows 7 build disables auto-update on purpose (`AutoUpdate.SupportedBuild`
+is false on `net6.0-windows`): `rc-agent-update.exe` is the net8 binary and
+would leave the machine without an agent. Those machines are updated by hand
+with `INSTALAR-AGENTE-WIN7.bat`, and the agent logs the skipped update.

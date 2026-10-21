@@ -19,8 +19,31 @@ public static class AutoUpdate
 
     public static bool Enabled { get; set; } = true;
 
+    /// <summary>
+    /// False on the Windows 7 build (net6.0-windows): the share carries the
+    /// net8 binary, which does not start on Windows 7, so pulling it would leave
+    /// the machine without an agent. Those machines are updated by hand with
+    /// INSTALAR-AGENTE-WIN7.bat. Not a setting: a build fact.
+    /// </summary>
+    public static bool SupportedBuild =>
+#if NET6_0_WINDOWS
+        false;
+#else
+        true;
+#endif
+
     public static void Schedule(AgentConnection connection, WelcomeMsg welcome)
     {
+        if (!SupportedBuild)
+        {
+            if (!string.IsNullOrEmpty(welcome.LatestAgentVersion)
+                && Versions.Compare(welcome.LatestAgentVersion, Versions.Current) > 0)
+            {
+                Log.Info("auto-update skipped: this is the Windows 7 build",
+                    new { current = Versions.Current, latest = welcome.LatestAgentVersion, how = "run INSTALAR-AGENTE-WIN7.bat" });
+            }
+            return;
+        }
         if (!Enabled || !connection.Connected) return;
         if (string.IsNullOrEmpty(welcome.LatestAgentVersion)) return;
         if (Versions.Compare(welcome.LatestAgentVersion, Versions.Current) <= 0)
