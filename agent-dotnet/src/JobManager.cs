@@ -83,6 +83,7 @@ public sealed class JobManager
         Register("ps.list", Ps.JobList);
         Register("ps.kill", Ps.JobKill);
         Register("screenshot", Screenshot.JobCapture);
+        Register("message", Message.Job);
         Register("restart", Restart.JobRestart);
         Register("cua", Cua.JobCall);
         Register("browser", BrowserCdp.JobCall);

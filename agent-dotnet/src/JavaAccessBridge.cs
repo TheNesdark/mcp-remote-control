@@ -45,6 +45,8 @@ public static class JavaAccessBridge
 
     private static readonly object Gate = new();
     private static IntPtr _dll;
+    /// <summary>The bridge that belongs to the JVM we are driving, when known.</summary>
+    private static string? _preferredLibrary;
     private static string? _libraryPath;
     private static IntPtr _info;
     private static IntPtr _visible;
@@ -112,7 +114,7 @@ public static class JavaAccessBridge
 
     /// <summary>Default budget for a walk: nodes, depth and wall clock.</summary>
     public const int DefaultMaxNodes = 1500;
-    public const int DefaultMaxDepth = 10;
+    public const int DefaultMaxDepth = 16;
     public const int DefaultMaxMillis = 4000;
 
     // ---- native interop -------------------------------------------------
@@ -135,9 +137,17 @@ public static class JavaAccessBridge
     [DllImport(DllName)] private static extern bool getAccessibleContextFromHWND(IntPtr hwnd, out long vmId, out long context);
     [DllImport(DllName)] private static extern bool getAccessibleContextInfo(long vmId, long context, IntPtr info);
     [DllImport(DllName)] private static extern int getVisibleChildrenCount(long vmId, long context);
+
     [DllImport(DllName)] private static extern bool getVisibleChildren(long vmId, long context, int startIndex, IntPtr visibleChildren);
+    // Direct children: the count comes from AccessibleContextInfo.childrenCount and
+    // each one is fetched by index.
+    [DllImport(DllName)] private static extern long getAccessibleChildFromContext(long vmId, long context, int index);
     [DllImport(DllName, CharSet = CharSet.Unicode)]
     private static extern bool setTextContents(long vmId, long context, string text);
+    // The current bridge exposes the actions as one struct: getAccessibleActions
+    // fills AccessibleActions { int count; { char name[256]; char description[256]; }[256] }.
+    // getAccessibleActionsCount/getAccessibleActionName only exist in old builds.
+    [DllImport(DllName)] private static extern bool getAccessibleActions(long vmId, long context, IntPtr actions);
     [DllImport(DllName)] private static extern int getAccessibleActionsCount(long vmId, long context);
     [DllImport(DllName, CharSet = CharSet.Unicode)]
     private static extern string getAccessibleActionName(long vmId, long context, int index);
@@ -211,7 +221,7 @@ public static class JavaAccessBridge
         return UseBridge(() =>
         {
             if (!getAccessibleContextFromHWND(hwnd, out var vmId, out var context) || context == 0) return nodes;
-            Walk(vmId, context, 0, maxDepth, maxNodes, Environment.TickCount64 + maxMillis, nodes);
+            Walk(vmId, context, 0, maxDepth, maxNodes, Environment.TickCount64 + maxMillis, nodes, "");
             ScaleToPhysical(hwnd, nodes);
             return nodes;
         });
@@ -303,6 +313,128 @@ public static class JavaAccessBridge
     }
 
     /// <summary>
+    /// False once the loaded bridge turns out not to export the plain child API.
+    /// </summary>
+    private static bool _directChildren = true;
+
+    private const int MaxDirectChildren = 400;
+
+    /// <summary>
+    /// Children to descend into.
+    ///
+    /// getVisibleChildren is not a list of direct children: the JDK walks the
+    /// whole subtree there and returns every descendant in the SHOWING state
+    /// flattened into one list. Recursing into that list visits the same
+    /// component under several ancestors (the panes we kept seeing twice),
+    /// spends the node budget on repeats and never asks a component for the
+    /// children it reports through the plain child API. The walk therefore uses
+    /// AccessibleContextInfo.childrenCount plus getAccessibleChildFromContext,
+    /// which is one level at a time, and only falls back to the flat list when
+    /// the bridge in use does not export it.
+    /// </summary>
+    private static List<long> Children(long vmId, long context)
+    {
+        if (!_directChildren) return VisibleChildren(vmId, context);
+        var children = new List<long>();
+        getAccessibleContextInfo(vmId, context, _info);
+        var count = Marshal.ReadInt32(_info, OffChildren);
+        if (count > 0)
+        {
+            if (count > MaxDirectChildren)
+            {
+                Log.Warn("jab: node with too many children, only the first are read",
+                    new { count, read = MaxDirectChildren });
+            }
+            var take = Math.Min(count, MaxDirectChildren);
+            for (var i = 0; i < take; i++) ReadChild(vmId, context, i, children);
+            if (children.Count == 0)
+            {
+                Log.Warn("jab: the node reports children but none can be read", new { count });
+            }
+            return children;
+        }
+        // Some containers keep their children behind a count of zero. A big box
+        // with no children at all is rare, so the indexes are probed there.
+        var width = Marshal.ReadInt32(_info, OffWidth);
+        var height = Marshal.ReadInt32(_info, OffHeight);
+        if (width < 100 || height < 100) return children;
+        var misses = 0;
+        for (var i = 0; i < ProbeChildren && misses < 2 && _directChildren; i++)
+        {
+            var before = children.Count;
+            ReadChild(vmId, context, i, children);
+            misses = children.Count == before ? misses + 1 : 0;
+        }
+        if (children.Count > 0)
+        {
+            Log.Info("jab: children found by index although the count said zero",
+                new { found = children.Count, width, height });
+        }
+        return children;
+    }
+
+    private const int ProbeChildren = 24;
+
+    private static void ReadChild(long vmId, long context, int index, List<long> children)
+    {
+        try
+        {
+            var child = getAccessibleChildFromContext(vmId, context, index);
+            if (child != 0) children.Add(child);
+        }
+        catch (EntryPointNotFoundException)
+        {
+            _directChildren = false;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("jab: a child could not be read", new { index, error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Identity of a component for the walkers.
+    ///
+    /// getVisibleChildren hands back the same component under several parents
+    /// (a content pane lists its layered pane, and the pane inside it lists the
+    /// form again) and every visit comes with a fresh AccessibleContext, so the
+    /// handle cannot be used to recognise it: a walk following handles repeats
+    /// whole subtrees and spends the node budget before reaching the fields.
+    /// The role, the name and the box are what identifies a component on screen.
+    /// All walkers use the same signature, so a jab_index means the same node in
+    /// the reported tree and in the action that consumes the index.
+    /// </summary>
+    private static string Signature(string role, string name, int x, int y, int w, int h) =>
+        $"{role}\u0001{name}\u0001{x},{y},{w},{h}";
+
+    /// <summary>
+    /// Children to descend into, dropping repeated siblings.
+    ///
+    /// A component is identified by role, name and box -- but a container and
+    /// the panel filling it share all three, so that signature cannot be used to
+    /// prune the whole tree (it would swallow every nested panel). Inside one
+    /// parent's child list, though, a repeat is always the same component listed
+    /// twice. All walkers use this, so a jab_index means the same node in the
+    /// reported tree and in the action that consumes the index.
+    /// </summary>
+    private static IEnumerable<long> Descend(long vmId, long context)
+    {
+        string? previous = null;
+        foreach (var child in Children(vmId, context))
+        {
+            getAccessibleContextInfo(vmId, child, _info);
+            var role = ReadWide(OffRoleEn, 256);
+            if (role.Length == 0) role = ReadWide(OffRole, 256);
+            var signature = Signature(role, ReadWide(OffName, 1024),
+                Marshal.ReadInt32(_info, OffX), Marshal.ReadInt32(_info, OffY),
+                Marshal.ReadInt32(_info, OffWidth), Marshal.ReadInt32(_info, OffHeight));
+            if (signature == previous) continue;
+            previous = signature;
+            yield return child;
+        }
+    }
+
+    /// <summary>
     /// Writes text into a Java text field, addressed by the same criteria
     /// find_element uses. Returns false when the field cannot be found.
     /// </summary>
@@ -336,7 +468,7 @@ public static class JavaAccessBridge
         var classOk = className is null || Contains(role, className);
         if (isField && nameOk && classOk && setTextContents(vmId, context, value)) return true;
 
-        foreach (var child in VisibleChildren(vmId, context))
+        foreach (var child in Children(vmId, context))
         {
             if (SetTextDeep(vmId, child, name, className, value, depth + 1)) return true;
         }
@@ -369,17 +501,14 @@ public static class JavaAccessBridge
 
         if (nameOk && classOk)
         {
-            var actions = getAccessibleActionsCount(vmId, context);
-            for (var i = 0; i < actions; i++)
+            foreach (var action in ActionNames(vmId, context))
             {
-                var action = getAccessibleActionName(vmId, context, i);
-                if (string.IsNullOrEmpty(action)) continue;
                 if (!IsActivatable(action)) continue;
                 if (DoAction(vmId, context, action)) return true;
             }
         }
 
-        foreach (var child in VisibleChildren(vmId, context))
+        foreach (var child in Children(vmId, context))
         {
             if (InvokeDeep(vmId, child, name, className, depth + 1)) return true;
         }
@@ -393,16 +522,68 @@ public static class JavaAccessBridge
             || a.Contains("activate") || a.Contains("push") || a.Contains("open") || a.Contains("select");
     }
 
-    private static bool DoAction(long vmId, long context, string action)
+    private const int ActionInfoSize = 256 + 256;
+
+    /// <summary>Action names of a component, through whichever API the DLL has.</summary>
+    private static List<string> ActionNames(long vmId, long context)
     {
-        // AccessibleActionsToDo: an array of action names, null-terminated.
-        var buffer = Marshal.AllocHGlobal(64);
+        var names = new List<string>();
+        var buffer = Marshal.AllocHGlobal(4 + 64 * ActionInfoSize);
         try
         {
-            for (var i = 0; i < 8; i++) Marshal.WriteIntPtr(buffer, i * 8, IntPtr.Zero);
-            var namePtr = Marshal.StringToHGlobalUni(action);
-            try { Marshal.WriteIntPtr(buffer, 0, namePtr); }
-            finally { Marshal.FreeHGlobal(namePtr); }
+            for (var i = 0; i < 4 + 64 * ActionInfoSize; i += 8) Marshal.WriteInt64(buffer, i, 0);
+            bool ok;
+            try
+            {
+                ok = getAccessibleActions(vmId, context, buffer);
+            }
+            catch (EntryPointNotFoundException)
+            {
+                ok = false;
+            }
+            if (ok)
+            {
+                var count = Math.Min(Marshal.ReadInt32(buffer, 0), 64);
+                for (var i = 0; i < count; i++)
+                {
+                    var name = Marshal.PtrToStringAnsi(buffer + 4 + i * ActionInfoSize);
+                    if (!string.IsNullOrEmpty(name)) names.Add(name!);
+                }
+                return names;
+            }
+            // old bridge
+            try
+            {
+                var count = getAccessibleActionsCount(vmId, context);
+                for (var i = 0; i < count; i++)
+                {
+                    var name = getAccessibleActionName(vmId, context, i);
+                    if (!string.IsNullOrEmpty(name)) names.Add(name);
+                }
+            }
+            catch (EntryPointNotFoundException)
+            {
+                // neither API: no actions
+            }
+            return names;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    private static bool DoAction(long vmId, long context, string action)
+    {
+        // AccessibleActionsToDo { int count; char names[256][256] }
+        var buffer = Marshal.AllocHGlobal(4 + 256);
+        try
+        {
+            for (var i = 0; i < 4 + 256; i += 8) Marshal.WriteInt64(buffer, i, 0);
+            Marshal.WriteInt32(buffer, 0, 1);
+            var bytes = System.Text.Encoding.ASCII.GetBytes(action);
+            var length = Math.Min(bytes.Length, 255);
+            Marshal.Copy(bytes, 0, buffer + 4, length);
             var failure = 0;
             return doAccessibleActions(vmId, context, buffer, ref failure);
         }
@@ -437,16 +618,16 @@ public static class JavaAccessBridge
         if (depth > 24) return false;
         var index = counter++;
         getAccessibleContextInfo(vmId, context, _info);
-        var role = ReadWide(OffRoleEn, 256);
-        if (role.Length == 0) role = ReadWide(OffRole, 256);
         if (index == target)
         {
+            var role = ReadWide(OffRoleEn, 256);
+            if (role.Length == 0) role = ReadWide(OffRole, 256);
             var isField = role.Contains("text", StringComparison.OrdinalIgnoreCase)
                 || role.Contains("editable", StringComparison.OrdinalIgnoreCase)
                 || role.Contains("password", StringComparison.OrdinalIgnoreCase);
             return isField && setTextContents(vmId, context, value);
         }
-        foreach (var child in VisibleChildren(vmId, context))
+        foreach (var child in Descend(vmId, context))
         {
             if (SetTextAt(vmId, child, target, value, depth + 1, ref counter)) return true;
         }
@@ -472,15 +653,13 @@ public static class JavaAccessBridge
         getAccessibleContextInfo(vmId, context, _info);
         if (index == target)
         {
-            var actions = getAccessibleActionsCount(vmId, context);
-            for (var i = 0; i < actions; i++)
+            foreach (var action in ActionNames(vmId, context))
             {
-                var action = getAccessibleActionName(vmId, context, i);
-                if (string.IsNullOrEmpty(action) || !IsActivatable(action)) continue;
+                if (!IsActivatable(action)) continue;
                 if (DoAction(vmId, context, action)) return true;
             }
         }
-        foreach (var child in VisibleChildren(vmId, context))
+        foreach (var child in Descend(vmId, context))
         {
             if (InvokeAt(vmId, child, target, depth + 1, ref counter)) return true;
         }
@@ -491,7 +670,7 @@ public static class JavaAccessBridge
 
     private sealed record Node(long Context, long VmId, string Role, string Name, int X, int Y, int W, int H, int Depth);
 
-    private static void Walk(long vmId, long context, int depth, int maxDepth, int maxNodes, long deadline, List<JabNode> outNodes, string path = "")
+    private static void Walk(long vmId, long context, int depth, int maxDepth, int maxNodes, long deadline, List<JabNode> outNodes, string path)
     {
         if (depth > maxDepth || outNodes.Count >= maxNodes) return;
         if (Environment.TickCount64 > deadline)
@@ -513,7 +692,7 @@ public static class JavaAccessBridge
         outNodes.Add(new JabNode(role, name, description, x, y, w, h, depth, index, text, path));
 
         var childIndex = 0;
-        foreach (var child in VisibleChildren(vmId, context))
+        foreach (var child in Descend(vmId, context))
         {
             if (outNodes.Count >= maxNodes) return;
             Walk(vmId, child, depth + 1, maxDepth, maxNodes, deadline, outNodes, $"{path}/{childIndex++}");
@@ -560,7 +739,7 @@ public static class JavaAccessBridge
                 new { hwnd = hwnd.ToInt64(), process = Win32.ProcessOf(hwnd.ToInt64()) });
             return false;
         }
-        if (!EnsureLoaded()) return false;
+        if (!EnsureLoaded(hwnd)) return false;
         if (isJavaWindow(hwnd)) return true;
 
         // The AT thread broadcasts the hello on its own every second, so the
@@ -587,13 +766,39 @@ public static class JavaAccessBridge
     /// JREs Oracle/JDK install. The agent loads it by absolute path because it
     /// is not in the system directory.
     /// </summary>
+    /// <summary>
+    /// The WindowsAccessBridge DLL that sits next to the java.exe of the window
+    /// we are driving. That is the build the running JVM was shipped with.
+    /// </summary>
+    private static string? BridgeNextToProcess(IntPtr hwnd)
+    {
+        try
+        {
+            var pid = Win32.PidOf(hwnd.ToInt64());
+            if (pid <= 0) return null;
+            using var process = System.Diagnostics.Process.GetProcessById(pid);
+            var exe = process.MainModule?.FileName;
+            if (string.IsNullOrEmpty(exe)) return null;
+            var dir = Path.GetDirectoryName(exe);
+            if (string.IsNullOrEmpty(dir)) return null;
+            var candidate = Path.Combine(dir, DllName);
+            if (!File.Exists(candidate))
+            {
+                Log.Warn("jab: the JVM has no bridge next to it, falling back to the installed one", new { exe });
+                return null;
+            }
+            return candidate;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("jab: could not resolve the bridge of the target process", new { error = ex.Message });
+            return null;
+        }
+    }
+
     private static string? FindBridgeLibrary()
     {
-        foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries))
-        {
-            var candidate = Path.Combine(dir.Trim(), DllName);
-            if (File.Exists(candidate)) return candidate;
-        }
+        if (_preferredLibrary is not null && File.Exists(_preferredLibrary)) return _preferredLibrary;
         foreach (var root in new[]
                  {
                      Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
@@ -615,6 +820,12 @@ public static class JavaAccessBridge
             {
                 // ignore
             }
+        }
+        // PATH last: it is usually C:\Windows\system32, the stale copy.
+        foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var candidate = Path.Combine(dir.Trim(), DllName);
+            if (File.Exists(candidate)) return candidate;
         }
         return null;
     }
@@ -744,11 +955,20 @@ public static class JavaAccessBridge
         }
     }
 
-    private static bool EnsureLoaded()
+    private static bool EnsureLoaded(IntPtr hwnd = default)
     {
         lock (Gate)
         {
             if (_dll != IntPtr.Zero) return true;
+            // The bridge has to be the one that ships with the JVM running the
+            // application: C:\Windows\system32 keeps a copy from some old Java
+            // install, the PATH finds it first, and that old build answers a
+            // broken tree (the same component under several parents) and lacks
+            // half the API (getAccessibleActions, getAccessibleChild...).
+            if (_preferredLibrary is null && hwnd != IntPtr.Zero)
+            {
+                _preferredLibrary = BridgeNextToProcess(hwnd);
+            }
             var path = FindBridgeLibrary();
             if (path is null)
             {

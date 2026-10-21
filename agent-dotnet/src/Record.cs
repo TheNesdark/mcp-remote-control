@@ -317,6 +317,14 @@ public static class Record
             startedAt = _openStartedAt;
         }
         var elapsed = active ? (Environment.TickCount64 - startedAt) / 1000.0 : 0;
+        // Idle there is nothing to report, and "0x0" reads like a broken screen:
+        // answer with the area the next recording would capture.
+        if (!active && (width <= 0 || height <= 0))
+        {
+            var area = ScreenGeometry.Virtual();
+            width = area.Width;
+            height = area.Height;
+        }
         return JobOutcome.Success(new Dictionary<string, object?>
         {
             ["ok"] = true,

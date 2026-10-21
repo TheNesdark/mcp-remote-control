@@ -25,9 +25,22 @@
     <AssemblyVersion Condition="'$(RepoVersion)' != ''">$(RepoVersion).0</AssemblyVersion>
   </PropertyGroup>
 
+  <!--
+    Legacy build for Windows 7. .NET 6 is the last runtime that runs on
+    Windows 7 SP1, so the same sources are compiled with net6.0-windows and
+    the older package versions:
+
+      dotnet publish agent-dotnet -c Release -r win-x64 /p:SelfContained=true
+        /p:EnableWindowsTargeting=true /p:Win7=true -o out/win7-x64
+  -->
+  <PropertyGroup>
+    <Win7 Condition="'$(Win7)' == ''">false</Win7>
+    <TargetFramework Condition="'$(Win7)' == 'true'">net6.0-windows</TargetFramework>
+  </PropertyGroup>
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework Condition="'$(Win7)' != 'true'">net8.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>false</SelfContained>
@@ -45,7 +58,10 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <!-- The tray/desktop bits make the SDK emit a windowed app; keep stderr. -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- PerMonitorV2 does not exist on Windows 7: the legacy build asks for
+         SystemAware so the manifest stays valid there. -->
+    <ApplicationHighDpiMode Condition="'$(Win7)' != 'true'">PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationHighDpiMode Condition="'$(Win7)' == 'true'">SystemAware</ApplicationHighDpiMode>
   </PropertyGroup>
 
   <ItemGroup>
@@ -72,7 +88,7 @@
     <TrimmerRootAssembly Include="Interop.UIAutomationClient" />
   </ItemGroup>
 
-  <ItemGroup>
+  <ItemGroup Condition="'$(Win7)' != 'true'">
     <PackageReference Include="System.Drawing.Common" Version="8.0.10" />
     <!-- WMI: System.Management is not in the BCL on .NET (it was on Framework). -->
     <PackageReference Include="System.Management" Version="8.0.0" />
@@ -80,6 +96,14 @@
          runtime csc compile on the target). Pure NuGet, so no sidecar, no
          compiled-in-source, no .sha marker. -->
     <PackageReference Include="FlaUI.UIA3" Version="5.0.0" />
+  </ItemGroup>
+
+  <!-- Windows 7 build: 8.x packages target net8 only, so drop to the 6.0/4.0
+       line. FlaUI 4.x is the last one published for netcoreapp3.1/net45. -->
+  <ItemGroup Condition="'$(Win7)' == 'true'">
+    <PackageReference Include="System.Drawing.Common" Version="6.0.0" />
+    <PackageReference Include="System.Management" Version="6.0.0" />
+    <PackageReference Include="FlaUI.UIA3" Version="4.0.0" />
   </ItemGroup>
 
 

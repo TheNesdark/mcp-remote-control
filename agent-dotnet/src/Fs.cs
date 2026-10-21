@@ -148,7 +148,10 @@ public static class Fs
     public static async Task<string> Sha256Async(string path, CancellationToken ct)
     {
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        var hash = await SHA256.HashDataAsync(stream, ct).ConfigureAwait(false);
+        // ComputeHashAsync instead of SHA256.HashDataAsync: the latter is .NET 7+,
+        // and the Windows 7 build still targets net6.0.
+        using var sha = SHA256.Create();
+        var hash = await sha.ComputeHashAsync(stream, ct).ConfigureAwait(false);
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 

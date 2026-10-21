@@ -53,6 +53,18 @@ afterEach(async () => {
 /** What a Windows agent would print: one JSON envelope, keyed by the script's marker. */
 function defaultResponse(msg: JobRequestMsg, command: string): FakeResponse {
   if (msg.jobType === "fs.hash") return { meta: { sha256: "a".repeat(64), size: 4096 } };
+  // The notice is drawn by the agent (Message.cs), not by a PowerShell helper.
+  if (msg.jobType === "message") {
+    const params = msg.params as { title?: string; style?: string; buttons?: string };
+    return {
+      meta: {
+        shown: true,
+        title: params.title ?? "Remote control",
+        style: params.style ?? "info",
+        buttons: params.buttons ?? "ok",
+      },
+    };
+  }
   if (command.includes("Get-WinEvent")) return { stdout: json({ log: "System", count: 1, events: [EVENT] }) };
   if (command.includes("Get-NetTCPConnection")) return { stdout: json({ total: 1, connections: [CONNECTION] }) };
   if (command.includes("Win32_LogonSession")) {
@@ -116,9 +128,6 @@ function defaultResponse(msg: JobRequestMsg, command: string): FakeResponse {
   }
   if (command.includes("$__all = foreach")) return { stdout: json({ total: 3, matched: 1, services: [SERVICE] }) };
   if (command.includes("shutdown.exe")) return { stdout: json({ action: "restart", delaySeconds: 5, scheduled: true }) };
-  if (command.includes("shown = $true")) {
-    return { stdout: json({ shown: true, title: "Remote control", style: "warning", buttons: "ok" }) };
-  }
   // Most specific marker first: the delete/search scripts also run Get-ChildItem.
   if (command.includes("Remove-Item")) return { stdout: json({ path: "C:\\tmp\\a.txt", type: "file", deleted: true }) };
   if (command.includes("Move-Item")) {
@@ -295,12 +304,14 @@ test("agent_power needs confirm=true and schedules the action", async () => {
   expect(locked.isError).toBe(false);
 });
 
-test("agent_message reports that the box was shown", async () => {
+test("agent_message asks the agent for a message job, with no shell involved", async () => {
   const started = await startWindows();
   const result = await call("agent_message", { agent: "W-01", text: "Reboot in 5 minutes", title: "Ops", style: "warning" });
   expect(result.isError).toBe(false);
-  expect(result.data).toMatchObject({ shown: true, style: "warning" });
-  expect(started.commands[0]).toContain("-EncodedCommand");
+  expect(result.data).toMatchObject({ shown: true, style: "warning", title: "Ops" });
+  // A PowerShell child died with its job object, so the box was never seen:
+  // the tool must not shell out at all any more.
+  expect(started.commands.filter((command) => command.length > 0).length).toBe(0);
 });
 
 test("the filesystem helpers map onto the right cmdlets", async () => {

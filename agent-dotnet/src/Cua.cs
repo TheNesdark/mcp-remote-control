@@ -27,7 +27,16 @@ namespace Mrc.Agent;
 /// </summary>
 public static class Cua
 {
-    private static readonly UIA3Automation Automation = new();
+    /// <summary>
+    /// The UIA automation object. Lazy on purpose: it has to be created on the
+    /// thread that uses it (see <see cref="JobCall"/>), and a static
+    /// initializer runs on whichever thread touches the class first, which is
+    /// the websocket one.
+    /// </summary>
+    private static UIA3Automation Automation => _automation ??= new UIA3Automation();
+
+    [ThreadStatic]
+    private static UIA3Automation? _automation;
     private static readonly object Gate = new();
     private static AutomationElement? _foreground;
 
@@ -47,7 +56,71 @@ public static class Cua
 
     // ------------------------------------------------------------------- job
 
-    public static async Task<JobOutcome> JobCall(JsonElement p, JobContext ctx, CancellationToken ct)
+    /// <summary>
+    /// Entry point of every agent_cua_* call.
+    ///
+    /// UIA is a COM API whose objects belong to the thread that created them,
+    /// and the jobs arrive on the websocket thread and continue on the pool.
+    /// Two calls at the same time, or one call that awaits, ended up reading
+    /// the tree from a thread that did not own the automation object: every
+    /// property read failed and the walk returned an empty window (count 0) as
+    /// if the window had no elements. The whole call now runs on one STA
+    /// thread, one at a time, which is also what driving the mouse and the
+    /// keyboard wants.
+    /// </summary>
+    public static Task<JobOutcome> JobCall(JsonElement p, JobContext ctx, CancellationToken ct) =>
+        OnUiaThread(() => JobCallCore(p, ctx, ct));
+
+    private static readonly System.Collections.Concurrent.BlockingCollection<Action> UiaQueue = new();
+
+    private static readonly Thread UiaThread = StartUiaThread();
+
+    private static Thread StartUiaThread()
+    {
+        var thread = new Thread(() =>
+        {
+            foreach (var work in UiaQueue.GetConsumingEnumerable())
+            {
+                try
+                {
+                    work();
+                }
+                catch (Exception ex)
+                {
+                    // The job turns its own errors into a result; this only
+                    // keeps the thread alive if one of them escapes.
+                    Log.Debug("cua: a job escaped on the uia thread", new { error = ex.Message });
+                }
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "cua-uia",
+        };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        return thread;
+    }
+
+    /// <summary>Runs a block on the thread that owns the automation object.</summary>
+    private static Task<T> OnUiaThread<T>(Func<T> work)
+    {
+        var result = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        UiaQueue.Add(() =>
+        {
+            try
+            {
+                result.SetResult(work());
+            }
+            catch (Exception ex)
+            {
+                result.SetException(ex);
+            }
+        });
+        return result.Task;
+    }
+
+    private static JobOutcome JobCallCore(JsonElement p, JobContext ctx, CancellationToken ct)
     {
         var tool = Fs.ReadString(p, "tool");
         if (string.IsNullOrEmpty(tool)) return JobOutcome.Failure("invalid cua params: tool: Required");
@@ -81,7 +154,7 @@ public static class Cua
                 "find_element" => FindElement(args),
                 "invoke" => InvokeElement(args),
                 "set_value" => SetValue(args),
-                "wait_for" => await WaitForAsync(args, ct),
+                "wait_for" => WaitFor(args, ct),
                 "table_read" => TableRead(args),
                 "clipboard_set" => ClipboardSet(args),
                 "clipboard_get" => ClipboardGet(args),
@@ -297,7 +370,7 @@ public static class Cua
         if (x is null || y is null)
         {
             var target = ResolveElement(p);
-            var rect = target.BoundingRectangle;
+            var rect = Rect(target);
             if (rect.Width < 1 || rect.Height < 1)
                 throw new ToolError(ToolError.Codes.ElementNotFound, "the element has no on-screen rect");
             StealForeground(target);
@@ -427,28 +500,40 @@ public static class Cua
         var window = ResolveWindow(p);
         var lines = new List<string>();
         var count = 0;
+        string? uiaError = null;
 
         void Walk(AutomationElement element, int depth)
         {
             if (count >= maxElements) return;
+            // Every property is read on its own: UIA throws
+            // PropertyNotSupportedException for AutomationId (and others) on
+            // elements whose provider does not implement it, and one of those
+            // used to kill the whole walk and leave the tree empty.
+            var role = Safe(() => element.ControlType.ToString(), "Custom");
+            var name = Safe(() => element.Name, "") ?? "";
+            var id = Safe(() => element.AutomationId, "") ?? "";
+            var pid = Safe(() => element.Properties.ProcessId.ValueOrDefault, 0);
+            var rect = Safe(() => element.BoundingRectangle, System.Drawing.Rectangle.Empty);
+            lines.Add(
+                $"{new string(' ', depth * 2)}- [{role}] {name} " +
+                $"id={id} pid={pid} " +
+                $"screen({(int)rect.X},{(int)rect.Y} {(int)rect.Width}x{(int)rect.Height})");
+            count++;
+
+            AutomationElement[] children;
             try
             {
-                var rect = element.BoundingRectangle;
-                var id = element.AutomationId;
-                lines.Add(
-                    $"{new string(' ', depth * 2)}- [{element.ControlType}] {element.Name} " +
-                    $"id={id} pid={element.Properties.ProcessId.ValueOrDefault} " +
-                    $"screen({(int)rect.X},{(int)rect.Y} {(int)rect.Width}x{(int)rect.Height})");
-                count++;
-                foreach (var child in element.FindAllChildren())
-                {
-                    if (count >= maxElements) break;
-                    Walk(child, depth + 1);
-                }
+                children = element.FindAllChildren();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // element disappeared
+                uiaError ??= $"{ex.GetType().Name}: {ex.Message}";
+                return;
+            }
+            foreach (var child in children)
+            {
+                if (count >= maxElements) break;
+                Walk(child, depth + 1);
             }
         }
 
@@ -481,6 +566,17 @@ public static class Cua
             ["tree"] = string.Join("\n", lines),
             ["engine"] = jab.Count > 0 ? "uia+jab" : "uia",
         };
+
+        if (uiaError is not null) meta["uia_error"] = uiaError;
+
+        // Nothing at all from UIA means the root itself could not be read: say
+        // so instead of answering with an empty window.
+        if (count == 0 && jab.Count == 0)
+        {
+            throw new ToolError(ToolError.Codes.Internal,
+                $"UIA could not read the window: {uiaError ?? "it returned no elements"}",
+                "check that the agent runs on the interactive desktop and that the window is still there");
+        }
 
         if (Fs.ReadBool(p, "include_screenshot") || p.ValueKind == JsonValueKind.Object && p.TryGetProperty("include_screenshot", out var shot) && shot.ValueKind == JsonValueKind.True)
         {
@@ -684,7 +780,7 @@ public static class Cua
             throw new InvalidOperationException($"nth {nth} out of range ({matches.Count} matches)");
 
         var target = matches[nth];
-        var rect = target.BoundingRectangle;
+        var rect = Rect(target);
         return new Dictionary<string, object?>
         {
             ["ok"] = true,
@@ -762,14 +858,14 @@ public static class Cua
         {
             // Fall back to a real click on the element's centre: some controls
             // expose no InvokePattern (custom canvases, some webviews).
-            var rect = target.BoundingRectangle;
+            var rect = Rect(target);
             if (rect.Width < 1 || rect.Height < 1)
                 throw new InvalidOperationException("the element exposes no InvokePattern and has no on-screen rect");
             Mouse.Click(new System.Drawing.Point((int)(rect.X + rect.Width / 2), (int)(rect.Y + rect.Height / 2)));
             via = "mouse";
         }
 
-        var finalRect = target.BoundingRectangle;
+        var finalRect = Rect(target);
         return new Dictionary<string, object?>
         {
             ["ok"] = true,
@@ -840,7 +936,7 @@ public static class Cua
     /// wait_for: block until an element shows up (or disappears) instead of
     /// sleeping a fixed time. Polls the same criteria find_element accepts.
     /// </summary>
-    private static async Task<Dictionary<string, object?>> WaitForAsync(JsonElement p, CancellationToken ct)
+    private static Dictionary<string, object?> WaitFor(JsonElement p, CancellationToken ct)
     {
         var name = Fs.ReadString(p, "name");
         var automationId = Fs.ReadString(p, "automation_id");
@@ -875,10 +971,12 @@ public static class Cua
                     ["ok"] = true,
                     ["present"] = true,
                     ["waited_ms"] = timeoutMs - (int)(deadline - Environment.TickCount64),
-                    ["element"] = Describe(target, target.BoundingRectangle),
+                    ["element"] = Describe(target, Rect(target)),
                 };
             }
-            await Task.Delay(pollMs, ct).ConfigureAwait(false);
+            // Blocking on purpose: the polling has to stay on the thread that
+            // owns the automation object, an await would continue elsewhere.
+            if (ct.WaitHandle.WaitOne(pollMs)) ct.ThrowIfCancellationRequested();
         }
         throw new InvalidOperationException(wantGone
             ? $"the element was still present after {timeoutMs}ms"
@@ -1213,7 +1311,7 @@ public static class Cua
         var root = Fs.ReadBool(p, "whole_desktop") ? Automation.GetDesktop() : ResolveWindow(p);
         var matches = FindAll(root, name, automationId, null, null, 1);
         if (matches.Count == 0) throw new InvalidOperationException($"no element matched the {prefix} criteria");
-        var rect = matches[0].BoundingRectangle;
+        var rect = Rect(matches[0]);
         return ((int)(rect.X + rect.Width / 2), (int)(rect.Y + rect.Height / 2));
     }
 
@@ -1224,7 +1322,7 @@ public static class Cua
     private static Dictionary<string, object?> ElementScreenshot(JsonElement p)
     {
         var target = ResolveElement(p);
-        var rect = target.BoundingRectangle;
+        var rect = Rect(target);
         if (rect.Width < 1 || rect.Height < 1)
             throw new InvalidOperationException("the element has no on-screen rect (hidden or scrolled away)");
 
@@ -1251,7 +1349,7 @@ public static class Cua
             ["format"] = format,
             ["bounds"] = Bounds(rect),
             ["name"] = target.Name,
-            ["control_type"] = target.ControlType.ToString(),
+            ["control_type"] = Safe(() => target.ControlType.ToString(), "Custom"),
         };
     }
 
@@ -1344,6 +1442,27 @@ public static class Cua
     // --------------------------------------------------------------- helpers
 
     /// <summary>
+    /// Reads a UIA property, falling back when the provider does not support
+    /// it: AutomationId and friends throw PropertyNotSupportedException on
+    /// plenty of elements (WinUI, Chrome, the desktop), and that must not take
+    /// the caller down.
+    /// </summary>
+    private static System.Drawing.Rectangle Rect(AutomationElement element) =>
+        Safe(() => element.BoundingRectangle, System.Drawing.Rectangle.Empty);
+
+    private static T Safe<T>(Func<T> read, T fallback)
+    {
+        try
+        {
+            return read();
+        }
+        catch (Exception)
+        {
+            return fallback;
+        }
+    }
+
+    /// <summary>
     /// A double click that Windows (and therefore Java AWT/Swing, Tk, ...) really
     /// recognises as one. FlaUI's Mouse.DoubleClick re-positions the cursor
     /// between the two clicks, and a mouse move resets the OS click counter, so
@@ -1405,7 +1524,7 @@ public static class Cua
         {
             var best = Automation.GetDesktop().FindAllChildren()
                 .Where(w => w.Properties.ProcessId.ValueOrDefault == pid.Value)
-                .OrderByDescending(w => w.BoundingRectangle.Width * (double)w.BoundingRectangle.Height)
+                .OrderByDescending(w => Rect(w).Width * (double)Rect(w).Height)
                 .FirstOrDefault();
             if (best is null) throw new InvalidOperationException($"no on-screen window for pid {pid.Value}");
             return best;

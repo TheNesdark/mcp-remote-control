@@ -331,6 +331,27 @@ still alive; "the Java application is no longer running" means the JVM died,
 and `hs_err_pid*.log` next to the jar explains why.
 
 
+### How UIA is driven
+
+UIA is a COM API and its objects belong to the thread that created them. The
+jobs arrive on the websocket thread and finish on the pool, so two calls at
+once (or one call that awaits in the middle) used to read the tree from a
+thread that did not own the automation object. Every property read failed,
+the walk swallowed the exception per node and the window came back with
+`element_count: 0` as if it had no elements (1.0.47). Now:
+
+- all of `agent_cua_*` runs on **one STA thread**, one job at a time;
+- the automation object is created lazily on that thread, never in a static
+  initializer (the first thread to touch the class would own it);
+- `wait_for` polls with a blocking wait instead of `await`, so it stays on
+  that thread;
+- every property is read on its own: `AutomationId` (and others) throw
+  `PropertyNotSupportedException` on plenty of elements (WinUI, Chrome, the
+  desktop), and one of those used to empty the whole tree;
+- when UIA cannot read even the root, the call fails with
+  `UIA could not read the window: <exception>` instead of returning an empty
+  tree. `get_window_state` also carries `uia_error` when a subtree failed.
+
 ### The watchdog
 
 The agent is started by the user (HKCU Run key) and by the installer, but
@@ -365,6 +386,31 @@ that call (some applications crash the JVM when the bridge walks their
 tree), and every call that moves the mouse or the keyboard returns the
 `steps` it did.
 
+### How the bridge walks a Java window
+
+Two rules, both learned the hard way with GENOMA (1.0.45):
+
+- **Children come from `AccessibleContextInfo.childrenCount` plus
+  `getAccessibleChildFromContext`**, one level at a time. The
+  `getVisibleChildren` family is not a list of direct children: the JDK
+  descends the whole subtree there and returns every descendant in the
+  SHOWING state flattened into one list. Walking that list visits the same
+  panel under several ancestors (the duplicated panes), spends the node
+  budget on repeats and never asks a panel for its own children.
+- **The JDK counts as accessible children only the components that
+  implement `Accessible`** (`Container.getAccessibleChildrenCount`). A panel
+  built out of AWT heavyweights, or one that paints its widgets itself,
+  reports zero children and there is nothing to expose: no flag, no API and
+  no other bridge changes that. When `childrenCount` says zero on a big box
+  the agent probes indexes 0..23 anyway (two misses in a row stop it) and
+  logs `children found by index although the count said zero` when the
+  counter lied.
+
+GENOMA is a mixed case: the login dialog is plain Swing and the bridge reads
+it (USUARIO, CONTRASEÑA, SEDE, buttons), while the workspace panels answer
+zero children and have no child HWNDs either, so its tree and forms are
+painted by the application and are driven with coordinates.
+
 ### Errors with a code
 
 A failure of the agent now carries a stable code and a hint:
@@ -376,3 +422,39 @@ A failure of the agent now carries a stable code and a hint:
 The codes are `jvm_died`, `bridge_unavailable`, `bridge_hostile`,
 `element_not_found`, `window_not_found`, `timeout`, `invalid_args`,
 `not_supported` and `internal`.
+
+## Windows 7 (legacy build)
+
+.NET 8 does not run on Windows 7. The same sources also build against
+`net6.0-windows`, the last runtime that supports Windows 7 SP1: the `Win7`
+MSBuild property switches the target framework and the package versions
+(`FlaUI.UIA3` 4.0, `System.Management` 6.0, `System.Drawing.Common` 6.0), and
+`ApplicationHighDpiMode` drops from `PerMonitorV2` to `SystemAware`. The
+`required` attributes that C# 11 emits are polyfilled in
+`agent-dotnet/src/Net6Polyfills.cs` (compiled out on net8).
+
+```sh
+# 64-bit Windows 7 (the usual case)
+dotnet publish agent-dotnet -c Release -r win-x64 --self-contained true \
+  -p:EnableWindowsTargeting=true -p:Win7=true \
+  -p:IncludeNativeLibrariesForSelfExtract=true -o out/win7-x64
+
+# 32-bit Windows 7
+dotnet publish agent-dotnet -c Release -r win-x86 --self-contained true \
+  -p:EnableWindowsTargeting=true -p:Win7=true \
+  -p:IncludeNativeLibrariesForSelfExtract=true -o out/win7-x86
+```
+
+`IncludeNativeLibrariesForSelfExtract` matters here: without it
+`vcruntime140_cor3.dll` is published next to the exe, and the OTA path only
+carries a single file.
+
+Publish the result to the share as `rc-agent-win7-x64.exe` /
+`rc-agent-win7-x86.exe`. **Never point `agent_restart` with `updatePath`, or
+the hub's `MRC_AGENT_BINARY_UNC`, at a Windows 7 machine using
+`rc-agent-update.exe`**: that is the net8 build and it will not start.
+
+The Win7 target also requires SP1, KB2533623 and KB4474419 on the machine.
+UIA through FlaUI 4.x has not been validated against a real Windows 7 box;
+CDP works with Chrome 109, the last Chrome for Windows 7. The legacy build
+reports the same version as the net8 one, so the hub cannot tell them apart.

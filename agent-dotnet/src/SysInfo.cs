@@ -2,6 +2,7 @@ using System.Management;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using Microsoft.Win32;
 
 namespace Mrc.Agent;
 
@@ -67,12 +68,28 @@ public static class SysInfo
             using var searcher = new ManagementObjectSearcher("SELECT Name FROM Win32_Processor");
             foreach (var item in searcher.Get())
             {
-                return item["Name"]?.ToString()?.Trim();
+                var name = item["Name"]?.ToString()?.Trim();
+                if (!string.IsNullOrEmpty(name)) return name;
             }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // WMI can be unavailable; report unknown like the TS agent does
+            // WMI is not usable inside every image (a Windows 7 box reported
+            // every Win32_* query as empty while PowerShell's WMI worked), so
+            // the failure is logged and answered from the registry instead.
+            Log.Warn("info: WMI cpu query failed", new Dictionary<string, object?> { ["error"] = ex.Message });
+        }
+
+        // The kernel fills HARDWARE\DESCRIPTION at boot: no WMI needed.
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(@"HARDWARE\DESCRIPTION\System\CentralProcessor\0");
+            var name = key?.GetValue("ProcessorNameString")?.ToString()?.Trim();
+            if (!string.IsNullOrEmpty(name)) return name;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("info: registry cpu name failed", new Dictionary<string, object?> { ["error"] = ex.Message });
         }
         return null;
     }
@@ -93,11 +110,11 @@ public static class SysInfo
                 if (ulong.TryParse(item["TotalPhysicalMemory"]?.ToString(), out var bytes)) return bytes;
             }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // fall through
+            Log.Warn("info: WMI memory query failed", new Dictionary<string, object?> { ["error"] = ex.Message });
         }
-        return 0;
+        return MemoryStatus()?.TotalPhys ?? 0;
     }
 
     private static ulong AvailableMemoryBytes()
@@ -110,11 +127,37 @@ public static class SysInfo
                 if (ulong.TryParse(item["FreePhysicalMemory"]?.ToString(), out var kb)) return kb * 1024;
             }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // fall through
+            Log.Warn("info: WMI free memory query failed", new Dictionary<string, object?> { ["error"] = ex.Message });
         }
-        return 0;
+        return MemoryStatus()?.AvailPhys ?? 0;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MemoryStatusEx
+    {
+        public uint Length;
+        public uint MemoryLoad;
+        public ulong TotalPhys;
+        public ulong AvailPhys;
+        public ulong TotalPageFile;
+        public ulong AvailPageFile;
+        public ulong TotalVirtual;
+        public ulong AvailVirtual;
+        public ulong AvailExtendedVirtual;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GlobalMemoryStatusEx(ref MemoryStatusEx status);
+
+    /// <summary>RAM without WMI: works on every Windows the agent supports.</summary>
+    private static MemoryStatusEx? MemoryStatus()
+    {
+        var status = new MemoryStatusEx { Length = (uint)Marshal.SizeOf<MemoryStatusEx>() };
+        if (GlobalMemoryStatusEx(ref status)) return status;
+        Log.Warn("info: GlobalMemoryStatusEx failed", new Dictionary<string, object?> { ["error"] = Marshal.GetLastWin32Error() });
+        return null;
     }
 
     private static List<Dictionary<string, object?>> Network()
@@ -169,9 +212,38 @@ public static class SysInfo
                 });
             }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
             // partial inventory beats none
+            Log.Warn("info: WMI disk query failed", new Dictionary<string, object?> { ["error"] = ex.Message });
+        }
+
+        // Same story as the memory: no WMI, no disks. DriveInfo is enough.
+        if (list.Count == 0)
+        {
+            foreach (var drive in DriveInfo.GetDrives())
+            {
+                try
+                {
+                    if (drive.DriveType != DriveType.Fixed || !drive.IsReady) continue;
+                    long total = drive.TotalSize;
+                    long free = drive.AvailableFreeSpace;
+                    long used = Math.Max(0, total - free);
+                    list.Add(new Dictionary<string, object?>
+                    {
+                        ["mount"] = drive.Name,
+                        ["label"] = drive.VolumeLabel,
+                        ["totalBytes"] = total,
+                        ["usedBytes"] = used,
+                        ["freeBytes"] = free,
+                        ["usedPercent"] = total > 0 ? Math.Round(used * 100.0 / total, 1) : 0.0,
+                    });
+                }
+                catch (Exception)
+                {
+                    // a drive that answers nothing is not worth failing the call
+                }
+            }
         }
         return list;
     }

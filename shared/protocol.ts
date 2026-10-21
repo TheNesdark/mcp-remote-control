@@ -27,6 +27,7 @@ export const JOB_TYPES = [
   "ps.list",
   "ps.kill",
   "screenshot",
+  "message",
   "restart",
   "cua",
   "browser",

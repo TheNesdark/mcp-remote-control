@@ -179,11 +179,47 @@ public static class Ps
         }
         catch (Exception ex)
         {
-            Log.Debug("ps snapshot failed", new { error = ex.Message });
+            // Visible on purpose: without WMI the list comes from
+            // Process.GetProcesses() instead, and the operator should know.
+            Log.Warn("ps: WMI snapshot failed", new Dictionary<string, object?> { ["error"] = ex.Message });
         }
+
+        if (list.Count == 0) list = SnapshotWithoutWmi();
 
         // CPU% needs two samples; the TS agent also reports 0 off Windows.
         AttachCpu(list);
+        return list;
+    }
+
+    /// <summary>
+    /// Process list without WMI. Parent PIDs are unknown, so `tree` cannot walk
+    /// the ancestry — taskkill /T still kills the tree of the resolved pid.
+    /// </summary>
+    private static List<ProcInfo> SnapshotWithoutWmi()
+    {
+        var list = new List<ProcInfo>();
+        foreach (var process in Process.GetProcesses())
+        {
+            try
+            {
+                list.Add(new ProcInfo(
+                    process.Id,
+                    null,
+                    process.ProcessName + ".exe",
+                    null,
+                    null,
+                    process.WorkingSet64,
+                    null));
+            }
+            catch (Exception)
+            {
+                // a process that exits mid-walk is not an error
+            }
+            finally
+            {
+                process.Dispose();
+            }
+        }
         return list;
     }
 

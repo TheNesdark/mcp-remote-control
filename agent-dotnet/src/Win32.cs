@@ -91,6 +91,20 @@ public static class Win32
         }
     }
 
+    /// <summary>Process id of the window's owner (0 when it is gone).</summary>
+    public static int PidOf(long hwnd)
+    {
+        try
+        {
+            GetWindowThreadProcessId(new IntPtr(hwnd), out var pid);
+            return (int)pid;
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
+    }
+
     /// <summary>The process that owns a window ("java", "explorer"...).</summary>
     public static string ProcessOf(long hwnd)
     {
