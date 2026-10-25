@@ -124,14 +124,23 @@ public static class Restart
             lines.Add("ping -n 2 127.0.0.1 >nul");
             lines.Add("goto waitpid");
             lines.Add(":unlocked");
+            // Move the running image aside. (Windows allows renaming a running
+            // exe, so this succeeds even while the old agent is still alive.)
             lines.Add($"move /y \"{target}\" \"{old}\" >nul 2>&1");
+            // If we could not move it aside, do NOT start a second agent that
+            // would fight over the name: keep the staged build and let the next
+            // restart pick it up.
+            lines.Add("if errorlevel 1 goto busy");
 
-            lines.Add(":unlocked");
-            // Old image is aside: put the staged build in place. If this fails
-            // (unexpected: nothing has the file open now), restore the old one.
+            // Put the staged build in place. If this fails (unexpected: nothing
+            // should have the file open now), restore the old image and do NOT
+            // relaunch, so we never start a half-swapped agent.
             lines.Add($"move /y \"{updatePath}\" \"{target}\" >nul 2>&1");
-            lines.Add($"if exist \"{target}\" goto relaunch");
-            lines.Add($"move /y \"{old}\" \"{target}\" >nul 2>&1");
+            lines.Add($"if not exist \"{target}\" (");
+            lines.Add($"    move /y \"{old}\" \"{target}\" >nul 2>&1");
+            lines.Add($"    echo swap failed: could not put {Path.GetFileName(updatePath)} in place >> %TEMP%\\mrc-restart.log");
+            lines.Add("    goto end");
+            lines.Add(")");
             lines.Add("goto relaunch");
 
             // The old process did not exit within the budget: do NOT start a
@@ -229,7 +238,9 @@ public static class Restart
 
         try
         {
-            Process.Start(new ProcessStartInfo("cmd.exe", $"/c start \"\" /min \"{script}\"")
+            // /b runs the script in the same (hidden) console instead of spawning
+            // a minimized window, so the user never sees a cmd during the swap.
+            Process.Start(new ProcessStartInfo("cmd.exe", $"/c start /b \"\" \"{script}\"")
             {
                 UseShellExecute = false,
                 CreateNoWindow = true,
