@@ -23,6 +23,9 @@ tests
 scripts
 bunfig.toml
 
-# Agente Windows (fuera del build del servidor)
-agent-dotnet
+# Agente Windows: se compila en la etapa agent-builder del Dockerfile.
+# Solo se ignora el output de build local (bin/obj); el código fuente
+# (incluido el .csproj) debe entrar al contexto.
+agent-dotnet/bin
+agent-dotnet/obj
 dist
