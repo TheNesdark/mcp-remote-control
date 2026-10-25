@@ -235,7 +235,11 @@ The server and the agent share **one version** (`shared/version.ts`). The
 agent exe is published from `agent-dotnet/` (self-contained win-x64) and placed
 where the server can serve it, with `MRC_AGENT_BINARY_PATH` pointing at it; the
 SHA256 is **computed at runtime** from that file, so no manual hash is needed.
-The server image does **not** build the agent (its publish is Windows-only).
+Since v1.0.49 the Dockerfile builds the agent (.NET 8, win-x64) in a
+separate stage and the hub serves it at /agent/latest.exe
+(MRC_AGENT_BINARY_PATH=/app/agent/rc-agent.exe). The legacy share-based
+flow (MRC_AGENT_BINARY_UNC, rc-agent-update.exe) stays as a fallback for
+Win7 and for machines that cannot reach the hub's HTTP face.
 
 Redesplegar the server does **not** touch the agent binaries on the Windows
 machines, so agents pull updates themselves when they reconnect:
@@ -280,19 +284,22 @@ Safety:
 Publishing a new agent version:
 
 ```sh
-# 1. bump shared/version.ts  (e.g. 1.0.8 -> 1.0.9)
-# 2. cd agent-dotnet && dotnet publish -c Release -r win-x64 \
-#      --self-contained true -p:PublishSingleFile=true -o ../dist
-# 3. copy dist/rc-agent.exe to the share and to MRC_AGENT_BINARY_PATH
-#    (the sha256 is computed at boot from that file).
+# 1. bump shared/version.ts  (e.g. 1.0.49 -> 1.0.50)
+# 2. commit + push to master
+# 3. scripts/deploy-hub.sh (or application-deploy via Dokploy): the Docker
+#    build compiles agent-dotnet for win-x64 (net8, self-contained) and
+#    serves it at /agent/latest.exe (MRC_AGENT_BINARY_PATH=/app/agent/...).
 # 4. agents pick it up on their next reconnect (no env vars to touch).
 ```
 
-`scripts/deploy-hub.sh` does all of it (publish the agent, upload it to the
-share and redeploy the hub), with the order that matters: **the binary on the
-share first, the hub afterwards**. The agent refuses an update whose version
-is not exactly the one the hub announces, so a share ahead of the hub is not
-picked up, and a share behind it is rejected.
+The Docker image now builds the agent itself, so the net8 binary no longer
+needs to be uploaded to the share by hand. `scripts/deploy-hub.sh` only
+publishes the Windows 7 builds (net6, x64/x86) to the share, since those
+cannot be auto-updated and are installed manually.
+
+The agent refuses an update whose version is not exactly the one the hub
+announces, so a share ahead of the hub is not picked up, and a share behind
+it is rejected.
 
 ### One binary on the share
 
