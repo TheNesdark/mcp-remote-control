@@ -23,6 +23,7 @@ import { HubError } from "./hub-error.ts";
 import { JobLimiter } from "./job-limits.ts";
 import { logger } from "./log.ts";
 import type { TokenRegistry } from "./registry.ts";
+import type { Streams } from "./streams.ts";
 
 /** Grace period between `job.cancel` and giving up on a job. */
 export const JOB_CANCEL_GRACE_MS = 2_000;
@@ -191,6 +192,7 @@ export class Hub {
   private readonly pending = new Map<string, PendingJob>();
   private readonly retained = new Map<string, RetainedJob>();
   private readonly limiter: JobLimiter;
+  private streams: Streams | null = null;
   private sweeper: Timer | null = null;
 
   constructor(private readonly opts: HubOptions) {
@@ -204,9 +206,15 @@ export class Hub {
     this.sweeper = setInterval(() => this.sweep(), Math.min(5_000, this.opts.heartbeatIntervalMs));
   }
 
+  /** Live-stream broker (set right after construction, see service.ts). */
+  setStreams(streams: Streams): void {
+    this.streams = streams;
+  }
+
   shutdown(): void {
     if (this.sweeper) clearInterval(this.sweeper);
     this.sweeper = null;
+    this.streams?.shutdown();
     for (const record of this.agents.values()) {
       try {
         record.ws?.close(1001, "server shutting down");
@@ -280,6 +288,12 @@ export class Hub {
       case "job.result":
         this.handleJobResult(msg);
         return;
+      case "stream.frame":
+        this.streams?.onFrame(record.agentId, msg);
+        return;
+      case "stream.state":
+        this.streams?.onState(record.agentId, msg);
+        return;
     }
   }
 
@@ -290,6 +304,7 @@ export class Hub {
     record.online = false;
     record.ws = null;
     record.lastSeen = Date.now();
+    this.streams?.agentOffline(record.agentId);
     logger.info("agent disconnected", { agentId: record.agentId, name: record.name });
     this.opts.registry.touch(record.agentId);
     this.opts.audit.append({ actor: "hub", op: "agent:disconnect", agent: record.name, ok: true });
@@ -376,6 +391,7 @@ export class Hub {
       });
       if (previous) {
         this.bySocket.delete(previous);
+        this.streams?.agentOffline(agentId);
         try {
           // 4003: agents treat it as fatal (auth-style rejection), which is
           // exactly what a replaced instance should do — old agents from
@@ -906,6 +922,22 @@ export class Hub {
           // socket already gone
         }
       }
+    }
+  }
+
+  /**
+   * Deliver one protocol message to a connected agent (used by the live-stream
+   * broker). Returns false when the agent is offline so callers can fail fast.
+   */
+  sendToAgent(agentId: string, msg: ServerMsg): boolean {
+    const record = this.agents.get(agentId);
+    if (!record?.online || !record.ws) return false;
+    try {
+      record.ws.send(encodeMsg(msg));
+      return true;
+    } catch (err) {
+      logger.warn("websocket send failed", { agentId, error: String(err) });
+      return false;
     }
   }
 

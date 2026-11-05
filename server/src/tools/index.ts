@@ -15,6 +15,7 @@ import { registerAgentPower } from "./agent-power.ts";
 import { registerAgentPs } from "./agent-ps.ts";
 import { registerAgentRestart } from "./agent-restart.ts";
 import { registerAgentScreenshot } from "./agent-screenshot.ts";
+import { registerAgentStream } from "./agent-stream.ts";
 import { registerAgentCuaTools } from "./agent-cua.ts";
 import { registerAgentServices } from "./agent-services.ts";
 import { registerAgentsList } from "./agents-list.ts";
@@ -26,6 +27,8 @@ export interface ToolsOptions {
   screenshotKeep?: number;
   /** Base URL clients use to fetch those images (empty = relative path only). */
   screenshotBaseUrl?: string;
+  /** Base URL clients use to view live streams (empty = relative path only). */
+  streamBaseUrl?: string;
   /** Audit trail every tool call is recorded in. */
   audit: AuditLog;
 }
@@ -39,7 +42,7 @@ export interface ToolsOptions {
  * the original per-operation names.
  */
 export function registerTools(server: McpServer, hub: Hub, options: ToolsOptions): void {
-  const { audit, screenshotDir, screenshotKeep, screenshotBaseUrl } = options;
+  const { audit, screenshotDir, screenshotKeep, screenshotBaseUrl, streamBaseUrl } = options;
   registerAgentsList(server, hub, audit);
   registerAgentExec(server, hub, audit);
   registerAgentJobs(server, hub, audit);
@@ -50,6 +53,7 @@ export function registerTools(server: McpServer, hub: Hub, options: ToolsOptions
   registerAgentPs(server, hub, audit);
   registerAgentRestart(server, hub, audit);
   registerAgentScreenshot(server, hub, screenshotDir, audit, screenshotBaseUrl ?? "", screenshotKeep ?? 0);
+  registerAgentStream(server, hub, audit, streamBaseUrl ?? screenshotBaseUrl ?? "");
   registerAgentCuaTools(server, hub, audit, { screenshotDir, screenshotBaseUrl: screenshotBaseUrl ?? "" });
   registerAgentServices(server, hub, audit);
   registerAgentEventLog(server, hub, audit);

@@ -27,6 +27,7 @@ export const JOB_TYPES = [
   "ps.list",
   "ps.kill",
   "screenshot",
+  "camera",
   "message",
   "restart",
   "cua",
@@ -184,6 +185,30 @@ export const RecordParams = z.object({
 export type RecordParams = z.infer<typeof RecordParams>;
 
 // ---------------------------------------------------------------------------
+// Live streaming (agent-dotnet/src/Stream.cs)
+// ---------------------------------------------------------------------------
+
+export const STREAM_SOURCES = ["screen", "camera"] as const;
+export type StreamSource = (typeof STREAM_SOURCES)[number];
+
+/**
+ * Hard cap for the JPEG binary of one `stream.frame`. The agent base64-encodes
+ * it inside a JSON frame, so staying well under MAX_FRAME_BYTES keeps the
+ * WebSocket message valid with framing slack.
+ */
+export const MAX_STREAM_FRAME_BYTES = 512 * 1024;
+
+/** Capture settings for one live stream (query params of /stream/<agent>). */
+export const StreamSettings = z.object({
+  source: z.enum(STREAM_SOURCES).default("screen"),
+  fps: z.number().int().min(1).max(30).default(10),
+  quality: z.number().int().min(1).max(100).default(60),
+  /** Frames are scaled to this width at most (aspect kept, never upscaled). */
+  maxWidth: z.number().int().min(160).max(4096).default(1600),
+});
+export type StreamSettings = z.infer<typeof StreamSettings>;
+
+// ---------------------------------------------------------------------------
 // Live-browser control over CDP (agent-dotnet/src/BrowserCdp.cs)
 // ---------------------------------------------------------------------------
 
@@ -256,12 +281,32 @@ export const JobResultMsg = z.object({
   meta: z.record(z.string(), z.unknown()).optional(),
 });
 
+/** One live-stream frame: a base64 JPEG that viewers render back-to-back. */
+export const StreamFrameMsg = z.object({
+  type: z.literal("stream.frame"),
+  streamId: z.string().min(1),
+  seq: z.number().int().nonnegative(),
+  /** Base64 JPEG bytes (always JPEG for streaming). */
+  data: z.string(),
+  bytes: z.number().int().positive(),
+});
+
+export const StreamStateMsg = z.object({
+  type: z.literal("stream.state"),
+  streamId: z.string().min(1),
+  status: z.enum(["started", "stopped", "error"]),
+  error: z.string().optional(),
+  fps: z.number().optional(),
+});
+
 export const AgentMsg = z.discriminatedUnion("type", [
   HelloMsg,
   HeartbeatMsg,
   PresenceMsg,
   JobOutputMsg,
   JobResultMsg,
+  StreamFrameMsg,
+  StreamStateMsg,
 ]);
 export type AgentMsg = z.infer<typeof AgentMsg>;
 export type HelloMsg = z.infer<typeof HelloMsg>;
@@ -269,6 +314,8 @@ export type HeartbeatMsg = z.infer<typeof HeartbeatMsg>;
 export type PresenceMsg = z.infer<typeof PresenceMsg>;
 export type JobOutputMsg = z.infer<typeof JobOutputMsg>;
 export type JobResultMsg = z.infer<typeof JobResultMsg>;
+export type StreamFrameMsg = z.infer<typeof StreamFrameMsg>;
+export type StreamStateMsg = z.infer<typeof StreamStateMsg>;
 
 // ---------------------------------------------------------------------------
 // Server -> Agent
@@ -307,6 +354,21 @@ export const JobCancelMsg = z.object({
   jobId: z.string().min(1),
 });
 
+/** Ask an agent to start pushing frames for `streamId` (see StreamFrameMsg). */
+export const StreamStartMsg = z.object({
+  type: z.literal("stream.start"),
+  streamId: z.string().min(1),
+  source: z.enum(STREAM_SOURCES).default("screen"),
+  fps: z.number().int().min(1).max(30).default(10),
+  quality: z.number().int().min(1).max(100).default(60),
+  maxWidth: z.number().int().min(160).max(4096).default(1600),
+});
+
+export const StreamStopMsg = z.object({
+  type: z.literal("stream.stop"),
+  streamId: z.string().min(1),
+});
+
 export const PingMsg = z.object({
   type: z.literal("ping"),
   ts: z.number(),
@@ -322,6 +384,8 @@ export const ServerMsg = z.discriminatedUnion("type", [
   WelcomeMsg,
   JobRequestMsg,
   JobCancelMsg,
+  StreamStartMsg,
+  StreamStopMsg,
   PingMsg,
   ServerErrorMsg,
 ]);
@@ -329,6 +393,8 @@ export type ServerMsg = z.infer<typeof ServerMsg>;
 export type WelcomeMsg = z.infer<typeof WelcomeMsg>;
 export type JobRequestMsg = z.infer<typeof JobRequestMsg>;
 export type JobCancelMsg = z.infer<typeof JobCancelMsg>;
+export type StreamStartMsg = z.infer<typeof StreamStartMsg>;
+export type StreamStopMsg = z.infer<typeof StreamStopMsg>;
 export type PingMsg = z.infer<typeof PingMsg>;
 export type ServerErrorMsg = z.infer<typeof ServerErrorMsg>;
 

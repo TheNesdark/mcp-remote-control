@@ -22,6 +22,9 @@ recording. There is no separate sidecar to compile on the target.
   `bun run admin -- agent add --name PC-01` on the server host.
 - For screen recordings as MP4: `ffmpeg.exe` on that machine (next to the agent
   or on `PATH`). Without it the engine writes a motion-JPEG `.avi` instead.
+- For live streaming `ffmpeg.exe` is also used (gdigrab/dshow): without it the
+  screen stream falls back to a slower GDI mode (≤10 fps) and the webcam
+  source fails with a clear error.
 
 ## Install (recommended: `INSTALAR-AGENTE.bat`)
 

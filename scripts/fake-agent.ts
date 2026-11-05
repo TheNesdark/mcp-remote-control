@@ -18,9 +18,15 @@ import {
   type JobCancelMsg,
   type JobRequestMsg,
   type ServerErrorMsg,
+  type StreamStartMsg,
+  type StreamStopMsg,
   type WelcomeMsg,
 } from "@mrc/shared";
 import { argFlag, argString, parseArgv } from "@mrc/shared/args";
+
+/** 1x1 JPEG, the frame a fake stream pushes when no custom image is set. */
+export const TINY_JPEG_BASE64 =
+  "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIy/5AACgABAQAAAAAAAP+SAAwAAAEBAAEBAQAA/5QACwABAQAAAAAA/8AACwgAAQABAQERAP/EABQAAQAAAAAAAAAAAAAAAAAAAAD/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAAAPwB/p78/v//aAAgBAQAAAD8Af6e/P7//2gAIAQEAAAA/AH+nvz+//9k=";
 
 export interface FakeAgentOptions {
   url: string;
@@ -40,6 +46,10 @@ export interface FakeAgentOptions {
    * tests to simulate what a real agent (e.g. a PowerShell helper) would print.
    */
   respond?: (msg: JobRequestMsg) => FakeResponse | undefined;
+  /** Frame pushed for each stream.frame (base64 JPEG; default 1x1). */
+  streamJpegBase64?: string;
+  /** When set, stream.start answers with a stream.state error instead of frames. */
+  streamError?: string;
   onLog?: (line: string) => void;
 }
 
@@ -70,10 +80,15 @@ export class FakeAgent {
   lastError: ServerErrorMsg | null = null;
   jobsSeen: string[] = [];
   cancelledJobs: string[] = [];
+  streamsStarted: string[] = [];
+  streamsStopped: string[] = [];
+  streamFrames = 0;
 
   private ws: WebSocket | null = null;
   private heartbeat: Timer | null = null;
   private jobTimers = new Map<string, Timer>();
+  private streamTimers = new Map<string, Timer>();
+  private streamSeq = new Map<string, number>();
 
   constructor(readonly opts: FakeAgentOptions) {}
 
@@ -99,7 +114,7 @@ export class FakeAgent {
           os: this.opts.os ?? "Linux (fake agent)",
           version: this.opts.version ?? "0.0.0",
           tags: this.opts.tags ?? [],
-          caps: this.opts.caps ?? ["exec", "fs", "ps", "screenshot", "info", "restart"],
+          caps: this.opts.caps ?? ["exec", "fs", "ps", "screenshot", "info", "restart", "stream"],
           paused: this.opts.paused ?? false,
         });
       });
@@ -128,6 +143,12 @@ export class FakeAgent {
           case "job.cancel":
             this.handleCancel(msg);
             return;
+          case "stream.start":
+            this.handleStreamStart(msg);
+            return;
+          case "stream.stop":
+            this.handleStreamStop(msg);
+            return;
           case "ping":
             return;
           case "error":
@@ -144,6 +165,7 @@ export class FakeAgent {
         this.clearHeartbeat();
         for (const t of this.jobTimers.values()) clearTimeout(t);
         this.jobTimers.clear();
+        this.stopAllStreams();
         if (!this.welcome) {
           reject(new Error(`connection closed before welcome: ${event.code} ${event.reason}`));
         }
@@ -171,8 +193,51 @@ export class FakeAgent {
 
   stop(): void {
     this.clearHeartbeat();
+    this.stopAllStreams();
     this.ws?.close(1000, "client stop");
     this.ws = null;
+  }
+
+  private stopAllStreams(): void {
+    for (const t of this.streamTimers.values()) clearInterval(t);
+    this.streamTimers.clear();
+    this.streamSeq.clear();
+  }
+
+  private handleStreamStart(msg: StreamStartMsg): void {
+    this.streamsStarted.push(msg.streamId);
+    this.log(`stream.start ${msg.streamId} (${msg.source}, ${msg.fps} fps)`);
+    if (this.opts.streamError) {
+      this.send({ type: "stream.state", streamId: msg.streamId, status: "error", error: this.opts.streamError });
+      return;
+    }
+    this.send({ type: "stream.state", streamId: msg.streamId, status: "started", fps: msg.fps });
+    const jpeg = this.opts.streamJpegBase64 ?? TINY_JPEG_BASE64;
+    const bytes = Math.floor((jpeg.length * 3) / 4);
+    const interval = Math.max(50, Math.round(1000 / Math.max(1, msg.fps)));
+    this.streamSeq.set(msg.streamId, 0);
+    if (this.streamTimers.has(msg.streamId)) clearInterval(this.streamTimers.get(msg.streamId)!);
+    this.streamTimers.set(
+      msg.streamId,
+      setInterval(() => {
+        const seq = this.streamSeq.get(msg.streamId) ?? 0;
+        this.streamSeq.set(msg.streamId, seq + 1);
+        this.streamFrames += 1;
+        this.send({ type: "stream.frame", streamId: msg.streamId, seq, data: jpeg, bytes });
+      }, interval),
+    );
+  }
+
+  private handleStreamStop(msg: StreamStopMsg): void {
+    this.streamsStopped.push(msg.streamId);
+    const timer = this.streamTimers.get(msg.streamId);
+    if (timer) {
+      clearInterval(timer);
+      this.streamTimers.delete(msg.streamId);
+    }
+    this.streamSeq.delete(msg.streamId);
+    this.send({ type: "stream.state", streamId: msg.streamId, status: "stopped" });
+    this.log(`stream.stop ${msg.streamId}`);
   }
 
   private startHeartbeat(intervalMs: number): void {

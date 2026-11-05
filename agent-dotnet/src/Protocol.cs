@@ -18,6 +18,8 @@ public static class Protocol
     public const int FsMaxChunkBytes = 512 * 1024;
     public const int FsDefaultChunkBytes = 256 * 1024;
     public const int MaxScreenshotBytes = 20 * 1024 * 1024;
+    /// <summary>Cap for one JPEG stream frame (mirror of MAX_STREAM_FRAME_BYTES).</summary>
+    public const int MaxStreamFrameBytes = 512 * 1024;
     public const int MaxExecTimeoutMs = 3_600_000;
     public const int ScreenshotChunkChars = 256 * 1024;
 
@@ -25,12 +27,12 @@ public static class Protocol
     public static readonly string[] JobTypes =
     {
         "exec", "fs.list", "fs.read", "fs.write", "fs.hash", "info",
-        "ps.list", "ps.kill", "screenshot", "restart", "cua", "browser",
-        "record", "record.status", "diagnose", "settings",
+        "ps.list", "ps.kill", "screenshot", "camera", "message", "restart", "cua",
+        "browser", "record", "record.status", "diagnose", "settings",
     };
 
     /// <summary>Advertised capabilities (mirror of the TS CAPS list).</summary>
-    public static readonly string[] Caps = { "exec", "fs", "info", "ps", "screenshot", "restart" };
+    public static readonly string[] Caps = { "exec", "fs", "info", "ps", "screenshot", "restart", "stream" };
 
     /// <summary>ws://host:8787 -> ws://host:8787/agent; explicit paths are kept.</summary>
     public static string NormalizeAgentUrl(string raw)
@@ -71,6 +73,23 @@ public sealed class JobRequestMsg
 public sealed class JobCancelMsg
 {
     public string JobId { get; set; } = "";
+}
+
+/// <summary>stream.start: begin pushing frames for `streamId` (see Stream.cs).</summary>
+public sealed class StreamStartMsg
+{
+    public string StreamId { get; set; } = "";
+    /// <summary>"screen" (gdigrab / GDI) or "camera" (dshow).</summary>
+    public string Source { get; set; } = "screen";
+    public int Fps { get; set; } = 10;
+    public int Quality { get; set; } = 60;
+    /// <summary>Scale frames to this width at most (aspect kept).</summary>
+    public int MaxWidth { get; set; } = 1600;
+}
+
+public sealed class StreamStopMsg
+{
+    public string StreamId { get; set; } = "";
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +143,28 @@ public sealed class JobResultMsg
     public string? Error { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Dictionary<string, object?>? Meta { get; set; }
+}
+
+public sealed class StreamFrameMsg
+{
+    public string Type => "stream.frame";
+    public string StreamId { get; set; } = "";
+    public long Seq { get; set; }
+    /// <summary>Base64 JPEG.</summary>
+    public string Data { get; set; } = "";
+    public int Bytes { get; set; }
+}
+
+public sealed class StreamStateMsg
+{
+    public string Type => "stream.state";
+    public string StreamId { get; set; } = "";
+    /// <summary>"started" | "stopped" | "error".</summary>
+    public string Status { get; set; } = "started";
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Error { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Fps { get; set; }
 }
 
 // ---------------------------------------------------------------------------

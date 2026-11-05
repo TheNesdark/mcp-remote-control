@@ -10,6 +10,8 @@ import { logger, setLogLevel } from "./log.ts";
 import { createMcpHttpHandler, MCP_HTTP_PATH } from "./mcp-http.ts";
 import { createRegistry, type TokenRegistry } from "./registry.ts";
 import { handleScreenshotRequest, SCREENSHOT_HTTP_PREFIX } from "./screenshots-http.ts";
+import { handleStreamRequest, STREAM_HTTP_PREFIX } from "./stream-http.ts";
+import { Streams } from "./streams.ts";
 import { scheduleScreenshotPrune } from "./screenshots-retention.ts";
 import { AgentStore } from "./store.ts";
 
@@ -34,6 +36,8 @@ export interface Service {  server: Server<WsData>;
   registry: TokenRegistry;
   audit: AuditLog;
   config: ServerConfig;
+  /** Live-stream broker (agent fan-out for /stream/<agent>). */
+  streams: Streams;
   port: number;
   wsUrl: string;
   /** Actual MCP-HTTP port (0 when disabled) and URL. */
@@ -102,6 +106,10 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
         }
       : {}),
   });
+  // Live streams: the broker sends stream.start/stop through the hub and the
+  // hub routes the agent's frames back to it.
+  const streams = new Streams({ send: (agentId, msg) => hub.sendToAgent(agentId, msg) });
+  hub.setStreams(streams);
   hub.start();
   // Bound the screenshot directory from previous runs before serving anything.
   scheduleScreenshotPrune(config.screenshotDir, config.screenshotKeep);
@@ -191,6 +199,7 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
       screenshotDir: config.screenshotDir,
       screenshotKeep: config.screenshotKeep,
       screenshotBaseUrl: screenshotBaseUrl(config),
+      streamBaseUrl: screenshotBaseUrl(config),
       audit,
       bearerToken: config.token,
     });
@@ -204,6 +213,9 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
         // Screenshot downloads for clients on other machines (token-protected).
         if (url.pathname.startsWith(SCREENSHOT_HTTP_PREFIX)) {
           return handleScreenshotRequest(req, config.screenshotDir, config.token);
+        }
+        if (url.pathname.startsWith(STREAM_HTTP_PREFIX)) {
+          return handleStreamRequest(req, { hub, streams, token: config.token });
         }
         if (
           url.pathname === MCP_HTTP_PATH &&
@@ -226,6 +238,7 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
     registry,
     audit,
     config,
+    streams,
     port,
     wsUrl,
     mcpHttpPort,

@@ -26,6 +26,7 @@ public sealed class AgentConnection : IAsyncDisposable
 
     private readonly AgentConnectionOptions _opts;
     private readonly JobManager _jobs;
+    private readonly StreamManager _streams;
     private readonly CancellationTokenSource _cts = new();
     private readonly SemaphoreSlim _reconnect = new(0);
     private readonly Random _random = new();
@@ -42,6 +43,7 @@ public sealed class AgentConnection : IAsyncDisposable
     {
         _opts = opts;
         _jobs = jobs;
+        _streams = new StreamManager(msg => SendAsync(msg));
         _agentId = opts.AgentId;
         _paused = opts.Paused;
         _jobs.OnOutput += OnJobOutput;
@@ -161,6 +163,9 @@ public sealed class AgentConnection : IAsyncDisposable
         _channel = null;
         _hadWelcome = false;
         _jobs.CancelAll();
+        // Nobody can view the streams once the socket is down (frames have no
+        // path to the hub), so kill the captures instead of leaving ffmpeg on.
+        _streams.StopAll();
         var requested = _reconnectRequested;
         _reconnectRequested = false;
         Log.Info("disconnected", new
@@ -217,6 +222,18 @@ public sealed class AgentConnection : IAsyncDisposable
             {
                 var msg = Json.Deserialize<JobCancelMsg>(raw);
                 if (msg is not null) _jobs.HandleCancel(msg.JobId);
+                break;
+            }
+            case "stream.start":
+            {
+                var msg = Json.Deserialize<StreamStartMsg>(raw);
+                if (msg is not null) _streams.Start(msg);
+                break;
+            }
+            case "stream.stop":
+            {
+                var msg = Json.Deserialize<StreamStopMsg>(raw);
+                if (msg is not null) _streams.Stop(msg.StreamId);
                 break;
             }
             case "ping":
@@ -329,6 +346,7 @@ public sealed class AgentConnection : IAsyncDisposable
     public async Task StopAsync()
     {
         _stopped = true;
+        _streams.StopAll();
         StopHeartbeat();
         try
         {

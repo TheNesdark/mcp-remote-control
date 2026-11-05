@@ -31,6 +31,8 @@ export interface McpHttpOptions {
   screenshotKeep?: number;
   /** Base URL clients use to fetch saved screenshots (empty = relative only). */
   screenshotBaseUrl?: string;
+  /** Base URL clients use to view live streams (empty = relative only). */
+  streamBaseUrl?: string;
   audit: AuditLog;
   bearerToken: string;
 }
@@ -75,6 +77,7 @@ export function createMcpHttpHandler(hub: Hub, opts: McpHttpOptions): McpHttpHan
       screenshotDir: opts.screenshotDir,
       screenshotKeep: opts.screenshotKeep,
       screenshotBaseUrl: opts.screenshotBaseUrl,
+      streamBaseUrl: opts.streamBaseUrl,
       audit: opts.audit,
     });
     const transport = new WebStandardStreamableHTTPServerTransport({

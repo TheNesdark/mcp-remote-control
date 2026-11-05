@@ -16,6 +16,7 @@ import { FakeAgent } from "./fake-agent.ts";
 import { cleanEnv, waitFor } from "./test-utils.ts";
 
 const PORT = Number(process.env.E2E_PORT ?? 18_999);
+const MCP_PORT = PORT + 1;
 const TOKEN = "e2e-token";
 const SERVER_ENTRY = join(import.meta.dir, "..", "server", "src", "index.ts");
 
@@ -50,9 +51,9 @@ const transport = new StdioClientTransport({
   env: {
     ...cleanEnv(),
     MRC_PORT: String(PORT),
-    // explicit 0: even if a stray .env would re-add the operator's MCP port,
-    // an inherited variable wins over file values in Bun.
-    MRC_MCP_HTTP_PORT: "0",
+    // A dedicated MCP HTTP port: an inherited variable wins over file values
+    // in Bun, so the live-stream checks always talk to this server.
+    MRC_MCP_HTTP_PORT: String(MCP_PORT),
     MRC_TOKEN: TOKEN,
     MRC_LOG_LEVEL: "info",
   },
@@ -216,6 +217,48 @@ try {
     many.every((m) => m.data.ok === true),
     many.map((m) => m.data),
   );
+
+  // -------------------------------------------------------------------------
+  // Live stream over the MCP HTTP face
+  // -------------------------------------------------------------------------
+  console.log("e2e: live stream over the MCP HTTP face");
+
+  const streamTool = await callTool("agent_stream", { agent: "FAKE-01" });
+  check(
+    "agent_stream returns a stream url",
+    streamTool.isError === false && String(streamTool.data.url).includes("/stream/FAKE-01"),
+    streamTool.data,
+  );
+
+  const unauth = await fetch(`http://127.0.0.1:${MCP_PORT}/stream/FAKE-01`);
+  check("stream without a token is 401", unauth.status === 401, unauth.status);
+
+  const streamRes = await fetch(`http://127.0.0.1:${MCP_PORT}/stream/FAKE-01?fps=15`, {
+    headers: { authorization: `Bearer ${TOKEN}` },
+  });
+  check(
+    "stream responds multipart/x-mixed-replace",
+    streamRes.status === 200 &&
+      (streamRes.headers.get("content-type") ?? "").includes("multipart/x-mixed-replace"),
+    streamRes.status,
+  );
+  let streamBuf = Buffer.alloc(0);
+  {
+    const reader = streamRes.body!.getReader();
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      const next = await Promise.race([
+        reader.read(),
+        Bun.sleep(Math.max(1, deadline - Date.now())).then(() => null),
+      ]);
+      if (!next || next.done) break;
+      streamBuf = Buffer.concat([streamBuf, next.value]);
+      if (streamBuf.includes(Buffer.from([0xff, 0xd8]))) break;
+    }
+    await reader.cancel().catch(() => {});
+  }
+  check("stream delivers jpeg frames", streamBuf.includes(Buffer.from([0xff, 0xd8])), streamBuf.length);
+  check("the agent saw a stream.start", a1.streamsStarted.length === 1, a1.streamsStarted);
 
   // -------------------------------------------------------------------------
   // Confirmation gate on a destructive tool

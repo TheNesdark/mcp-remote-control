@@ -120,6 +120,34 @@ Everything lives under one directory, `MRC_DATA_DIR` (default `server/data/`,
 `MRC_DB_PATH`, `MRC_AUDIT_PATH` and `MRC_SCREENSHOT_DIR` can override each path
 individually, but they are unnecessary: moving `MRC_DATA_DIR` moves all three.
 
+## Live streams (`/stream/<agent>`)
+
+Watch a machine's screen (or webcam) live in a browser or any MJPEG-capable
+player. The stream lives on the MCP HTTP port and needs the same token as the
+rest of that face:
+
+```sh
+open "http://192.168.1.191:8788/stream/PC-01?token=$MRC_TOKEN"      # screen, 10 fps
+open "http://192.168.1.191:8788/stream/PC-01/camera?fps=15"         # webcam
+curl -N -H "Authorization: Bearer $MRC_TOKEN" \
+     "http://192.168.1.191:8788/stream/PC-01?fps=10&quality=60&maxWidth=1600" > out.mjpeg
+```
+
+- Query params: `fps` (1-30, default 10), `quality` (1-100, default 60),
+  `maxWidth` (160-4096, default 1600; never upscales).
+- Agent builds with the `stream` capability capture continuously with ffmpeg
+  (`gdigrab` for the desktop, `dshow` for the camera) and push frames over
+  their WebSocket; the hub only fans them out, so several viewers share one
+  capture. Without ffmpeg the agent falls back to a GDI loop for the screen
+  (≤10 fps). Older agents that do not advertise `stream` make the hub poll
+  `screenshot` instead (≈5 fps).
+- The capture starts when the first viewer connects and stops by itself ~10 s
+  after the last one leaves (nothing keeps running in the background). The
+  MCP tool `agent_stream` returns the URL including the right parameters.
+- An agent paused from the tray refuses streams (409), like it refuses jobs.
+- No frames touch the server disk; `stream.frame` messages ride the same
+  connection as jobs, capped at 512 KiB per frame (bigger frames are dropped).
+
 ## LAN deployment (F5, no VPN)
 
 Posture: plain `ws://` (agents) + `http://` (MCP) on the **trusted local
