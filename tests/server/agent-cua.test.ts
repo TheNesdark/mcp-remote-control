@@ -150,6 +150,8 @@ function browserMeta(msg: JobRequestMsg): Record<string, unknown> {
       return { browser: "chrome", target_id: "A1B2", clicked: { x: 10, y: 20, w: 100, h: 20 }, tag: "a", text: "More information...", matches: 1, via: "dom" };
     case "search":
       return { browser: "chrome", target_id: "A1B2", query: "test", typed: 4, submitted: "keydown", input_name: "search_query", url: "https://example.com/results?search_query=test" };
+    case "enable":
+      return { browser: "chrome", status: "enabled", port: 9222, ws_path: "devtools/browser/A1B2", version: "109.0.5414.120" };
     default:
       return { unexpectedOperation: params.operation };
   }
@@ -558,6 +560,20 @@ test("agent_cua_browser search types the query and submits it", async () => {
   expect(result.data.submitted).toBe("keydown");
   const params = (started.jobs[0]?.params ?? {}) as Record<string, unknown>;
   expect(params).toMatchObject({ operation: "search", match: "test" });
+});
+
+test("agent_cua_browser enable requires confirm and forwards port", async () => {
+  const started = await start();
+  const denied = await call("agent_cua_browser", { agent: "W-CUA-01", operation: "enable" });
+  expect(denied.isError).toBe(true);
+  expect(started.jobs.length).toBe(0);
+
+  const granted = await call("agent_cua_browser", { agent: "W-CUA-01", operation: "enable", confirm: true, port: 9333 });
+  expect(granted.isError).toBe(false);
+  expect(granted.data.status).toBe("enabled");
+  const params = (started.jobs[0]?.params ?? {}) as Record<string, unknown>;
+  expect(params).toMatchObject({ operation: "enable", confirm: true, port: 9333 });
+  expect(params).not.toHaveProperty("agent");
 });
 
 test("agent_cua_browser click with confirm drives a browser click job", async () => {

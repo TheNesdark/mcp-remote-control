@@ -27,10 +27,12 @@ public sealed class CdpClient : IDisposable
     public bool Closed => _closed;
 
     /// <summary>
-    /// Connects the browser WebSocket. On the first connection Chrome 136+
-    /// holds the handshake open until the user accepts its "Allow debugging?"
-    /// prompt, so the budget is generous (the caller's token, else 120s): a
-    /// short one would abort before a human can answer.
+    /// Connects the browser WebSocket (`ws://127.0.0.1:port/&lt;WsPath&gt;`). On the
+    /// first connection Chrome 136+ holds the handshake open until the user
+    /// accepts its "Allow debugging?" prompt, so the budget is generous (the
+    /// caller's token, else 120s): a short one would abort before a human can
+    /// answer. Legacy Chrome (109) answers instantly on the path the discovery
+    /// found (DevToolsActivePort or /json/version).
     /// </summary>
     public static async Task<CdpClient> ConnectAsync(BrowserCdpEndpointLike endpoint, CancellationToken ct)
     {
@@ -39,7 +41,7 @@ public sealed class CdpClient : IDisposable
         timeout.CancelAfter(120_000);
         try
         {
-            await ws.ConnectAsync(new Uri($"ws://127.0.0.1:{endpoint.Port}/devtools/browser/{endpoint.Token}"), timeout.Token).ConfigureAwait(false);
+            await ws.ConnectAsync(new Uri($"ws://127.0.0.1:{endpoint.Port}/{endpoint.WsPath}"), timeout.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -199,5 +201,6 @@ public sealed class CdpClient : IDisposable
 public sealed class BrowserCdpEndpointLike
 {
     public required int Port { get; init; }
-    public required string Token { get; init; }
+    /// <summary>Path under `ws://127.0.0.1:port/`, e.g. `devtools/browser/&lt;id or token&gt;`.</summary>
+    public required string WsPath { get; init; }
 }

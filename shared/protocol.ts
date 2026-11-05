@@ -234,7 +234,7 @@ export const HelloMsg = z.object({
   proto: z.number().int().positive(),
   token: z.string().min(1),
   agentId: z.string().min(1).optional(),
-  name: z.string().min(1).max(64),
+  name: z.string().min(1).max(120),
   host: z.string().min(1),
   os: z.string().min(1),
   version: z.string().min(1),

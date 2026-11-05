@@ -33,10 +33,27 @@ public static class BrowserCdp
         public long LastUsed { get; set; }
     }
 
-    private sealed record Endpoint(string BrowserName, string UserDataDir, int Port, string Token);
+    private sealed record Endpoint(string BrowserName, string UserDataDir, int Port, string WsPath);
+
+    private const int DefaultDebugPort = 9222;
+
+    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMilliseconds(2_000) };
 
     // ---------------------------------------------------------------- endpoint
 
+    /// <summary>
+    /// Finds the DevTools endpoint of the user's browser.
+    ///
+    /// Modern Chrome (136+) only opens the port after the user turns on
+    /// chrome://inspect/#remote-debugging, which writes DevToolsActivePort:
+    /// line 0 is the port, line 1 the browser WebSocket token.
+    ///
+    /// Legacy Chrome (109, the last build for Windows 7) has no such toggle:
+    /// when it was launched with --remote-debugging-port (see operation
+    /// `enable`) the file carries the port and the browser path, and even
+    /// without a file the legacy /json/version HTTP endpoint answers with the
+    /// canonical webSocketDebuggerUrl.
+    /// </summary>
     private static Endpoint? DiscoverEndpoint(string? preferred)
     {
         var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -49,28 +66,151 @@ public static class BrowserCdp
             var userDataDir = Path.Combine(local, browser == "chrome"
                 ? Path.Combine("Google", "Chrome", "User Data")
                 : Path.Combine("Microsoft", "Edge", "User Data"));
+            if (!Directory.Exists(userDataDir)) continue;
             var file = Path.Combine(userDataDir, "DevToolsActivePort");
-            if (!File.Exists(file)) continue;
-            try
+            if (TryReadActivePort(file, out var port, out var wsPath))
             {
-                var lines = File.ReadAllLines(file);
-                if (lines.Length < 2) continue;
-                if (!int.TryParse(lines[0].Trim(), out var port) || port <= 0 || port > 65535) continue;
-                var token = lines[1].Trim();
-                if (token.Length == 0) continue;
-                return new Endpoint(browser, userDataDir, port, token);
+                return new Endpoint(browser, userDataDir, port, wsPath);
             }
-            catch (IOException)
+        }
+        // No usable DevToolsActivePort: an old browser (or one launched with an
+        // explicit port) still answers the legacy HTTP probe.
+        var probe = ProbePort(DefaultDebugPort);
+        if (probe is not null)
+        {
+            var name = order.Contains(probe.BrowserName) ? probe.BrowserName : order[0];
+            return new Endpoint(name, local, DefaultDebugPort, probe.WsPath);
+        }
+        return null;
+    }
+
+    private static bool TryReadActivePort(string file, out int port, out string wsPath)
+    {
+        port = 0;
+        wsPath = "devtools/browser";
+        if (!File.Exists(file)) return false;
+        try
+        {
+            var lines = File.ReadAllLines(file);
+            if (lines.Length == 0) return false;
+            if (!int.TryParse(lines[0].Trim(), out port) || port <= 0 || port > 65535) return false;
+            wsPath = WsPathFromActivePort(lines.Length > 1 ? lines[1] : null);
+            return true;
+        }
+        catch (IOException)
+        {
+            // unreadable => not usable
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Chrome 136+ writes the bare token (used as /devtools/browser/&lt;token&gt;);
+    /// older builds write the full browser path. Accept both, plus a file with
+    /// no second line at all.
+    /// </summary>
+    private static string WsPathFromActivePort(string? secondLine)
+    {
+        var raw = secondLine?.Trim() ?? "";
+        if (raw.Length == 0) return "devtools/browser";
+        if (raw.StartsWith("devtools/", StringComparison.OrdinalIgnoreCase)) return raw;
+        if (raw.StartsWith("/")) return raw.TrimStart('/');
+        return $"devtools/browser/{raw}";
+    }
+
+    private sealed record ProbeResult(string WsPath, string BrowserName);
+
+    /// <summary>The legacy /json/version endpoint (gone in Chrome 136+).</summary>
+    private static ProbeResult? ProbePort(int port)
+    {
+        try
+        {
+            var text = Http.GetStringAsync($"http://127.0.0.1:{port}/json/version").GetAwaiter().GetResult();
+            using var doc = JsonDocument.Parse(text);
+            if (!doc.RootElement.TryGetProperty("webSocketDebuggerUrl", out var ws) || ws.ValueKind != JsonValueKind.String)
+                return null;
+            var url = ws.GetString() ?? "";
+            if (url.Length == 0) return null;
+            var path = new Uri(url).AbsolutePath.TrimStart('/');
+            if (path.Length == 0) return null;
+            var browser = doc.RootElement.TryGetProperty("Browser", out var b) ? b.GetString() ?? "" : "";
+            var name = browser.StartsWith("Edg", StringComparison.OrdinalIgnoreCase) ? "msedge" : "chrome";
+            return new ProbeResult(path, name);
+        }
+        catch (Exception)
+        {
+            // nothing listening, or a modern build that no longer serves /json
+            return null;
+        }
+    }
+
+    private static Endpoint Require(string? preferred) =>
+        DiscoverEndpoint(preferred) ?? throw new InvalidOperationException(NotEnabledMessage(preferred));
+
+    /// <summary>Version-aware "nothing to attach to" message.</summary>
+    private static string NotEnabledMessage(string? preferred)
+    {
+        var exe = FindBrowserExe(preferred);
+        if (exe is null)
+            return "no Chrome/Edge installation found (looked in Program Files and LocalAppData)";
+        var version = FileVersionOf(exe.Value.Path);
+        var major = ParseMajor(version);
+        if (major is not null && major >= 136)
+        {
+            return "remote debugging is not enabled on the default profile: open chrome://inspect/#remote-debugging " +
+                   "in the browser, turn 'Allow remote debugging' on, then retry";
+        }
+        var label = exe.Value.Name == "chrome" ? "Chrome" : "Edge";
+        return "remote debugging is not enabled on the default profile: run this tool with operation=enable " +
+               $"(relaunches {label}{(version is null ? "" : $" {version}")} with --remote-debugging-port={DefaultDebugPort}); " +
+               "on Chrome 136+ enable it from chrome://inspect/#remote-debugging instead";
+    }
+
+    private static (string Name, string Path)? FindBrowserExe(string? preferred)
+    {
+        var order = preferred is not null ? new[] { preferred } : new[] { "chrome", "msedge" };
+        foreach (var browser in order)
+        {
+            foreach (var candidate in ExeCandidates(browser))
             {
-                // unreadable => not usable
+                if (File.Exists(candidate)) return (browser, candidate);
             }
         }
         return null;
     }
 
-    private static Endpoint Require(string? preferred) =>
-        DiscoverEndpoint(preferred) ?? throw new InvalidOperationException(
-            "remote debugging is not enabled on the default profile: open chrome://inspect/#remote-debugging in the browser, turn 'Allow remote debugging' on, then retry");
+    private static IEnumerable<string> ExeCandidates(string browser)
+    {
+        var roots = new[]
+        {
+            Environment.GetEnvironmentVariable("ProgramFiles") ?? "",
+            Environment.GetEnvironmentVariable("ProgramFiles(x86)") ?? "",
+            Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? "",
+        };
+        var relative = browser == "chrome"
+            ? Path.Combine("Google", "Chrome", "Application", "chrome.exe")
+            : Path.Combine("Microsoft", "Edge", "Application", "msedge.exe");
+        foreach (var root in roots)
+        {
+            if (root.Length > 0) yield return Path.Combine(root, relative);
+        }
+    }
+
+    private static string? FileVersionOf(string path)
+    {
+        try
+        {
+            var raw = System.Diagnostics.FileVersionInfo.GetVersionInfo(path).FileVersion;
+            return string.IsNullOrWhiteSpace(raw) ? null : raw;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static int? ParseMajor(string? version) =>
+        version is not null && Version.TryParse(version, out var parsed) ? parsed.Major : (int?)null;
 
     // ------------------------------------------------------------------- pool
 
@@ -82,7 +222,7 @@ public static class BrowserCdp
             reusable = _pool;
             if (reusable is not null)
             {
-                var same = reusable.Endpoint.Token == endpoint.Token
+                var same = reusable.Endpoint.WsPath == endpoint.WsPath
                            && reusable.Endpoint.Port == endpoint.Port
                            && reusable.Endpoint.BrowserName == endpoint.BrowserName;
                 if (!same || reusable.Client.Closed || Environment.TickCount64 - reusable.LastUsed >= IdleDisposeMs)
@@ -99,10 +239,30 @@ public static class BrowserCdp
             return reusable;
         }
 
-        var client = await CdpClient.ConnectAsync(new BrowserCdpEndpointLike { Port = endpoint.Port, Token = endpoint.Token }, ct).ConfigureAwait(false);
-        var pool = new Pool { Endpoint = endpoint, Client = client, LastUsed = Environment.TickCount64 };
-        lock (Gate) _pool = pool;
-        return pool;
+        // Candidates: the path derived from DevToolsActivePort first; then
+        // whatever the legacy /json/version endpoint reports for this port
+        // (old Chrome writes a path-style second line, or no second line at
+        // all, which the probe resolves canonically).
+        var candidates = new List<string> { endpoint.WsPath };
+        var probed = ProbePort(endpoint.Port);
+        if (probed is not null && !candidates.Contains(probed.WsPath)) candidates.Add(probed.WsPath);
+
+        Exception? last = null;
+        foreach (var path in candidates)
+        {
+            try
+            {
+                var client = await CdpClient.ConnectAsync(new BrowserCdpEndpointLike { Port = endpoint.Port, WsPath = path }, ct).ConfigureAwait(false);
+                var pool = new Pool { Endpoint = endpoint with { WsPath = path }, Client = client, LastUsed = Environment.TickCount64 };
+                lock (Gate) _pool = pool;
+                return pool;
+            }
+            catch (Exception ex)
+            {
+                last = ex;
+            }
+        }
+        throw last ?? new InvalidOperationException("could not connect to the browser DevTools endpoint");
     }
 
     private static void DropPool(Pool pool)
@@ -133,6 +293,7 @@ public static class BrowserCdp
                 "text" => await TextAsync(p, preferred, ct).ConfigureAwait(false),
                 "click" => await ClickAsync(p, preferred, ct).ConfigureAwait(false),
                 "search" => await SearchAsync(p, preferred, ct).ConfigureAwait(false),
+                "enable" => await EnableAsync(p, preferred, ct).ConfigureAwait(false),
                 _ => throw new InvalidOperationException($"unknown browser operation: {operation}"),
             };
             return JobOutcome.Success(meta);
@@ -140,6 +301,129 @@ public static class BrowserCdp
         catch (InvalidOperationException ex)
         {
             return JobOutcome.Failure(ex.Message);
+        }
+    }
+
+    // --------------------------------------------------------------- enable
+
+    /// <summary>
+    /// operation=enable: makes the user's browser debuggable. On Chrome &lt; 136
+    /// (Windows 7 / Chrome 109, which has no chrome://inspect toggle) the only
+    /// way is relaunching it with --remote-debugging-port; this closes the
+    /// browser (graceful first, forced when it lingers) and starts it again. On
+    /// Chrome 136+ the switch is ignored for the default profile, so it points
+    /// the caller to chrome://inspect/#remote-debugging instead.
+    /// </summary>
+    private static async Task<Dictionary<string, object?>> EnableAsync(JsonElement p, string? preferred, CancellationToken ct)
+    {
+        if (!Fs.ReadBool(p, "confirm"))
+            throw new InvalidOperationException("enable requires confirm=1 (it closes and relaunches the browser)");
+        var port = Fs.ReadInt(p, "port") ?? DefaultDebugPort;
+        if (port < 1024 || port > 65535) throw new InvalidOperationException("port must be between 1024 and 65535");
+
+        var existing = DiscoverEndpoint(preferred);
+        if (existing is not null)
+        {
+            return new Dictionary<string, object?>
+            {
+                ["browser"] = existing.BrowserName,
+                ["status"] = "already-enabled",
+                ["port"] = existing.Port,
+                ["ws_path"] = existing.WsPath,
+            };
+        }
+
+        var exe = FindBrowserExe(preferred)
+                  ?? throw new InvalidOperationException("no Chrome/Edge installation found (looked in Program Files and LocalAppData)");
+        var version = FileVersionOf(exe.Path);
+        var major = ParseMajor(version);
+        var label = exe.Name == "chrome" ? "Chrome" : "Edge";
+        if (major is not null && major >= 136)
+        {
+            throw new InvalidOperationException(
+                $"{label} {version} ignores --remote-debugging-port on the default profile: " +
+                "open chrome://inspect/#remote-debugging in the browser, turn 'Allow remote debugging' on, then retry");
+        }
+
+        var image = Path.GetFileName(exe.Path);
+        await KillImageAsync(image).ConfigureAwait(false);
+        StartDetached(exe.Path, $"--remote-debugging-port={port}");
+
+        var deadline = Environment.TickCount64 + 25_000;
+        while (Environment.TickCount64 < deadline)
+        {
+            await Task.Delay(700, ct).ConfigureAwait(false);
+            var endpoint = DiscoverEndpoint(preferred) ?? ProbeAsEndpoint(port, exe.Name);
+            if (endpoint is not null)
+            {
+                return new Dictionary<string, object?>
+                {
+                    ["browser"] = endpoint.BrowserName,
+                    ["status"] = "enabled",
+                    ["port"] = endpoint.Port,
+                    ["ws_path"] = endpoint.WsPath,
+                    ["version"] = version,
+                    ["note"] = "the browser was relaunched with the DevTools port; tabs return with the session restore",
+                };
+            }
+        }
+        throw new InvalidOperationException(
+            "the browser was relaunched but the DevTools port did not open within 25s " +
+            $"(check for a dialog or an error on the machine; {image} {version})");
+    }
+
+    private static Endpoint? ProbeAsEndpoint(int port, string browser)
+    {
+        var probe = ProbePort(port);
+        if (probe is null) return null;
+        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var dir = browser == "chrome"
+            ? Path.Combine(local, "Google", "Chrome", "User Data")
+            : Path.Combine(local, "Microsoft", "Edge", "User Data");
+        return new Endpoint(browser, dir, port, probe.WsPath);
+    }
+
+    /// <summary>taskkill: graceful first, forced when the browser lingers.</summary>
+    private static async Task KillImageAsync(string image)
+    {
+        var procName = Path.GetFileNameWithoutExtension(image);
+        foreach (var force in new[] { false, true })
+        {
+            try
+            {
+                using var kill = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                    "taskkill", $"/IM {image}{(force ? " /F" : "")} /T")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                });
+                if (kill is not null)
+                {
+                    kill.StandardOutput.ReadToEnd();
+                    kill.StandardError.ReadToEnd();
+                    kill.WaitForExit(5_000);
+                }
+            }
+            catch (Exception)
+            {
+                // taskkill unavailable: the close below just will not happen
+            }
+            await Task.Delay(force ? 1_200 : 3_000).ConfigureAwait(false);
+            if (System.Diagnostics.Process.GetProcessesByName(procName).Length == 0) return;
+        }
+    }
+
+    private static void StartDetached(string exe, string args)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe, args) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"could not relaunch {Path.GetFileName(exe)}: {ex.Message}");
         }
     }
 

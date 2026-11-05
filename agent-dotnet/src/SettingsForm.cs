@@ -31,7 +31,7 @@ public sealed class SettingsForm : Form
 
         AddLabel("Nombre del equipo", 16, 22);
         Configure(_name, current.Name, 16, 46);
-        _name.MaxLength = 32;
+        _name.MaxLength = 120;
 
         AddLabel("Servidor del hub (ws://ip:puerto)", 16, 84);
         Configure(_server, current.ServerUrl, 16, 108);

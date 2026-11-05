@@ -989,26 +989,30 @@ function registerAgentCuaRecord(
 
 /**
  * agent_cua_browser: control of the browser the USER already runs, over the
- * Chrome DevTools Protocol of their real profile (chrome://inspect -> "Allow
- * remote debugging"; the first touch of a tab asks "Allow debugging?" once).
- * Reads use the DOM directly (url, text, tabs); click resolves link/button
- * text inside the page. agent_cua_get_window_state + agent_cua_click remain
- * the fallback for browsers without CDP (Firefox) and non-browser windows.
+ * Chrome DevTools Protocol of their real profile. On Chrome 136+ the user
+ * enables chrome://inspect -> "Allow remote debugging" once (first touch of a
+ * tab asks "Allow debugging?" once); on older Chrome (109 on Windows 7, where
+ * that page does not exist) operation=enable relaunches the browser with the
+ * debugging port instead. Reads use the DOM directly (url, text, tabs); click
+ * resolves link/button text inside the page. agent_cua_get_window_state +
+ * agent_cua_click remain the fallback for browsers without CDP (Firefox) and
+ * non-browser windows.
  */
 function registerAgentCuaBrowser(server: McpServer, hub: Hub, audit: AuditLog): void {
   interface Args {
     agent: string;
-    operation: "state" | "open" | "navigate" | "text" | "tabs" | "click" | "search";
+    operation: "state" | "open" | "navigate" | "text" | "tabs" | "click" | "search" | "enable";
     browser?: "chrome" | "msedge";
     url?: string;
     max_chars?: number;
     match?: string;
     nth?: number;
     target_id?: string;
+    port?: number;
     confirm?: boolean;
     timeoutMs?: number;
   }
-  const MUTATING = new Set(["open", "navigate", "click", "search"]);
+  const MUTATING = new Set(["open", "navigate", "click", "search", "enable"]);
 
   registerJobTool<Args>(server, hub, audit, {
     name: "agent_cua_browser",
@@ -1017,20 +1021,23 @@ function registerAgentCuaBrowser(server: McpServer, hub: Hub, audit: AuditLog): 
       "Drives the browser the USER runs (their real profile, tabs and logins) through its DevTools-Protocol " +
       "port: state (url/title/text preview), tabs (list with target_id), text (page innerText), open (new " +
       "tab at url), navigate (current tab to url), click (nth enabled link/button whose text contains " +
-      "`match`). One-time setup on the machine: enable chrome://inspect/#remote-debugging once; the first " +
-      "touch of each tab shows an 'Allow debugging?' prompt the user accepts once. Firefox is not " +
-      "supported - for it use agent_cua_get_window_state + agent_cua_click. open/navigate/click require " +
-      "confirm: true.",
+      "`match`), enable (make the browser debuggable). Setup: on Chrome 136+ turn 'Allow remote " +
+      "debugging' on at chrome://inspect/#remote-debugging once (the first touch of each tab then shows " +
+      "an 'Allow debugging?' prompt the user accepts once); on older Chrome (109 on Windows 7, no such " +
+      "page) run enable first, which closes and relaunches the browser with --remote-debugging-port. " +
+      "Firefox is not supported - for it use agent_cua_get_window_state + agent_cua_click. " +
+      "open/navigate/click/enable require confirm: true.",
     inputSchema: {
       agent: z.string().min(1).describe("Agent id or unique name from agents_list."),
-      operation: z.enum(["state", "open", "navigate", "text", "tabs", "click", "search"]).describe("Browser operation to run."),
+      operation: z.enum(["state", "open", "navigate", "text", "tabs", "click", "search", "enable"]).describe("Browser operation to run."),
       browser: z.enum(["chrome", "msedge"]).optional().describe("Which browser to attach to (default: the one with debugging enabled)."),
       url: z.string().max(2048).optional().describe("http(s) or file:// URL for open/navigate."),
       max_chars: z.number().int().min(200).max(40_000).optional().describe("text: page text cap (default 8000)."),
       match: z.string().min(1).max(120).optional().describe("click: substring of the link/button text."),
       nth: z.number().int().min(0).max(50).optional().describe("click: which match to use (default 0)."),
       target_id: z.string().min(1).max(64).optional().describe("Target id (or prefix) from tabs to drive a specific tab."),
-      confirm: z.boolean().optional().describe("Required true for open/navigate/click."),
+      port: z.number().int().min(1024).max(65535).optional().describe("enable: port to launch the browser with (default 9222)."),
+      confirm: z.boolean().optional().describe("Required true for open/navigate/click/enable."),
       timeoutMs: z.number().int().positive().max(TIMEOUT_MAX).optional().describe("Job timeout in ms."),
     },
     options: {
@@ -1055,6 +1062,11 @@ function registerAgentCuaBrowser(server: McpServer, hub: Hub, audit: AuditLog): 
         ...(args.match ? { match: args.match } : {}),
         ...(args.nth !== undefined ? { nth: args.nth } : {}),
         ...(args.target_id ? { target_id: args.target_id } : {}),
+        ...(args.port ? { port: args.port } : {}),
+        // enable is re-checked inside the agent (it closes and relaunches the
+        // browser), so the gate travels with the job; the other operations are
+        // gated here only.
+        ...(args.operation === "enable" && args.confirm ? { confirm: true } : {}),
       }),
       buildResult: (outcome) => ({ jobId: outcome.jobId, ...(outcome.meta ?? {}) }),
     },
