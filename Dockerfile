@@ -27,6 +27,10 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS agent-builder
 WORKDIR /src
 COPY agent-dotnet ./agent-dotnet
+# El csproj lee ../shared/version.ts para estampar Version/FileVersion: sin
+# este archivo el binario sale como 1.0.0 y los agentes rechazan el OTA
+# ("the build is 1.0.0, the hub announced X").
+COPY shared/version.ts ./shared/version.ts
 RUN dotnet publish agent-dotnet -c Release -r win-x64 --self-contained true \
       -p:EnableWindowsTargeting=true \
       -p:IncludeNativeLibrariesForSelfExtract=true \

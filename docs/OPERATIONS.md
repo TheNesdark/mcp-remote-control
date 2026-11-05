@@ -329,6 +329,21 @@ The agent refuses an update whose version is not exactly the one the hub
 announces, so a share ahead of the hub is not picked up, and a share behind
 it is rejected.
 
+Pitfalls learned the hard way:
+
+- **The agent-builder stage must copy `shared/version.ts`.** The csproj reads
+  `../shared/version.ts` to stamp `Version`/`FileVersion`; without it the
+  binary is built as `1.0.0` and every agent rejects the OTA
+  (`auto-update rejected: the build is 1.0.0, the hub announced X`).
+- **One OTA attempt per process.** After a failed attempt the agent only
+  retries when its process restarts (reboot, watchdog, `agent_restart`); a
+  crash-loop guard allows 3 attempts per version, then it gives up until
+  `auto-update-attempts.json` is deleted on the machine.
+- **The agent prefers the share over HTTP whenever the hub announces a UNC
+  path** (`MRC_AGENT_BINARY_UNC`), with no fallback if that copy fails. Keep
+  that env var unset in production: the hub serves `/agent/latest.exe` from
+  the very image it deploys, so the hash always matches.
+
 ### One binary on the share
 
 `MRC_AGENT_BINARY_UNC` points at `\\192.168.1.191\Hermes\rc-agent-update.exe`
