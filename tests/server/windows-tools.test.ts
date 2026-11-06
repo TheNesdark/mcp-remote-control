@@ -113,7 +113,7 @@ function defaultResponse(msg: JobRequestMsg, command: string): FakeResponse {
       }),
     };
   }
-  if (command.includes("Test-NetConnection")) {
+  if (command.includes("BeginConnect")) {
     return {
       stdout: json({
         host: "srv-01",
@@ -319,7 +319,12 @@ test("the filesystem helpers map onto the right cmdlets", async () => {
 
   const search = await call("agent_fs", { agent: "W-01", operation: "search", path: "C:\\Logs", pattern: "*.log", recursive: true, maxDepth: 2, olderThanDays: 7 });
   expect(search.data).toMatchObject({ matched: 2, returned: 1, truncated: true });
-  expect(started.commands[0]).toContain("-Filter $__pattern -File -Force -Recurse -Depth $__depth");
+  expect(started.commands[0]).toContain("function __mrcWalk");
+  expect(started.commands[0]).toContain("__mrcWalk $__path $__depth");
+  // PowerShell 2.0-safe (Windows 7 agents): no -File/-Depth and a JSON
+  // fallback when ConvertTo-Json does not exist.
+  expect(started.commands[0]).not.toContain("Get-ChildItem -LiteralPath $__path -Filter $__pattern -File");
+  expect(started.commands[0]).toContain("function __mrcJson");
 
   const mkdir = await call("agent_fs", { agent: "W-01", operation: "mkdir", path: "C:\\Logs\\2026" });
   expect(mkdir.data).toMatchObject({ created: true });

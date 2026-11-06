@@ -59,21 +59,29 @@ export function softwareScript(args: SoftwareArgs): string {
     "if ($__scope -ne 'machine') { $__keys += 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' }",
     "$__items = foreach ($__key in $__keys) {",
     "  Get-ItemProperty -Path $__key -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName } | ForEach-Object {",
-    "    $isUser = $_.PSPath.ToString().StartsWith('Microsoft.PowerShell.Core\\Registry::HKEY_CURRENT_USER') -or $_.PSPath.ToString().Contains('HKEY_CURRENT_USER')",
-    "    [pscustomobject]@{",
-    "      name = \"$($_.DisplayName)\"",
-    "      version = if ($_.DisplayVersion) { \"$($_.DisplayVersion)\" } else { $null }",
-    "      publisher = if ($_.Publisher) { \"$($_.Publisher)\" } else { $null }",
-    "      installDate = if ($_.InstallDate) { \"$($_.InstallDate)\" } else { $null }",
-    "      installLocation = if ($_.InstallLocation) { \"$($_.InstallLocation)\" } else { $null }",
-    "      scope = $(if ($isUser) { 'user' } else { 'machine' })",
-    "    }",
+    "    $__isUser = $_.PSPath.ToString().Contains('HKEY_CURRENT_USER')",
+    // Plain hashtables and no if-statements inside the literal: Windows 7
+    // agents run PowerShell 2.0, where neither [pscustomobject] nor
+    // expression-valued ifs inside hash literals exist.
+    "    $__dname = \"$($_.DisplayName)\"",
+    "    $__dver = $null; if ($_.DisplayVersion) { $__dver = \"$($_.DisplayVersion)\" }",
+    "    $__dpub = $null; if ($_.Publisher) { $__dpub = \"$($_.Publisher)\" }",
+    "    $__ddate = $null; if ($_.InstallDate) { $__ddate = \"$($_.InstallDate)\" }",
+    "    $__dloc = $null; if ($_.InstallLocation) { $__dloc = \"$($_.InstallLocation)\" }",
+    "    @{ name = $__dname; version = $__dver; publisher = $__dpub; installDate = $__ddate; installLocation = $__dloc; scope = $(if ($__isUser) { 'user' } else { 'machine' }) }",
     "  }",
     "}",
-    // Deduplicate by name+version (32/64-bit entries repeat themselves).
-    "$__items = @($__items | Group-Object name, version | ForEach-Object { $_.Group[0] })",
+    // Deduplicate by name+version (32/64-bit entries repeat themselves),
+    // without Group-Object over hashtables (unreliable in PowerShell 2.0).
+    "$__seen = @{}",
+    "$__dedup = @()",
+    "foreach ($__it in @($__items)) {",
+    "  $__dk = \"$($__it.name)|$($__it.version)\"",
+    "  if (-not $__seen.ContainsKey($__dk)) { $__seen[$__dk] = $true; $__dedup += ,$__it }",
+    "}",
+    "$__items = @($__dedup)",
     "if ($__filter) { $__items = @($__items | Where-Object { $_.name.ToLower().Contains($__filter) }) }",
-    "$__items = @($__items | Sort-Object name)",
+    "$__items = @($__items | Sort-Object { $_['name'] })",
     "$__r = @{ total = @($__items).Count; scope = $__scope; programs = @($__items | Select-Object -First $__top) }",
   ]);
 }
@@ -134,10 +142,15 @@ export interface TimeData {
 export function timeScript(): string {
   return buildPsScript([
     "$__now = Get-Date",
+    // Get-TimeZone needs PowerShell 3.0: fall back to tzutil on Windows 7
+    // (Win32_TimeZone reports an empty Id on some of those machines).
+    "$__tz = $null",
+    "if (Get-Command Get-TimeZone -ErrorAction SilentlyContinue) { $__tz = (Get-TimeZone).Id }",
+    "if (-not $__tz) { try { $__tz = (tzutil /g) } catch { $__tz = $null } }",
     "$__r = @{",
     "  local = $__now.ToString('yyyy-MM-ddTHH:mm:ss.fffzzz')",
     "  utc = $__now.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')",
-    "  timezone = (Get-TimeZone).Id",
+    "  timezone = \"$__tz\"",
     "  ntp = $null",
     "}",
     // NTP health is best-effort: W32Time may be absent and w32tm needs rights.
@@ -213,34 +226,43 @@ export interface SessionsData {
 export function sessionsScript(args: { interactiveOnly: boolean }): string {
   return buildPsScript([
     `$__interactiveOnly = ${args.interactiveOnly ? "$true" : "$false"}`,
-    // Win32_LogonSession is read via CIM; the owning account comes from the
-    // Win32_LoggedOnUser association (locale-proof, unlike parsing `query user`).
+    // Native WMI (Get-WmiObject) instead of CIM: Windows 7 agents run
+    // PowerShell 2.0, which has no Get-CimInstance/Get-CimAssociatedInstance.
+    // Plain hashtables instead of [pscustomobject], same reason. The account
+    // comes from the Win32_LoggedOnUser association (locale-proof, unlike
+    // parsing `query user`).
     "if ($__interactiveOnly) {",
-    "  $__sessions = @(Get-CimInstance -ClassName Win32_LogonSession -Filter 'LogonType=2 OR LogonType=10' -ErrorAction Stop)",
+    "  $__sessions = @(Get-WmiObject -Class Win32_LogonSession -Filter 'LogonType=2 OR LogonType=10' -ErrorAction Stop)",
     "} else {",
-    "  $__sessions = @(Get-CimInstance -ClassName Win32_LogonSession -ErrorAction Stop)",
+    "  $__sessions = @(Get-WmiObject -Class Win32_LogonSession -ErrorAction Stop)",
     "}",
-    "$__items = foreach ($__s in $__sessions) {",
+    "$__items = @(foreach ($__s in $__sessions) {",
     "  $__user = $null",
     "  try {",
-    "    $__acct = Get-CimAssociatedInstance -InputObject $__s -Association Win32_LoggedOnUser -ErrorAction SilentlyContinue | Select-Object -First 1",
+    "    $__acct = @(Get-WmiObject -Query (\"ASSOCIATORS OF {Win32_LogonSession.LogonId='\" + $__s.LogonId + \"'} WHERE AssocClass=Win32_LoggedOnUser\")) | Select-Object -First 1",
     "    if ($__acct) { $__user = \"$($__acct.Domain)\\$($__acct.Name)\" }",
     "  } catch {}",
-    "  [pscustomobject]@{",
-    "    user = $__user",
-    "    logonId = \"$($__s.LogonId)\"",
-    "    logonType = [int]$__s.LogonType",
-    "    logonTime = $(if ($__s.StartTime) { $__s.StartTime.ToString('yyyy-MM-ddTHH:mm:sszzz') } else { $null })",
-    "    authenticationPackage = $(if ($__s.AuthenticationPackage) { \"$($__s.AuthenticationPackage)\" } else { $null })",
-    "  }",
-    "}",
-    // Collapse repeated identical users (services spawn many sessions).
-    "$__items = @($__items | Group-Object user, logonType | ForEach-Object {",
-    "  [pscustomobject]@{ user = $_.Group[0].user; logonId = $_.Group[0].logonId; logonType = $_.Group[0].logonType; count = $_.Count; logonTime = $_.Group | Sort-Object logonTime | Select-Object -Last 1 -ExpandProperty logonTime; authenticationPackage = $_.Group[0].authenticationPackage }",
+    "  $__lt = $null",
+    "  if ($__s.StartTime) { try { $__lt = $__s.ConvertToDateTime($__s.StartTime).ToString('yyyy-MM-ddTHH:mm:sszzz') } catch { $__lt = \"$($__s.StartTime)\" } }",
+    "  @{ user = $__user; logonId = \"$($__s.LogonId)\"; logonType = [int]$__s.LogonType; logonTime = $__lt; authenticationPackage = $(if ($__s.AuthenticationPackage) { \"$($__s.AuthenticationPackage)\" } else { $null }) }",
     "})",
-    "$__items = @($__items | Sort-Object user)",
+    // Collapse repeated identical users (services spawn many sessions).
+    "$__acc = @{}",
+    "foreach ($__i in $__items) {",
+    "  $__k = \"$($__i.user)|$($__i.logonType)\"",
+    "  if (-not $__acc.ContainsKey($__k)) { $__acc[$__k] = @{ count = 0; first = $__i; last = $null } }",
+    "  $__g = $__acc[$__k]",
+    "  $__g.count = $__g.count + 1",
+    "  if ($__i.logonTime -and ((-not $__g.last) -or ($__i.logonTime -gt $__g.last))) { $__g.last = $__i.logonTime }",
+    "  $__acc[$__k] = $__g",
+    "}",
+    "$__items = @(foreach ($__k in @($__acc.Keys)) {",
+    "  $__c = $__acc[$__k]",
+    "  @{ user = $__c.first.user; logonId = $__c.first.logonId; logonType = $__c.first.logonType; count = $__c.count; logonTime = $__c.last; authenticationPackage = $__c.first.authenticationPackage }",
+    "})",
+    "$__items = @($__items | Sort-Object { $_['user'] })",
     "$__labels = @{ 2='interactive'; 3='network'; 4='batch'; 5='service'; 7='unlock'; 8='network-cleartext'; 9='new-credentials'; 10='remote-interactive'; 11='cached-interactive' }",
-    "$__r = @{ total = @($__items).Count; sessions = @($__items | ForEach-Object { [pscustomobject]@{ user = $_.user; logonId = $_.logonId; logonType = $_.logonType; logonTypeLabel = $(if ($__labels.ContainsKey($_.logonType)) { $__labels[$_.logonType] } else { \"type-$($_.logonType)\" }); logonTime = $_.logonTime; authenticationPackage = $_.authenticationPackage } }) }",
+    "$__r = @{ total = @($__items).Count; sessions = @($__items | ForEach-Object { @{ user = $_.user; logonId = $_.logonId; logonType = $_.logonType; logonTypeLabel = $(if ($__labels.ContainsKey([int]$_.logonType)) { $__labels[[int]$_.logonType] } else { \"type-$($_.logonType)\" }); logonTime = $_.logonTime; authenticationPackage = $_.authenticationPackage } }) }",
   ]);
 }
 

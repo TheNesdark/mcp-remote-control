@@ -46,7 +46,41 @@ export function buildPsScript(body: readonly string[]): string {
     "} catch {",
     "  $__mrc = @{ ok = $false; error = $_.Exception.Message }",
     "}",
-    "$__mrc | ConvertTo-Json -Compress -Depth 8",
+    // ConvertTo-Json exists from PowerShell 3.0; Windows 7 agents run 2.0, so
+    // write the JSON by hand there. No .NET serializer: in 2.0 the results of
+    // cmdlets are PSObject-wrapped (a Test-Path result carries PSMethod members)
+    // and reflection-based serializers die on them with "circular reference".
+    // The type checks below go through the PowerShell object model, which
+    // handles the wrappers, and everything is stringified explicitly.
+    "if ($PSVersionTable.PSVersion.Major -ge 3) { $__mrc | ConvertTo-Json -Compress -Depth 8 }",
+    "else {",
+    "  function __mrcEsc([string]$__t) {",
+    '    $__t = $__t.Replace("\\", "\\\\")',
+    '    $__t = $__t.Replace(\'"\', \'\\"\')',
+    '    $__t = $__t.Replace("`r", "\\r").Replace("`n", "\\n").Replace("`t", "\\t")',
+    "    return $__t",
+    "  }",
+    "  function __mrcJson($__v, [int]$__d) {",
+    "    if ($__d -gt 12) { return 'null' }",
+    "    if ($__v -eq $null) { return 'null' }",
+    "    if ($__v -is [bool]) { if ($__v) { return 'true' } else { return 'false' } }",
+    "    if ($__v -is [int] -or $__v -is [long]) { return ([long]$__v).ToString([System.Globalization.CultureInfo]::InvariantCulture) }",
+    "    if ($__v -is [double] -or $__v -is [decimal]) { return ([double]$__v).ToString([System.Globalization.CultureInfo]::InvariantCulture) }",
+    "    if ($__v -is [datetime]) { return '\"' + $__v.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ') + '\"' }",
+    "    if ($__v -is [System.Collections.IDictionary]) {",
+    "      $__parts = @()",
+    "      foreach ($__k in @($__v.Keys)) { $__parts += ('\"' + (__mrcEsc \"$__k\") + '\":' + (__mrcJson $__v[$__k] ($__d + 1))) }",
+    "      return '{' + ($__parts -join ',') + '}'",
+    "    }",
+    "    if ($__v -is [System.Collections.IEnumerable] -and -not ($__v -is [string])) {",
+    "      $__parts = @()",
+    "      foreach ($__i in @($__v)) { $__parts += (__mrcJson $__i ($__d + 1)) }",
+    "      return '[' + ($__parts -join ',') + ']'",
+    "    }",
+    "    return '\"' + (__mrcEsc \"$__v\") + '\"'",
+    "  }",
+    "  __mrcJson $__mrc 0",
+    "}",
     "if (-not $__mrc.ok) { exit 1 }",
   ].join("\n");
 }

@@ -70,7 +70,7 @@ export function eventLogScript(args: EventLogArgs): string {
     "  if ($__msg.Length -gt $__chars) { $__msg = $__msg.Substring(0, $__chars) + '...' }",
     "  $__time = ''",
     "  try { $__time = $__e.TimeCreated.ToString('o') } catch { $__time = '' }",
-    "  [pscustomobject]@{ time = $__time; level = \"$($__e.LevelDisplayName)\"; id = $__e.Id; provider = \"$($__e.ProviderName)\"; message = $__msg }",
+    "  @{ time = $__time; level = \"$($__e.LevelDisplayName)\"; id = $__e.Id; provider = \"$($__e.ProviderName)\"; message = $__msg }",
     "}",
     "$__r = @{ log = $__log; count = @($__items).Count; events = @($__items) }",
     "if ($__note) { $__r.note = $__note }",

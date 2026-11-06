@@ -47,13 +47,13 @@ export function servicesListScript(args: ServicesArgs): string {
     "$__all = foreach ($__s in (Get-Service -ErrorAction Stop)) {",
     "  $__startType = $null",
     "  try { $__startType = $__s.StartType.ToString() } catch { $__startType = $null }",
-    "  [pscustomobject]@{ name = $__s.Name; displayName = \"$($__s.DisplayName)\"; status = $__s.Status.ToString(); startType = $__startType }",
+    "  @{ name = $__s.Name; displayName = \"$($__s.DisplayName)\"; status = $__s.Status.ToString(); startType = $__startType }",
     "}",
     "$__all = @($__all)",
     "$__items = $__all",
     "if ($__filter) { $__items = @($__items | Where-Object { $_.name.ToLower().Contains($__filter) -or $_.displayName.ToLower().Contains($__filter) }) }",
     "if ($__state) { $__items = @($__items | Where-Object { $_.status.ToLower() -eq $__state }) }",
-    "$__items = @($__items | Sort-Object name)",
+    "$__items = @($__items | Sort-Object { $_['name'] })",
     "$__r = @{ total = $__all.Count; matched = $__items.Count; services = @($__items | Select-Object -First $__top) }",
   ]);
 }
