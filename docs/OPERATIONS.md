@@ -123,14 +123,14 @@ individually, but they are unnecessary: moving `MRC_DATA_DIR` moves all three.
 ## Live streams (`/stream/<agent>`)
 
 Watch a machine's screen (or webcam) live in a browser or any MJPEG-capable
-player. The stream lives on the MCP HTTP port and needs the same token as the
-rest of that face:
+player. Served on both faces: the published hub port (8787, for LAN watchers)
+and the internal MCP port (8788). Needs the service token:
 
 ```sh
-open "http://192.168.1.191:8788/stream/PC-01?token=$MRC_TOKEN"      # screen, 10 fps
-open "http://192.168.1.191:8788/stream/PC-01/camera?fps=15"         # webcam
+open "http://<hub-host>:8787/stream/PC-01?token=$MRC_TOKEN"         # screen, 10 fps
+open "http://<hub-host>:8787/stream/PC-01/camera?fps=15"            # webcam
 curl -N -H "Authorization: Bearer $MRC_TOKEN" \
-     "http://192.168.1.191:8788/stream/PC-01?fps=10&quality=60&maxWidth=1600" > out.mjpeg
+     "http://<mcp-host>:8788/stream/PC-01?fps=10&quality=60&maxWidth=1600" > out.mjpeg  # internal face
 ```
 
 - Query params: `fps` (1-30, default 10), `quality` (1-100, default 60),

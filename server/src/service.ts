@@ -164,6 +164,12 @@ export function createService(config: ServerConfig, version = "0.0.0"): Service 
           },
         });
       }
+      // Live MJPEG streams on the PUBLISHED port, so a LAN browser can watch
+      // (the MCP face with the same route stays internal). Token-protected:
+      // bearer header or ?token=, like the MCP face.
+      if (url.pathname.startsWith(STREAM_HTTP_PREFIX)) {
+        return handleStreamRequest(req, { hub, streams, token: config.token });
+      }
       return new Response("not found", { status: 404 });
     },
     websocket: {
