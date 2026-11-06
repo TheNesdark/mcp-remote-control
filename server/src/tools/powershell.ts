@@ -52,7 +52,10 @@ export function buildPsScript(body: readonly string[]): string {
     // and reflection-based serializers die on them with "circular reference".
     // The type checks below go through the PowerShell object model, which
     // handles the wrappers, and everything is stringified explicitly.
-    "if ($PSVersionTable.PSVersion.Major -ge 3) { $__mrc | ConvertTo-Json -Compress -Depth 8 }",
+    // [Console]::WriteLine, never pipeline output: in PowerShell 2.0 the host
+    // wraps pipeline strings at the console width (~78 chars) and the newlines
+    // land in the middle of the JSON, breaking the parse on the hub side.
+    "if ($PSVersionTable.PSVersion.Major -ge 3) { [Console]::WriteLine(($__mrc | ConvertTo-Json -Compress -Depth 8)) }",
     "else {",
     "  function __mrcEsc([string]$__t) {",
     '    $__t = $__t.Replace("\\", "\\\\")',
@@ -79,7 +82,7 @@ export function buildPsScript(body: readonly string[]): string {
     "    }",
     "    return '\"' + (__mrcEsc \"$__v\") + '\"'",
     "  }",
-    "  __mrcJson $__mrc 0",
+    "  [Console]::WriteLine((__mrcJson $__mrc 0))",
     "}",
     "if (-not $__mrc.ok) { exit 1 }",
   ].join("\n");
